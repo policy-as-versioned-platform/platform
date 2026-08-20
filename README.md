@@ -1,5 +1,13 @@
 # policy-as-versioned-platform
 
+**GitHub org:** [`policy-as-versioned-platform`](https://github.com/policy-as-versioned-platform) ·
+**Role:** publisher, risk-bearer · **Licence:** [Apache-2.0](LICENSE)
+
+Part of the *Policy as Versioned Code* estate: a shared platform, two regulators, three regulated
+institutions, each its own independent GitHub organisation, exchanging signed, versioned
+dependencies. Full thesis, design decisions (ADRs) and the other five parties:
+[policy-as-versioned-flux](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux).
+
 **The shared discipline** — the governance machinery every institution inherits
 as a *pinned, signed dependency* (the `config-base` pattern, one level up), so
 the same apparatus is inherited rather than copy-pasted per institution.
@@ -18,4 +26,8 @@ What lives here (built across later tickets — this is the skeleton):
   (propose-never-dispose).
 
 The platform governs **itself** under the same risk model (Kyverno/Flux/platform
-in scope) — it passes its own test.
+in scope) — it passes its own test. This is the **reflexive** part of the role
+composition: `platform` is a **publisher** to the five other parties, and also
+a **risk-bearer** in its own right, carrying a strict £10k appetite band
+(`risk/appetite.json`, org `platform`, `root_of_trust: true`) rather than
+standing outside the apparatus it ships.
