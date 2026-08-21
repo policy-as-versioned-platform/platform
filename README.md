@@ -31,3 +31,19 @@ composition: `platform` is a **publisher** to the five other parties, and also
 a **risk-bearer** in its own right, carrying a strict £10k appetite band
 (`risk/appetite.json`, org `platform`, `root_of_trust: true`) rather than
 standing outside the apparatus it ships.
+
+## Releases (ticket mo-10)
+
+A release is a signed, semver git tag, cut by
+[`cut-release.yml`](.github/workflows/cut-release.yml)
+(`workflow_dispatch`, `version` + `message` inputs). The tag is gitsign-signed
+keyless, using the workflow run's own GitHub Actions identity — no browser
+login, no long-lived key. [`release.yml`](.github/workflows/release.yml) then
+verifies that signature identity-pinned (the expected signer, not just "a
+valid signature exists") against an offline Rekor bundle, runs
+[`shift-left/verify-shift-left.sh`](shift-left/verify-shift-left.sh) as the
+release gate, and publishes a GitHub Release.
+
+Institutions pin `{tag, commit}` (`gitops/platform/platform-pin.yaml` in each
+of `driftwood`/`tuppence`/`ludlow`) and bump via a Renovate PR their own repo
+opens against itself — never a moving branch, never automerged.
