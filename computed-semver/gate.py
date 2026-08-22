@@ -51,7 +51,9 @@ from pathlib import Path
 
 import yaml
 
+import cage_engine
 import corpus_generator
+import rederive_bumps
 
 HERE = Path(__file__).resolve().parent
 
@@ -67,9 +69,22 @@ COMPONENTS = ("major", "minor", "patch")
 @dataclass
 class RepoState:
     """A repository state -- the seam's first argument. See module docstring
-    for the subject/corpus split."""
+    for the subject/corpus split.
+
+    `old_subject_dir` -- cs-21: the prior subject tree to compute the bump
+    against (real policy bodies, canonical unversioned filenames -- the same
+    shape corpus_generator._materialize_subject and render_tree already
+    write). Optional and defaults to None: version-legality-only callers
+    (ticket 18's own selfcheck, and any RepoState that hasn't wired a real
+    prior tree yet) get no regression -- `bump.computed` and `movement` stay
+    at empty_document()'s placeholders exactly as before this ticket. Only
+    the immediate base version (the same one check_version_legality already
+    computes) is compared -- comparing every supported version lower than
+    declared, and the per-institution matrix, is spec.md's "Where the gate
+    runs" section, out of this ticket's scope."""
     subject_dir: Path
     corpus_dir: Path
+    old_subject_dir: Path | None = None
 
 
 def existing_versions(subject_dir: Path) -> list[str]:
@@ -150,6 +165,13 @@ def empty_document() -> dict:
     }
 
 
+def _corpus_pod_paths(corpus_dir: Path, manifest: dict) -> list[Path]:
+    """cs-21: the generated spine's pod files, as real paths -- what
+    cage_engine.classify_repo walks to compute the bump."""
+    spine = manifest.get("populations", {}).get("generated-spine", {})
+    return [corpus_dir / rec["file"] for rec in spine.get("entries", [])]
+
+
 def _read_corpus_manifest(corpus_dir: Path) -> dict | None:
     """cs-19: if corpus_dir holds a generated manifest
     (corpus_generator.build_manifest's output), surface its counts and
@@ -180,11 +202,12 @@ def run_gate(repo: RepoState, declared: str) -> dict:
         doc["wall_clock"] = time.monotonic() - start
         return doc
 
-    # Legal version. Movement, coverage and the matrix are still tickets
-    # 20+'s job -- this ticket (cs-19) only wires in the corpus generator's
-    # own counts/checksum, when a manifest has already been generated into
-    # repo.corpus_dir (generation itself is a separate, out-of-band step --
-    # see corpus_generator.py -- so the gate only reads, never regenerates).
+    # Legal version. Read the corpus manifest for counts/checksum (cs-19;
+    # generation itself is a separate, out-of-band step -- see
+    # corpus_generator.py -- so the gate only reads, never regenerates).
+    # Movement and the computed bump are filled in below, from a prior
+    # subject tree, when one is available (cs-21). The coverage matrix
+    # remains later tickets' job.
     doc["outcome"] = {"result": "passed", "reason": None}
     manifest = _read_corpus_manifest(repo.corpus_dir)
     if manifest is not None:
@@ -195,6 +218,47 @@ def run_gate(repo: RepoState, declared: str) -> dict:
             doc["corpus_checksum"] = spine["checksum"]
         if "generator_version" in manifest:
             doc["generator_version"] = manifest["generator_version"]
+
+        # cs-21: with a real prior subject tree to compare against, compute
+        # the bump instead of only accepting the declared one -- the gate
+        # measures the release rather than trusting the publisher's number.
+        if repo.old_subject_dir is not None:
+            pods = _corpus_pod_paths(repo.corpus_dir, manifest)
+            result = cage_engine.classify_repo(repo.old_subject_dir, repo.subject_dir, pods)
+            doc["bump"]["computed"] = result.computed_bump
+            doc["movement"] = [m.as_dict() for m in result.movement]
+
+            declared_rank = cage_engine.RANK[legality.bump_class]
+            computed_rank = cage_engine.RANK.get(result.computed_bump, 0)
+            if declared_rank < computed_rank:
+                # Refusal is the bottom rung of the cage ladder, not a
+                # separate verdict class (spec.md) -- but the reviewer still
+                # needs to see exactly what moved: the corpus entries and
+                # the CEL expression responsible, never a bare "refused".
+                worst = [m for m in result.movement if cage_engine.RANK.get(m.verdict, 0) == computed_rank]
+                named = "; ".join(
+                    f"{m.policy}: {', '.join(m.entries) or '(structural, no fixture moved)'} "
+                    f"via `{'; '.join(m.expressions) or 'n/a'}`"
+                    for m in worst
+                )
+                doc["outcome"] = {
+                    "result": "refused",
+                    "reason": (
+                        f"declared bump {legality.bump_class!r} is weaker than the computed bump "
+                        f"{result.computed_bump!r} -- {named}"
+                    ),
+                }
+                doc["wall_clock"] = time.monotonic() - start
+                return doc
+            if declared_rank > computed_rank:
+                # A stronger declared bump still passes -- the gate never
+                # rewrites the declared number -- but prints the discrepancy
+                # (spec.md: "It permits a stronger one and prints the
+                # discrepancy"), one sentence, no viability estimate.
+                doc["outcome"]["reason"] = (
+                    f"declared bump {legality.bump_class!r} is stronger than the computed bump "
+                    f"{result.computed_bump!r} -- no movement required it"
+                )
     doc["wall_clock"] = time.monotonic() - start
     return doc
 
@@ -305,13 +369,130 @@ def selfcheck() -> None:
     assert doc["counts"] == {"old": None, "new": None, "union": None}, doc["counts"]
     assert doc["corpus_checksum"] is None
 
+    # cs-21: the computed bump, wired through the seam. A hand-built manifest
+    # pointing straight at rederive_bumps.ALL_FIXTURES -- corpus_generator's
+    # own probe_for cannot generate a spine for these historical policy
+    # bodies (they predate the `.orValue(...)` CEL idiom probe_for's regexes
+    # recognize; that is exactly why ticket cs-01 hand-curated PAIRS/fixtures
+    # in the first place), so the manifest is built directly rather than
+    # through corpus_generator.build_manifest -- ticket 19's own SHAPE is
+    # what run_gate reads, not its generation path.
+    def manual_manifest(corpus_dir: Path, pod_files: list[Path]) -> None:
+        spine_dir = corpus_dir / "spine"
+        spine_dir.mkdir(parents=True, exist_ok=True)
+        entries = []
+        for f in pod_files:
+            (spine_dir / f.name).write_text(f.read_text())
+            entries.append({"file": f"spine/{f.name}", "source": "old", "pair": "manual"})
+        manifest = {
+            "generator_version": "selfcheck",
+            "wall_clock": 0.0,
+            "populations": {
+                "generated-spine": {
+                    "checksum": "sha256:selfcheck",
+                    "counts": {"old": len(entries), "new": 0, "union": len(entries)},
+                    "entries": entries,
+                },
+            },
+        }
+        (corpus_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
+
+    fixtures = rederive_bumps.ALL_FIXTURES
+
+    # 1.0.0 -> 2.0.0: the known-good MAJOR bump (Audit -> Deny promotion).
+    old1 = Path(tempfile.mkdtemp())
+    (old1 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-1.0.0.yaml").read_text())
+    new1 = subject_with(["1.0.0"]).subject_dir
+    (new1 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-2.0.0.yaml").read_text())
+    corpus1 = Path(tempfile.mkdtemp())
+    manual_manifest(corpus1, fixtures)
+
+    # declared == computed: passes, no discrepancy.
+    repo = RepoState(subject_dir=new1, corpus_dir=corpus1, old_subject_dir=old1)
+    doc = run_gate(repo, "2.0.0")
+    assert doc["outcome"] == {"result": "passed", "reason": None}, doc["outcome"]
+    assert doc["bump"] == {"declared": "major", "computed": "major"}, doc["bump"]
+    assert {m["policy"] for m in doc["movement"]} == {"require-department-label.yaml"}, doc["movement"]
+    dept_movement = doc["movement"][0]
+    assert dept_movement["verdict"] == "major", dept_movement
+    assert dept_movement["entries"], "a major admission narrowing must name the fixtures that moved"
+    assert dept_movement["expressions"] == [
+        "has(object.metadata.labels) && 'department' in object.metadata.labels"
+    ], dept_movement["expressions"]
+
+    # declared WEAKER than computed: refuses, and names the moved corpus
+    # entries and the CEL expression -- "the gate never estimates viability.
+    # It prints one sentence instead" -- one sentence, no viability language.
+    doc = run_gate(repo, "1.1.0")
+    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert doc["bump"]["declared"] == "minor" and doc["bump"]["computed"] == "major", doc["bump"]
+    reason = doc["outcome"]["reason"]
+    assert "require-department-label.yaml" in reason, reason
+    for stem in dept_movement["entries"]:
+        assert stem in reason, (stem, reason)
+    assert "department" in reason and "labels" in reason, reason  # the CEL expression itself
+    assert "\n" not in reason, reason
+    for word in ("viable", "viability", "%", "estimate"):
+        assert word not in reason.lower(), (word, reason)
+
+    # 2.0.1 -> 2.1.1: the known-good whole-body MINOR bump (a patch widening
+    # on one policy plus a brand-new Audit-only policy bundled into one
+    # release -- minor dominates, per rederive_bumps.py's own finding, now
+    # rederived through THIS module and this seam instead).
+    old2 = Path(tempfile.mkdtemp())
+    (old2 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-2.0.0.yaml").read_text())
+    (old2 / "require-known-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "known-department-label-2.0.1.yaml").read_text())
+    new2 = subject_with(["2.0.1"]).subject_dir
+    (new2 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-2.0.0.yaml").read_text())
+    (new2 / "require-known-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "known-department-label-2.1.1.yaml").read_text())
+    (new2 / "require-owner-annotation.yaml").write_text(
+        (rederive_bumps.CORPUS / "owner-annotation-2.1.1.yaml").read_text())
+    corpus2 = Path(tempfile.mkdtemp())
+    manual_manifest(corpus2, fixtures)
+
+    # declared 2.1.0, not the real tag's own 2.1.1 -- 2.1.1 itself fails
+    # version LEGALITY (reset-on-bump: base 2.0.1, minor increased, so patch
+    # must reset to 0), a separate, already-covered gate rule above. This
+    # case is about the COMPUTED-bump rule, so it declares a legal version
+    # that carries the same minor bump class instead.
+    repo2 = RepoState(subject_dir=new2, corpus_dir=corpus2, old_subject_dir=old2)
+    doc = run_gate(repo2, "2.1.0")
+    assert doc["outcome"] == {"result": "passed", "reason": None}, doc["outcome"]
+    assert doc["bump"] == {"declared": "minor", "computed": "minor"}, doc["bump"]
+    per_policy = {m["policy"]: m["verdict"] for m in doc["movement"]}
+    assert per_policy == {
+        "require-department-label.yaml": "none",
+        "require-known-department-label.yaml": "patch",
+        "require-owner-annotation.yaml": "minor",
+    }, per_policy
+
+    # declared STRONGER than computed: passes, and prints the discrepancy --
+    # nothing rewrites the declared number.
+    doc = run_gate(repo2, "3.0.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+    assert doc["bump"] == {"declared": "major", "computed": "minor"}, doc["bump"]
+    assert doc["outcome"]["reason"] is not None
+    assert "major" in doc["outcome"]["reason"] and "minor" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
         "refuses; the real 2.1.1 refuses under reset-on-bump and names base "
         "2.0.1; a malformed declared version refuses instead of crashing; a "
         "generated corpus manifest surfaces counts/checksum/generator_version "
-        "into the document, and their absence leaves the None placeholder"
+        "into the document, and their absence leaves the None placeholder; the "
+        "two historical known-good bumps (1.0.0->2.0.0 major, 2.0.1->2.1.1 "
+        "whole-body minor) rederive exactly through cage_engine and this seam; "
+        "a declared bump weaker than computed refuses, naming the moved "
+        "corpus entries and the CEL expression in one sentence with no "
+        "viability language; a stronger declared bump passes and prints the "
+        "discrepancy; the declared number is never rewritten"
     )
 
 
@@ -324,10 +505,13 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--subject-dir", type=Path, required=True)
     parser.add_argument("--corpus-dir", type=Path, required=True)
+    parser.add_argument("--old-subject-dir", type=Path, default=None,
+                         help="cs-21: the prior subject tree to compute the bump against")
     parser.add_argument("declared_version")
     parsed = parser.parse_args(args)
 
-    repo = RepoState(subject_dir=parsed.subject_dir, corpus_dir=parsed.corpus_dir)
+    repo = RepoState(subject_dir=parsed.subject_dir, corpus_dir=parsed.corpus_dir,
+                      old_subject_dir=parsed.old_subject_dir)
     doc = run_gate(repo, parsed.declared_version)
     print(json.dumps(doc, indent=2))
     return 0 if doc["outcome"]["result"] == "passed" else 1
