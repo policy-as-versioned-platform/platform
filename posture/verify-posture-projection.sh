@@ -91,10 +91,32 @@ print("  -- SVID path invariants hold --")
 PY
 
 # ---- live tail: only if a cluster actually has the posture policies installed ----
-if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy stamp-posture >/dev/null 2>&1; then
+# up.sh only ever applies VERSIONED copies (stamp-posture-1-0-0, ...), never the
+# unversioned authoring name -- so the gate and the existence checks below must
+# look for the versioned names too, the same way distribution/verify-coexistence.sh
+# checks require-nonroot-$v. Versions come from render-orphan-guard.py's versions()
+# (distribution/versions.yaml), the one array, reused -- never re-parsed here. The
+# posture ClusterSPIFFEID is NOT one of the renderer's per-version members (see
+# posture/up.sh), so it stays checked by its real, unversioned name.
+if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
   say "4. live: posture policies + ClusterSPIFFEID installed"
-  timeout 10 kubectl --context "$CTX" get validatingpolicy posture-trust-boundary >/dev/null 2>&1 \
-    || fail "posture-trust-boundary ValidatingPolicy not installed live"
+  while IFS= read -r v; do
+    timeout 10 kubectl --context "$CTX" get mutatingpolicy "stamp-posture-$v" >/dev/null 2>&1 \
+      || fail "stamp-posture-$v MutatingPolicy not installed live"
+    timeout 10 kubectl --context "$CTX" get validatingpolicy "posture-trust-boundary-$v" >/dev/null 2>&1 \
+      || fail "posture-trust-boundary-$v ValidatingPolicy not installed live"
+  done < <(python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+import importlib.util
+dist = Path(sys.argv[1]).parent / "distribution"
+spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for v in mod.versions(dist / "versions.yaml"):
+    print(v.replace(".", "-"))
+PY
+)
   timeout 10 kubectl --context "$CTX" get clusterspiffeid posture >/dev/null 2>&1 \
     || fail "posture ClusterSPIFFEID not installed live"
 

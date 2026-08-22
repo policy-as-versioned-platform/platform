@@ -92,10 +92,31 @@ print("  -- eviction ordering holds --")
 PY
 
 # ---- live tail: only if a cluster actually has the cage policies installed ----
-if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy cage-tier >/dev/null 2>&1; then
+# up.sh only ever applies VERSIONED copies (cage-tier-1-0-0, ...), never the
+# unversioned authoring name -- so the gate and the existence checks below
+# must look for the versioned names too, the same way
+# distribution/verify-coexistence.sh checks require-nonroot-$v. Versions come
+# from render-orphan-guard.py's versions() (distribution/versions.yaml), the
+# one array, reused -- never re-parsed here.
+if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
   say "6. live: cage policies installed; a behind-posture pod is CAGED (mutated), not denied"
-  timeout 10 kubectl --context "$CTX" get generatingpolicy cage-netpol >/dev/null 2>&1 \
-    || fail "cage-netpol GeneratingPolicy not installed live"
+  while IFS= read -r v; do
+    timeout 10 kubectl --context "$CTX" get mutatingpolicy "cage-tier-$v" >/dev/null 2>&1 \
+      || fail "cage-tier-$v MutatingPolicy not installed live"
+    timeout 10 kubectl --context "$CTX" get generatingpolicy "cage-netpol-$v" >/dev/null 2>&1 \
+      || fail "cage-netpol-$v GeneratingPolicy not installed live"
+  done < <(python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+import importlib.util
+dist = Path(sys.argv[1]).parent / "distribution"
+spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+for v in mod.versions(dist / "versions.yaml"):
+    print(v.replace(".", "-"))
+PY
+)
   PROBE=$(cat <<'EOF'
 apiVersion: v1
 kind: Pod
