@@ -52,6 +52,7 @@ from pathlib import Path
 import yaml
 
 import cage_engine
+import comparison_window
 import corpus_generator
 import coverage
 import pairing
@@ -80,14 +81,25 @@ class RepoState:
     write). Optional and defaults to None: version-legality-only callers
     (ticket 18's own selfcheck, and any RepoState that hasn't wired a real
     prior tree yet) get no regression -- `bump.computed` and `movement` stay
-    at empty_document()'s placeholders exactly as before this ticket. Only
-    the immediate base version (the same one check_version_legality already
-    computes) is compared -- comparing every supported version lower than
-    declared, and the per-institution matrix, is spec.md's "Where the gate
-    runs" section, out of this ticket's scope."""
+    at empty_document()'s placeholders exactly as before this ticket. Compares
+    against only the immediate base version -- superseded by `window` below
+    when both are given.
+
+    `window` -- cs-24: the FULL comparison window (comparison_window.py) --
+    every supported version lower than declared, in the window as it stood
+    before this release, strictest per-line result wins, backports narrow to
+    the line directly below, a retirement forces major, an empty window
+    records `comparison_window.NO_PREDECESSOR`. Optional and defaults to
+    None: takes priority over `old_subject_dir` when both are given (a
+    caller with a real window has no reason to fall back to the
+    single-predecessor path); when None, run_gate falls back to
+    `old_subject_dir`'s single-tree comparison exactly as before this
+    ticket -- no regression for cs-21/cs-22 callers that never wire a
+    window."""
     subject_dir: Path
     corpus_dir: Path
     old_subject_dir: Path | None = None
+    window: comparison_window.ComparisonWindow | None = None
 
 
 def existing_versions(subject_dir: Path) -> list[str]:
@@ -100,14 +112,12 @@ def existing_versions(subject_dir: Path) -> list[str]:
     return list(doc["versions"])
 
 
-def _parse_semver(v: str) -> tuple[int, int, int]:
-    parts = v.split(".")
-    if len(parts) != 3:
-        raise ValueError(f"not a plain major.minor.patch version: {v!r}")
-    try:
-        return tuple(int(p) for p in parts)  # type: ignore[return-value]
-    except ValueError:
-        raise ValueError(f"not a plain major.minor.patch version: {v!r}") from None
+# cs-24: comparison_window.py is the leaf module gate.py imports (never the
+# reverse -- it needs no gate.py symbol at all), so the one semver parser
+# both this module's version-legality rule and that module's window need
+# lives there; kept under this name here so every existing call site below
+# is unchanged.
+_parse_semver = comparison_window.parse_semver
 
 
 @dataclass
@@ -272,6 +282,63 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                 doc["limits"] = coverage.compute_limits(doc["movement"])
                 return doc
 
+        pods = _corpus_pod_paths(repo.corpus_dir, manifest)
+
+        # cs-24: a full comparison window takes priority over cs-21's
+        # single-predecessor path -- a caller with a real window has no
+        # reason to fall back to comparing against only the immediate base.
+        if repo.window is not None:
+            outcome = comparison_window.evaluate(repo.window, declared, repo.subject_dir, pods)
+            if outcome.pairing_failure is not None:
+                # Same cs-22 pairing protection, now covering every window
+                # line rather than only the single predecessor -- refuses
+                # and names the offending line the moment any is violated.
+                doc["outcome"] = {"result": "refused", "reason": outcome.pairing_failure}
+                doc["wall_clock"] = time.monotonic() - start
+                doc["limits"] = coverage.compute_limits(doc["movement"])
+                return doc
+
+            doc["matrix"] = outcome.matrix
+            if outcome.strictest is None:
+                # cs-24: the first release. "A comparison against nothing is
+                # not dressed up as a computed patch" -- NO_PREDECESSOR is
+                # not in cage_engine.RANK, so declared_rank >= computed_rank
+                # always holds below and the release simply passes on this
+                # axis; coverage (above) already ran in full regardless.
+                doc["bump"]["computed"] = comparison_window.NO_PREDECESSOR
+            else:
+                doc["bump"]["computed"] = outcome.strictest.computed_bump
+                doc["movement"] = [m.as_dict() for m in outcome.strictest.movement]
+
+                declared_rank = cage_engine.RANK[legality.bump_class]
+                computed_rank = cage_engine.RANK.get(outcome.strictest.computed_bump, 0)
+                if declared_rank < computed_rank:
+                    worst = [m for m in outcome.strictest.movement
+                             if cage_engine.RANK.get(m.verdict, 0) == computed_rank]
+                    named = "; ".join(
+                        f"{m.policy}: {', '.join(m.entries) or '(structural, no fixture moved)'} "
+                        f"via `{'; '.join(m.expressions) or 'n/a'}`"
+                        for m in worst
+                    )
+                    doc["outcome"] = {
+                        "result": "refused",
+                        "reason": (
+                            f"declared bump {legality.bump_class!r} is weaker than the computed bump "
+                            f"{outcome.strictest.computed_bump!r} (window: {outcome.base}) -- {named}"
+                        ),
+                    }
+                    doc["wall_clock"] = time.monotonic() - start
+                    doc["limits"] = coverage.compute_limits(doc["movement"])
+                    return doc
+                if declared_rank > computed_rank:
+                    doc["outcome"]["reason"] = (
+                        f"declared bump {legality.bump_class!r} is stronger than the computed bump "
+                        f"{outcome.strictest.computed_bump!r} (window: {outcome.base}) -- no movement required it"
+                    )
+            doc["wall_clock"] = time.monotonic() - start
+            doc["limits"] = coverage.compute_limits(doc["movement"])
+            return doc
+
         # cs-21: with a real prior subject tree to compare against, compute
         # the bump instead of only accepting the declared one -- the gate
         # measures the release rather than trusting the publisher's number.
@@ -288,7 +355,6 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                 doc["limits"] = coverage.compute_limits(doc["movement"])
                 return doc
 
-            pods = _corpus_pod_paths(repo.corpus_dir, manifest)
             result = cage_engine.classify_repo(repo.old_subject_dir, repo.subject_dir, pods)
             doc["bump"]["computed"] = result.computed_bump
             doc["movement"] = [m.as_dict() for m in result.movement]
@@ -666,6 +732,120 @@ def selfcheck() -> None:
     doc = run_gate(repo4, "1.1.0")
     assert doc["outcome"]["result"] == "passed", doc["outcome"]
 
+    # cs-24: the comparison window and the per-institution matrix, wired
+    # through the seam itself -- comparison_window.py's own selfcheck proves
+    # the module in isolation; these prove run_gate actually reaches it.
+    #
+    # `old_1_0_0` carries department-label at its ORIGINAL Audit body.
+    # `old_2_0_1` and `new_win` carry it already promoted to Deny (the real
+    # cs-01 major) plus the 2.0.1 addition -- IDENTICAL to each other, so
+    # comparing against the immediate predecessor (2.0.1) alone reports
+    # "none". 2.0.0 itself is a genuine GAP in the window (never supplied).
+    old_1_0_0 = Path(tempfile.mkdtemp())
+    (old_1_0_0 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-1.0.0.yaml").read_text())
+    old_2_0_1 = Path(tempfile.mkdtemp())
+    (old_2_0_1 / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-2.0.0.yaml").read_text())
+    (old_2_0_1 / "require-known-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "known-department-label-2.0.1.yaml").read_text())
+    new_win = subject_with(["2.0.1"]).subject_dir
+    (new_win / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-2.0.0.yaml").read_text())
+    (new_win / "require-known-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "known-department-label-2.0.1.yaml").read_text())
+    win_trees = {"1.0.0": old_1_0_0, "2.0.1": old_2_0_1}
+    corpus_win = Path(tempfile.mkdtemp())
+    manual_manifest(corpus_win, fixtures)
+
+    # A) comparing the WHOLE window (not just N-1) catches the major an
+    #    N-1-only comparison hides -- declared "major" agrees, so this PASSES,
+    #    whereas the N-1 view alone would have computed "none".
+    window_a = comparison_window.ComparisonWindow(
+        old_window=["1.0.0", "2.0.1"], new_window=["1.0.0", "2.0.1"],
+        subject_tree_for=lambda v: win_trees[v])
+    repo_a = RepoState(subject_dir=new_win, corpus_dir=corpus_win, window=window_a)
+    doc = run_gate(repo_a, "3.0.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+    assert doc["bump"] == {"declared": "major", "computed": "major"}, doc["bump"]
+    # both policies move against the 1.0.0 line: department-label's own real
+    # Audit->Deny promotion, and known-department-label newly added as Deny
+    # (it does not exist in the 1.0.0 tree at all) -- the N-1 (2.0.1) line
+    # alone would show neither, since both are already in place by 2.0.1.
+    assert {m["policy"] for m in doc["movement"]} == {
+        "require-department-label.yaml", "require-known-department-label.yaml",
+    }, doc["movement"]
+
+    # B) the SAME window, only `backport=True` differs, genuinely changes the
+    #    outcome: narrowed to the 2.0.1 line alone, computed drops to "none",
+    #    a "minor" declared bump now passes (stronger than computed, prints
+    #    the discrepancy) instead of the major refusal the full window forces.
+    window_b_full = comparison_window.ComparisonWindow(
+        old_window=["1.0.0", "2.0.1"], new_window=["1.0.0", "2.0.1"],
+        subject_tree_for=lambda v: win_trees[v])
+    doc_full = run_gate(RepoState(subject_dir=new_win, corpus_dir=corpus_win, window=window_b_full), "2.2.0")
+    assert doc_full["outcome"]["result"] == "refused", doc_full["outcome"]
+    assert doc_full["bump"] == {"declared": "minor", "computed": "major"}, doc_full["bump"]
+
+    window_b_backport = comparison_window.ComparisonWindow(
+        old_window=["1.0.0", "2.0.1"], new_window=["1.0.0", "2.0.1"],
+        subject_tree_for=lambda v: win_trees[v], backport=True)
+    doc_bp = run_gate(RepoState(subject_dir=new_win, corpus_dir=corpus_win, window=window_b_backport), "2.2.0")
+    assert doc_bp["outcome"]["result"] == "passed", doc_bp["outcome"]
+    assert doc_bp["bump"] == {"declared": "minor", "computed": "none"}, doc_bp["bump"]
+    assert doc_bp["outcome"]["reason"] is not None and "stronger" in doc_bp["outcome"]["reason"], doc_bp["outcome"]
+
+    # C) the per-institution matrix: driftwood (pinned at 1.0.0) sees the
+    #    major; tuppence and ludlow (pinned at 2.0.1) see none. The tagged
+    #    bump is still the strictest across the WHOLE window (major), with
+    #    the matrix published as the evidence beneath it -- not a separate
+    #    per-institution recomputation.
+    window_c = comparison_window.ComparisonWindow(
+        old_window=["1.0.0", "2.0.1"], new_window=["1.0.0", "2.0.1"],
+        subject_tree_for=lambda v: win_trees[v],
+        institution_pins={"driftwood": "1.0.0", "tuppence": "2.0.1", "ludlow": "2.0.1"},
+    )
+    doc_c = run_gate(RepoState(subject_dir=new_win, corpus_dir=corpus_win, window=window_c), "3.0.0")
+    assert doc_c["outcome"]["result"] == "passed", doc_c["outcome"]
+    assert doc_c["bump"]["computed"] == "major", doc_c["bump"]
+    assert set(doc_c["matrix"]) == {"driftwood", "tuppence", "ludlow"}, doc_c["matrix"]
+    assert doc_c["matrix"]["driftwood"]["computed_bump"] == "major", doc_c["matrix"]["driftwood"]
+    assert doc_c["matrix"]["tuppence"]["computed_bump"] == "none", doc_c["matrix"]["tuppence"]
+    assert doc_c["matrix"]["ludlow"]["computed_bump"] == "none", doc_c["matrix"]["ludlow"]
+
+    # D) retirement: an array-only release (identical policy body on both
+    #    sides -- proven directly, no fixture-setup lie) still classifies
+    #    major, because 1.0.0 drops out of `new_window` entirely.
+    same_old = Path(tempfile.mkdtemp())
+    (same_old / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-1.0.0.yaml").read_text())
+    same_new = subject_with(["1.0.0"]).subject_dir
+    (same_new / "require-department-label.yaml").write_text(
+        (rederive_bumps.CORPUS / "department-label-1.0.0.yaml").read_text())
+    corpus_d = Path(tempfile.mkdtemp())
+    manual_manifest(corpus_d, fixtures)
+    assert cage_engine.classify_repo(same_old, same_new, fixtures).computed_bump == "none", (
+        "fixture setup broken: the bodies must be identical for this to be a genuine array-only case"
+    )
+    window_d = comparison_window.ComparisonWindow(
+        old_window=["1.0.0"], new_window=[],  # 1.0.0 retired, replaced by nothing in the window
+        subject_tree_for=lambda v: same_old)
+    doc_d = run_gate(RepoState(subject_dir=same_new, corpus_dir=corpus_d, window=window_d), "2.0.0")
+    assert doc_d["outcome"]["result"] == "passed", doc_d["outcome"]
+    assert doc_d["bump"] == {"declared": "major", "computed": "major"}, doc_d["bump"]
+    assert "retired" in doc_d["movement"][0]["detail"], doc_d["movement"]
+
+    # E) first release: an empty window records NO_PREDECESSOR rather than a
+    #    computed "patch" dressed up from nothing, and coverage still runs in
+    #    full -- reusing the real generated spine already proved above
+    #    (`cov_subject`/`full_corpus`, cells == 3, one predicate x 3 states).
+    window_e = comparison_window.ComparisonWindow(old_window=[], new_window=[], subject_tree_for=lambda v: None)
+    doc_e = run_gate(RepoState(subject_dir=cov_subject, corpus_dir=full_corpus, window=window_e), "2.0.0")
+    assert doc_e["outcome"]["result"] == "passed", doc_e["outcome"]
+    assert doc_e["bump"] == {"declared": "major", "computed": comparison_window.NO_PREDECESSOR}, doc_e["bump"]
+    assert doc_e["coverage"]["cells"] == 3, doc_e["coverage"]
+    assert doc_e["coverage"]["pairs"] == len(full_entries), doc_e["coverage"]
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
@@ -687,7 +867,16 @@ def selfcheck() -> None:
         "state is genuinely unreached makes run_gate itself refuse and name "
         "the expression, and shrinking it so a witness's own shape goes "
         "missing makes run_gate itself refuse and name the witness -- both "
-        "proved through the seam, not just inside coverage.py/witness_set.py"
+        "proved through the seam, not just inside coverage.py/witness_set.py; "
+        "cs-24: comparing the whole window catches a major an N-1-only "
+        "comparison hides, with a genuine gap in the window tolerated; "
+        "backport=True genuinely narrows the outcome (a refusal under the "
+        "full window turns into a pass); the per-institution matrix lets "
+        "driftwood/tuppence/ludlow land at different bands while the tagged "
+        "bump stays the strictest across the window; an array-only "
+        "retirement classifies major on an otherwise byte-identical body, "
+        "proved identical first; a first release records NO_PREDECESSOR and "
+        "still runs coverage in full -- all proved through run_gate itself"
     )
 
 
