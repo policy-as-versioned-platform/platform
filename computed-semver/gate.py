@@ -84,7 +84,10 @@ def _parse_semver(v: str) -> tuple[int, int, int]:
     parts = v.split(".")
     if len(parts) != 3:
         raise ValueError(f"not a plain major.minor.patch version: {v!r}")
-    return tuple(int(p) for p in parts)  # type: ignore[return-value]
+    try:
+        return tuple(int(p) for p in parts)  # type: ignore[return-value]
+    except ValueError:
+        raise ValueError(f"not a plain major.minor.patch version: {v!r}") from None
 
 
 @dataclass
@@ -101,7 +104,10 @@ def check_version_legality(existing: list[str], declared: str) -> Legality:
     if declared in existing:
         return Legality(False, f"declared version {declared} already exists", None, None)
 
-    dv = _parse_semver(declared)
+    try:
+        dv = _parse_semver(declared)
+    except ValueError as e:
+        return Legality(False, str(e), None, None)
     lower = [v for v in existing if _parse_semver(v) < dv]
     base = max(lower, key=_parse_semver) if lower else None
     bv = _parse_semver(base) if base is not None else (0, 0, 0)
@@ -227,11 +233,22 @@ def selfcheck() -> None:
     ), legal
     assert check_version_legality(["1.0.0"], "3.0.0") == Legality(True, None, "1.0.0", "major")
 
+    # a malformed declared version refuses through the seam instead of
+    # crashing -- _parse_semver's ValueError is real user input (a publisher
+    # fat-fingering a tag), not a programming error, so run_gate must return
+    # a refused document, not raise.
+    repo = subject_with(["1.0.0"])
+    for bad in ("1.0", "1.0.a", "not-a-version"):
+        doc = run_gate(repo, bad)
+        assert doc["outcome"]["result"] == "refused", (bad, doc["outcome"])
+        assert "not a plain major.minor.patch version" in doc["outcome"]["reason"], doc["outcome"]
+        assert doc["bump"] == {"declared": None, "computed": None}, doc["bump"]
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
         "refuses; the real 2.1.1 refuses under reset-on-bump and names base "
-        "2.0.1"
+        "2.0.1; a malformed declared version refuses instead of crashing"
     )
 
 
