@@ -417,6 +417,20 @@ def selfcheck() -> None:
         assert not r.ok
         assert "1.0.0" in r.reason and "disagree" in r.reason, r.reason
 
+        # 9b. "The version array is part of the subject" (spec.md, "The
+        #     subject") -- a real subject_dir bundles versions.yaml
+        #     alongside the policy bodies (gate.py's RepoState.subject_dir,
+        #     ticket cs-18) in the SAME directory this module walks.
+        #     versions.yaml's bare `{versions: [...]}` carries no `kind`, so
+        #     it is skipped, not misread as a policy member with movement of
+        #     its own.
+        subj = td / "subject-with-array"
+        subj.mkdir()
+        (subj / "versions.yaml").write_text(yaml.safe_dump({"versions": ["1.0.0"]}))
+        (subj / "p.yaml").write_text(_policy_yaml("p-1-0-0", "posture", "1.0.0", ["x == 1"]))
+        members = parse_tree(subj)
+        assert [m.base_name for m in members] == ["p"], members
+
         # 10. render-orphan-guard.py's emitted policy carries the
         #     platform-machinery identity for real (not a hand-built fixture).
         og = corpus_generator._orphan_guard
