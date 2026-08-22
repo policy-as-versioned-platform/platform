@@ -53,8 +53,10 @@ import yaml
 
 import cage_engine
 import corpus_generator
+import coverage
 import pairing
 import rederive_bumps
+import witness_set
 
 HERE = Path(__file__).resolve().parent
 
@@ -160,6 +162,11 @@ def empty_document() -> dict:
         "generator_version": GENERATOR_VERSION,
         "corpus_checksum": None,
         "wall_clock": None,
+        # cs-23: cells/pairs are plain counts, never a percentage or a
+        # whole-space ratio (spec.md, "Coverage and evidence"). None until a
+        # real pairwise-generated spine exists to measure -- the same
+        # placeholder convention counts/corpus_checksum already use.
+        "coverage": {"cells": None, "pairs": None, "pairwise_gap": None},
         "not_looked_at": [],
         "limits": [],
         "matrix": {},
@@ -201,6 +208,10 @@ def run_gate(repo: RepoState, declared: str) -> dict:
     if not legality.legal:
         doc["outcome"] = {"result": "refused", "reason": legality.reason}
         doc["wall_clock"] = time.monotonic() - start
+        # cs-23: limits are derived, never omitted -- present even on the
+        # earliest possible refusal (spec.md: "the three named-open limits
+        # must always print").
+        doc["limits"] = coverage.compute_limits(doc["movement"])
         return doc
 
     # Legal version. Read the corpus manifest for counts/checksum (cs-19;
@@ -220,6 +231,47 @@ def run_gate(repo: RepoState, declared: str) -> dict:
         if "generator_version" in manifest:
             doc["generator_version"] = manifest["generator_version"]
 
+        # cs-23: coverage and its first binary gate -- an unreached
+        # predicate fails the build, naming the expression. Only applicable
+        # against a real pairwise-generated spine (coverage.evaluate's own
+        # guard); a hand-built historical manifest (no old_subject_dir case
+        # further below) is simply not applicable, same None-placeholder
+        # convention as counts/checksum above.
+        coverage_result = coverage.evaluate(repo.subject_dir, repo.corpus_dir, repo.old_subject_dir)
+        if coverage_result.applicable:
+            doc["coverage"] = {
+                "cells": coverage_result.cells,
+                "pairs": coverage_result.pairs,
+                "pairwise_gap": coverage_result.pairwise_gap,
+            }
+            doc["not_looked_at"] = coverage_result.not_looked_at
+
+            if coverage_result.build_failures:
+                doc["outcome"] = {
+                    "result": "refused",
+                    "reason": coverage.unreached_reason(coverage_result.build_failures),
+                }
+                doc["wall_clock"] = time.monotonic() - start
+                doc["limits"] = coverage.compute_limits(doc["movement"])
+                return doc
+
+            # cs-23's second binary gate, ticket 20's own check reused
+            # directly, never reimplemented: a witness shape absent from the
+            # generated spine fails the build.
+            missing = witness_set.check_witness_shapes(repo.subject_dir, repo.corpus_dir)
+            if missing:
+                named = "; ".join(f"{m.witness} ({m.kind})" for m in missing)
+                doc["outcome"] = {
+                    "result": "refused",
+                    "reason": (
+                        f"witness shape(s) missing from the generated spine, the repair is "
+                        f"always the generator -- {named}"
+                    ),
+                }
+                doc["wall_clock"] = time.monotonic() - start
+                doc["limits"] = coverage.compute_limits(doc["movement"])
+                return doc
+
         # cs-21: with a real prior subject tree to compare against, compute
         # the bump instead of only accepting the declared one -- the gate
         # measures the release rather than trusting the publisher's number.
@@ -233,6 +285,7 @@ def run_gate(repo: RepoState, declared: str) -> dict:
             if not pairing_check.ok:
                 doc["outcome"] = {"result": "refused", "reason": pairing_check.reason}
                 doc["wall_clock"] = time.monotonic() - start
+                doc["limits"] = coverage.compute_limits(doc["movement"])
                 return doc
 
             pods = _corpus_pod_paths(repo.corpus_dir, manifest)
@@ -261,6 +314,7 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                     ),
                 }
                 doc["wall_clock"] = time.monotonic() - start
+                doc["limits"] = coverage.compute_limits(doc["movement"])
                 return doc
             if declared_rank > computed_rank:
                 # A stronger declared bump still passes -- the gate never
@@ -272,6 +326,7 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                     f"{result.computed_bump!r} -- no movement required it"
                 )
     doc["wall_clock"] = time.monotonic() - start
+    doc["limits"] = coverage.compute_limits(doc["movement"])
     return doc
 
 
@@ -288,12 +343,18 @@ def selfcheck() -> None:
     doc = run_gate(repo, "1.1.0")
     assert set(doc) == {
         "outcome", "bump", "movement", "counts", "generator_version",
-        "corpus_checksum", "wall_clock", "not_looked_at", "limits", "matrix",
+        "corpus_checksum", "wall_clock", "coverage", "not_looked_at", "limits", "matrix",
     }, sorted(doc)
     assert doc["outcome"] == {"result": "passed", "reason": None}
     assert doc["bump"] == {"declared": "minor", "computed": None}
     assert doc["wall_clock"] is not None and doc["wall_clock"] >= 0
     assert doc["generator_version"] == GENERATOR_VERSION
+    assert doc["coverage"] == {"cells": None, "pairs": None, "pairwise_gap": None}, doc["coverage"]
+    # cs-23: the three named limits always print, even here -- no manifest,
+    # no movement, still all three, still never a percentage.
+    assert {l["name"] for l in doc["limits"]} == {
+        "cage-ratchet-one-way", "cage-removal-scores-patch", "cage-not-priced-residual",
+    }, doc["limits"]
 
     # a version gap (1.0.0 -> 3.0.0, nothing in between) is legal
     repo = subject_with(["1.0.0"])
@@ -309,9 +370,15 @@ def selfcheck() -> None:
     # every field still present on refusal, even placeholder ones
     assert set(doc) == {
         "outcome", "bump", "movement", "counts", "generator_version",
-        "corpus_checksum", "wall_clock", "not_looked_at", "limits", "matrix",
+        "corpus_checksum", "wall_clock", "coverage", "not_looked_at", "limits", "matrix",
     }
-    assert doc["movement"] == [] and doc["not_looked_at"] == [] and doc["limits"] == []
+    assert doc["movement"] == [] and doc["not_looked_at"] == []
+    # cs-23: limits are never omitted, not even here -- the three named ones
+    # still print, at whatever count applies with zero movement to look at.
+    assert {l["name"] for l in doc["limits"]} == {
+        "cage-ratchet-one-way", "cage-removal-scores-patch", "cage-not-priced-residual",
+    }, doc["limits"]
+    assert doc["coverage"] == {"cells": None, "pairs": None, "pairwise_gap": None}, doc["coverage"]
     assert doc["counts"] == {"old": None, "new": None, "union": None}
 
     # the historical release line: policy-as-versioned-flux/policy's real
@@ -372,6 +439,12 @@ def selfcheck() -> None:
     assert doc["counts"]["old"] is not None and doc["counts"]["union"] is not None, doc["counts"]
     assert doc["corpus_checksum"] is not None and doc["corpus_checksum"].startswith("sha256:"), doc["corpus_checksum"]
     assert doc["generator_version"] == corpus_generator.GENERATOR_VERSION
+    # cs-23: coverage surfaces too -- subject_dir here carries no policy
+    # files of its own (0 predicates), so cells is 0, never omitted or
+    # negative; pairs mirrors the real union count. No ratio anywhere.
+    assert doc["coverage"]["cells"] == 0, doc["coverage"]
+    assert doc["coverage"]["pairs"] == doc["counts"]["union"], doc["coverage"]
+    assert "pairwise" in doc["coverage"]["pairwise_gap"] and "%" not in doc["coverage"]["pairwise_gap"]
 
     # ... and when corpus_dir carries no manifest (the placeholder shape
     # every earlier case in this selfcheck uses), counts/checksum stay the
@@ -380,6 +453,64 @@ def selfcheck() -> None:
     doc = run_gate(repo, "1.1.0")
     assert doc["counts"] == {"old": None, "new": None, "union": None}, doc["counts"]
     assert doc["corpus_checksum"] is None
+
+    # cs-23's own required before/after proof, run through the SEAM itself
+    # (not just inside coverage.py/witness_set.py's own selfchecks): build a
+    # real subject + spine that passes cleanly, then shrink the spine and
+    # confirm each new gate actually refuses through run_gate.
+    def write_spine(entries, out_dir: Path) -> None:
+        spine_dir = out_dir / "spine"
+        spine_dir.mkdir(parents=True, exist_ok=True)
+        for e in entries:
+            (spine_dir / e.filename).write_text(yaml.safe_dump(e.pod, sort_keys=True))
+        man = {
+            "generator_version": corpus_generator.GENERATOR_VERSION,
+            "populations": {"generated-spine": {
+                "checksum": "sha256:selfcheck",
+                "counts": {"old": len(entries), "new": 0, "union": len(entries)},
+                "axes": ["predicate-expression", "version-pin", "tier-label"],
+                "combination": "pairwise",
+                "entries": [{"file": f"spine/{e.filename}", "source": e.source, "pair": e.pair} for e in entries],
+            }},
+        }
+        (out_dir / "manifest.yaml").write_text(yaml.safe_dump(man, sort_keys=False))
+
+    cov_subject = subject_with(["1.0.0"]).subject_dir
+    (cov_subject / "p.yaml").write_text(fixture)
+    full_entries = corpus_generator.generate_spine(cov_subject, inside_pin="1.0.0", source_tag="old")
+
+    full_corpus = Path(tempfile.mkdtemp())
+    write_spine(full_entries, full_corpus)
+    doc = run_gate(RepoState(subject_dir=cov_subject, corpus_dir=full_corpus), "1.1.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+    assert doc["coverage"]["cells"] == 3, doc["coverage"]  # 1 predicate x 3 states
+    assert doc["coverage"]["pairs"] == len(full_entries), doc["coverage"]
+
+    # gate 1: drop every entry that puts has-team into "violated" -- that
+    # cell becomes genuinely unreached, undeclared (no exclusions file entry
+    # names it) -- run_gate must now refuse and name the expression.
+    shrunk = [e for e in full_entries if "has-team@violated" not in e.axis_detail]
+    assert len(shrunk) < len(full_entries), "fixture setup broken: nothing dropped"
+    shrunk_corpus = Path(tempfile.mkdtemp())
+    write_spine(shrunk, shrunk_corpus)
+    doc = run_gate(RepoState(subject_dir=cov_subject, corpus_dir=shrunk_corpus), "1.1.0")
+    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert "labels['team']" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+    assert "violated" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+
+    # gate 2: drop every pin=outside entry -- has-team's own 3 states stay
+    # reached via pin=inside (expr-tier is pin=inside by construction, so
+    # gate 1 stays quiet), but every rederive-fixture witness (none carry a
+    # version-pin label at all, so all classify pin_inside=False) loses its
+    # only matching shape from the spine -- run_gate must refuse and name a
+    # witness.
+    no_outside = [e for e in full_entries if "pin=outside" not in e.axis_detail]
+    assert len(no_outside) < len(full_entries)
+    no_outside_corpus = Path(tempfile.mkdtemp())
+    write_spine(no_outside, no_outside_corpus)
+    doc = run_gate(RepoState(subject_dir=cov_subject, corpus_dir=no_outside_corpus), "1.1.0")
+    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert "witness shape" in doc["outcome"]["reason"], doc["outcome"]["reason"]
 
     # cs-21: the computed bump, wired through the seam. A hand-built manifest
     # pointing straight at rederive_bumps.ALL_FIXTURES -- corpus_generator's
@@ -550,7 +681,13 @@ def selfcheck() -> None:
         "discrepancy; the declared number is never rewritten; cs-22: movement "
         "traced to an unversioned member refuses through the seam itself and "
         "names the file, while a platform-machinery member's movement does "
-        "not block the gate"
+        "not block the gate; cs-23: coverage (cells/pairs, never a "
+        "percentage) surfaces into the document; the three named limits "
+        "always print; shrinking a real generated spine so a predicate's "
+        "state is genuinely unreached makes run_gate itself refuse and name "
+        "the expression, and shrinking it so a witness's own shape goes "
+        "missing makes run_gate itself refuse and name the witness -- both "
+        "proved through the seam, not just inside coverage.py/witness_set.py"
     )
 
 

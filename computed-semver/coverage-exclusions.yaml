@@ -1,0 +1,26 @@
+# coverage-exclusions.yaml -- ticket cs-23: human-declared coverage holes.
+#
+# A DECLARED HOLE is a predicate/state cell the gate cannot prove is
+# unreachable but a human is asserting is out of scope for now -- it prints
+# in the evidence document's not_looked_at[] forever, never silently, until
+# a human removes the entry here (which is honestly reported as "closed").
+#
+# This file can only ADD a declared hole. There is no field here that can
+# promote one to a PROVED exclusion -- proved exclusions are computed by
+# coverage.py's own static_proof, from the expression's own text, never from
+# anything written in this file. Only these four keys are ever read:
+#
+#   - identity:   the policy-as-versioned.dev/policy family label, or null
+#                 for an unversioned/unlabelled member.
+#   - name:       the policy's metadata.name with its version slug stripped
+#                 (pairing.strip_version's own output).
+#   - expression: the matchConditions/validations CEL text, verbatim.
+#   - reason:     why a human is declaring this a hole right now.
+#
+# Any other key (a "proved: true", a "tier: proved_exclusion", or anything
+# else) is simply never looked at by the loader -- writing one here has no
+# effect and cannot promote an entry.
+#
+# Empty today: every predicate expression the real mandatory-member subject
+# carries is genuinely, honestly reached (see coverage.py's own selfcheck).
+declared_holes: []

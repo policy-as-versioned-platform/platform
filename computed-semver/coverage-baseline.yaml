@@ -1,0 +1,10 @@
+# coverage-baseline.yaml -- ticket cs-23: last accepted not_looked_at[]
+# state, out-of-band (like generated-corpus/, this is a committed artifact
+# a separate step regenerates -- run `coverage.py --update-baseline` --
+# never something run_gate itself writes).
+#
+# Diffing the current run's not_looked_at entries against this file is how
+# each entry gets marked new / carried_over / closed. Empty today: the real
+# subject carries no declared holes or proved exclusions (see coverage.py's
+# own selfcheck for the honest, empirical proof).
+{}
