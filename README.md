@@ -34,13 +34,22 @@ standing outside the apparatus it ships.
 
 ## Releases (ticket mo-10)
 
-A release is a signed, semver git tag, cut by
-[`cut-release.yml`](.github/workflows/cut-release.yml)
-(`workflow_dispatch`, `version` + `message` inputs). The tag is gitsign-signed
-keyless, using the workflow run's own GitHub Actions identity — no browser
-login, no long-lived key. [`release.yml`](.github/workflows/release.yml) then
-verifies that signature identity-pinned (the expected signer, not just "a
-valid signature exists") against an offline Rekor bundle, runs
+A release is one or more signed, semver git tags on one commit, cut by
+[`cut-release.yml`](.github/workflows/cut-release.yml) (`workflow_dispatch`).
+Two dispatch forms, exactly one per run: the single-tag legacy form
+(`version` + `message` inputs) still works unchanged; a `tags` input (a JSON
+array of `{"tag","message"}` objects) cuts several tags off the same commit
+in one dispatch — ticket cs-13, needed for a repair release that publishes
+platform `1.0.0`, policy `1.0.2` and policy `2.0.1` from a single commit. The
+existing-tag refusal runs for every tag before any tag is created, and every
+tag is pushed in one atomic `git push` — either all of them land or none do.
+Each tag is gitsign-signed keyless, using the workflow run's own GitHub
+Actions identity — no browser login, no long-lived key. The list handling,
+refusal, signing and push live in `.github/scripts/cut-release-*`, with an
+offline twin at [`verify-cut-release-tags.sh`](verify-cut-release-tags.sh).
+[`release.yml`](.github/workflows/release.yml) then verifies that signature
+identity-pinned (the expected signer, not just "a valid signature exists")
+against an offline Rekor bundle, runs
 [`shift-left/verify-shift-left.sh`](shift-left/verify-shift-left.sh) as the
 release gate, and publishes a GitHub Release.
 

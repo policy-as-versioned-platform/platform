@@ -1,8 +1,20 @@
 name: cut-release
 
-# Ticket mo-10 (policy-as-versioned-flux). Creates a gitsign-signed, semver
-# git tag and pushes it -- the ONLY way a release starts (git push, never the
-# git-data REST API: see the hub repo's enact_guard.py governance rule).
+# Ticket mo-10 (policy-as-versioned-flux). Creates one or more gitsign-signed,
+# semver git tags on the current commit and pushes them -- the ONLY way a
+# release starts (git push, never the git-data REST API: see the hub repo's
+# enact_guard.py governance rule).
+#
+# cs-13: this workflow carries a LIST of tags in one dispatch now, not just
+# one -- a named change, not a silent one. The repair release cuts three tags
+# (platform 1.0.0, policy 1.0.2, policy 2.0.1) off a single commit; see
+# spec.md, "The repair release". Two dispatch forms, exactly one per run:
+#   - single-tag (unchanged, still works for existing callers): `version` + `message`
+#   - multi-tag (new): `tags`, a JSON array of {"tag","message"} objects
+# The list handling, the existing-tag refusal, tag creation and the push
+# live in .github/scripts/cut-release-*.sh/py, shared with this repo's
+# offline twin (verify-cut-release-tags.sh) so the tested code path IS the
+# shipped one.
 #
 # Signs keyless via this run's own GitHub Actions identity, not a human
 # Google/Microsoft identity: gitsign auto-detects the Actions ambient
@@ -22,11 +34,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "semver tag to cut, e.g. v1.0.0"
-        required: true
+        description: "single-tag form: semver tag to cut, e.g. v1.0.0 (omit if using `tags`)"
+        required: false
       message:
-        description: "annotated tag message -- what changed and why"
-        required: true
+        description: "single-tag form: annotated tag message -- what changed and why (omit if using `tags`)"
+        required: false
+      tags:
+        description: 'multi-tag form: JSON array of {"tag":"vX.Y.Z","message":"..."} objects, all cut on this commit (omit if using `version`/`message`)'
+        required: false
 
 permissions:
   contents: write
@@ -51,21 +66,24 @@ jobs:
           echo "${GITSIGN_SHA256}  gitsign" | sha256sum -c -
           chmod +x gitsign && sudo mv gitsign /usr/local/bin/gitsign
 
-      - name: reject a tag that already exists (no force-move, ever)
+      - name: normalize the single-tag or multi-tag dispatch into tags.json
+        # Inputs go through `env:`, not interpolated straight into the run
+        # script text, so a tag/message containing shell metacharacters
+        # can't do anything but sit in a JSON string.
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          MESSAGE_INPUT: ${{ inputs.message }}
+          TAGS_INPUT: ${{ inputs.tags }}
         run: |
           set -euo pipefail
-          if git rev-parse "refs/tags/${{ inputs.version }}" >/dev/null 2>&1; then
-            echo "FAIL: ${{ inputs.version }} already exists -- tags are immutable here, cut a new version" >&2
-            exit 1
-          fi
+          python3 .github/scripts/cut-release-normalize.py > tags.json
+          cat tags.json
 
-      - name: create the signed annotated tag (ambient Actions identity, no interactive login)
-        run: |
-          set -euo pipefail
-          git -c gpg.format=x509 -c gpg.x509.program=gitsign \
-            -c user.name="policy-as-versioned release bot" \
-            -c user.email="releases@${GITHUB_REPOSITORY_OWNER}.invalid" \
-            tag -s "${{ inputs.version }}" -m "${{ inputs.message }}"
+      - name: refuse any tag that already exists -- checked for EVERY tag before ANY tag is created
+        run: ./.github/scripts/cut-release-refuse-existing.sh tags.json
 
-      - name: push the tag (git push only -- never the git-data REST API)
-        run: git push origin "${{ inputs.version }}"
+      - name: create the signed annotated tags (ambient Actions identity, no interactive login)
+        run: ./.github/scripts/cut-release-create-tags.sh tags.json
+
+      - name: push every tag in one atomic push (git push only -- never the git-data REST API)
+        run: ./.github/scripts/cut-release-push.sh tags.json origin
