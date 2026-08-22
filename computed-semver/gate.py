@@ -51,13 +51,15 @@ from pathlib import Path
 
 import yaml
 
+import corpus_generator
+
 HERE = Path(__file__).resolve().parent
 
-# The generator's own version. Bumped by hand when this module's logic
-# changes. It is not part of the subject, so it cannot itself bump a policy
-# version (spec.md, "The corpus": "The generator is versioned and is not
-# part of the subject").
-GENERATOR_VERSION = "0.1.0"
+# cs-19: the corpus generator owns its own version -- it is not part of the
+# subject, so it cannot itself bump a policy version (spec.md, "The corpus":
+# "The generator is versioned and is not part of the subject"). Re-exported
+# here so existing callers of gate.GENERATOR_VERSION keep working.
+GENERATOR_VERSION = corpus_generator.GENERATOR_VERSION
 
 COMPONENTS = ("major", "minor", "patch")
 
@@ -148,6 +150,20 @@ def empty_document() -> dict:
     }
 
 
+def _read_corpus_manifest(corpus_dir: Path) -> dict | None:
+    """cs-19: if corpus_dir holds a generated manifest
+    (corpus_generator.build_manifest's output), surface its counts and
+    checksum into the evidence document -- "a reviewer sees the entry count,
+    the checksum and the wall-clock in the evidence document" (spec.md, "The
+    corpus"). Absent (e.g. ticket 18's placeholder corpus-unused dirs, or a
+    corpus_dir that hasn't been generated into yet) -> the caller's
+    placeholder fields stay None, no regression from before this ticket."""
+    manifest_file = corpus_dir / "manifest.yaml"
+    if not manifest_file.exists():
+        return None
+    return yaml.safe_load(manifest_file.read_text())
+
+
 def run_gate(repo: RepoState, declared: str) -> dict:
     """The one seam. Repository state + declared version -> the evidence
     document. Every field of `empty_document()` is present on every return,
@@ -164,10 +180,21 @@ def run_gate(repo: RepoState, declared: str) -> dict:
         doc["wall_clock"] = time.monotonic() - start
         return doc
 
-    # Legal version. Nothing past this point is built yet (movement, counts,
-    # coverage, the matrix -- tickets 19+); this ticket's scope is the shape
-    # and the version-legality rule, not full computation.
+    # Legal version. Movement, coverage and the matrix are still tickets
+    # 20+'s job -- this ticket (cs-19) only wires in the corpus generator's
+    # own counts/checksum, when a manifest has already been generated into
+    # repo.corpus_dir (generation itself is a separate, out-of-band step --
+    # see corpus_generator.py -- so the gate only reads, never regenerates).
     doc["outcome"] = {"result": "passed", "reason": None}
+    manifest = _read_corpus_manifest(repo.corpus_dir)
+    if manifest is not None:
+        spine = manifest.get("populations", {}).get("generated-spine", {})
+        if "counts" in spine:
+            doc["counts"] = spine["counts"]
+        if "checksum" in spine:
+            doc["corpus_checksum"] = spine["checksum"]
+        if "generator_version" in manifest:
+            doc["generator_version"] = manifest["generator_version"]
     doc["wall_clock"] = time.monotonic() - start
     return doc
 
@@ -244,11 +271,47 @@ def selfcheck() -> None:
         assert "not a plain major.minor.patch version" in doc["outcome"]["reason"], doc["outcome"]
         assert doc["bump"] == {"declared": None, "computed": None}, doc["bump"]
 
+    # cs-19: when corpus_dir already holds a generated manifest, run_gate
+    # surfaces its counts/checksum into the document -- "a reviewer sees the
+    # entry count, the checksum and the wall-clock in the evidence document."
+    fixture = (
+        "apiVersion: policies.kyverno.io/v1alpha1\n"
+        "kind: ValidatingPolicy\n"
+        "metadata: {name: p}\n"
+        "spec:\n"
+        "  validationActions: [Audit]\n"
+        "  matchConditions:\n"
+        "    - name: has-team\n"
+        "      expression: \"object.metadata.?labels['team'].orValue('') != ''\"\n"
+    )
+    old_dir = Path(tempfile.mkdtemp())
+    new_dir = Path(tempfile.mkdtemp())
+    corpus_dir = Path(tempfile.mkdtemp())
+    (old_dir / "p.yaml").write_text(fixture)
+    (new_dir / "p.yaml").write_text(fixture)
+    corpus_generator.build_manifest(old_dir, new_dir, inside_pin="1.0.0", out_dir=corpus_dir)
+    repo = RepoState(subject_dir=subject_with(["1.0.0"]).subject_dir, corpus_dir=corpus_dir)
+    doc = run_gate(repo, "1.1.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+    assert doc["counts"]["old"] is not None and doc["counts"]["union"] is not None, doc["counts"]
+    assert doc["corpus_checksum"] is not None and doc["corpus_checksum"].startswith("sha256:"), doc["corpus_checksum"]
+    assert doc["generator_version"] == corpus_generator.GENERATOR_VERSION
+
+    # ... and when corpus_dir carries no manifest (the placeholder shape
+    # every earlier case in this selfcheck uses), counts/checksum stay the
+    # None placeholder -- no regression from before this ticket.
+    repo = subject_with(["1.0.0"])
+    doc = run_gate(repo, "1.1.0")
+    assert doc["counts"] == {"old": None, "new": None, "union": None}, doc["counts"]
+    assert doc["corpus_checksum"] is None
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
         "refuses; the real 2.1.1 refuses under reset-on-bump and names base "
-        "2.0.1; a malformed declared version refuses instead of crashing"
+        "2.0.1; a malformed declared version refuses instead of crashing; a "
+        "generated corpus manifest surfaces counts/checksum/generator_version "
+        "into the document, and their absence leaves the None placeholder"
     )
 
 
