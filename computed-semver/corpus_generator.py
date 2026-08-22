@@ -57,7 +57,7 @@ DISTRIBUTION = REPO / "distribution"
 
 # Bumped by hand when this module's own logic changes. Not part of the
 # subject, so it cannot itself bump a policy version (spec.md, "The corpus").
-GENERATOR_VERSION = "0.1.0"
+GENERATOR_VERSION = "0.1.1"
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
@@ -197,6 +197,80 @@ def _container_bool_probe(field: str, want: str) -> Probe:
     )
 
 
+def _pin_label_probe(value: str, op: str) -> Probe:
+    """PIN_LABEL is also the field the version-pin axis itself sets (build()
+    writes pin_choice's value there before applying any expr probe). A
+    predicate that reads PIN_LABEL -- cage-tier's claims-a-policy-version,
+    and every rendered policy's own only-this-policy-version self-scope
+    matchCondition -- would, via the generic _label_probe, blindly overwrite
+    that same key to a value derived from its own literal, clobbering
+    pin_choice and collapsing the expr x pin cross for exactly the
+    predicates the pin axis exists to exercise (AC2, AC4; "so the orphan
+    guard is exercised"). This variant composes with whatever pin_choice
+    already wrote instead of ignoring it, wherever CEL leaves room to:
+
+      satisfied(!= ''): pin_choice's write (inside_pin or OUTSIDE_PIN) is
+      already nonempty, so it already satisfies -- leave it alone.
+
+      violated(== ''): '' has two distinct byte-level encodings that both
+      make `.orValue('')` yield '' -- an explicit empty string, or the key
+      missing outright. Picked by pin_choice's write so the two pin choices
+      stay visibly distinct even though the CEL truth value can't.
+
+      satisfied(== value): exactly one string satisfies a literal equality
+      -- `value` itself, which is always a real, in-array version. There is
+      no valid "outside" representative; pin_choice cannot vary this one,
+      and that collapse is correct, not a bug -- only ever one value.
+
+      violated(== value): any string other than `value` violates it -- an
+      inside-flavoured near-miss, or OUTSIDE_PIN itself (already a genuine
+      non-member) for an outside-flavoured one.
+
+      absent (either op): there is exactly one way to have no label at all,
+      so both pin choices collapse to it -- honestly, since with no label
+      there is nothing left for "inside" or "outside" to describe.
+    """
+
+    def _current(pod: dict) -> str:
+        return pod.get("metadata", {}).get("labels", {}).get(PIN_LABEL, "")
+
+    if op == "!=":
+        def satisfied(pod: dict) -> None:
+            if _current(pod) == "":
+                _set_label(pod, PIN_LABEL, "probe-value")
+
+        def violated(pod: dict) -> None:
+            if _current(pod) == OUTSIDE_PIN:
+                _del_label(pod, PIN_LABEL)
+            else:
+                _set_label(pod, PIN_LABEL, "")
+
+        return Probe(
+            satisfied=satisfied,
+            violated=violated,
+            absent=lambda pod: _del_label(pod, PIN_LABEL),
+        )
+
+    else:  # "=="
+        def violated(pod: dict, v=value) -> None:
+            if _current(pod) == OUTSIDE_PIN:
+                # Bare OUTSIDE_PIN is exactly what pin_choice already wrote
+                # with no override at all -- reusing it verbatim would
+                # collide with every other cell that also leaves PIN_LABEL
+                # untouched at "outside". A suffixed variant still reads as
+                # outside-the-array (never a real version) but stays this
+                # cell's own.
+                _set_label(pod, PIN_LABEL, OUTSIDE_PIN + "~violated")
+            else:
+                _set_label(pod, PIN_LABEL, v + "~violated")
+
+        return Probe(
+            satisfied=lambda pod, v=value: _set_label(pod, PIN_LABEL, v),
+            violated=violated,
+            absent=lambda pod: _del_label(pod, PIN_LABEL),
+        )
+
+
 def _posture_equals_claim_probe() -> Probe:
     """posture-trust-boundary's `variables.posture == variables.claimed` --
     not a single-field predicate, so it doesn't match the generic shapes.
@@ -232,6 +306,10 @@ def probe_for(pred: Predicate) -> Probe:
         return _spec_bool_probe(m["field"], m["want"])
     m = _LABEL_RE.search(pred.expression)
     if m:
+        if m["key"] == PIN_LABEL:
+            # The predicate reads the same label the pin axis writes --
+            # _label_probe would clobber pin_choice's value (AC2/AC4).
+            return _pin_label_probe(m["value"], m["op"])
         return _label_probe(m["key"], m["value"], m["op"])
     raise ValueError(
         f"no probe shape recognized for {pred.policy}:{pred.location}:{pred.name}: "
@@ -427,6 +505,24 @@ spec:
       expression: "object.metadata.?labels['legacy'].orValue('') == 'yes'"
 """
 
+# Exercises the real-world collision the generic fixtures above never do:
+# a matchCondition that reads PIN_LABEL itself, the same label the pin axis
+# sets -- the shape of cage-tier's claims-a-policy-version (`!=`) and every
+# rendered policy's own-version self-scope matchCondition (`==`).
+_FIXTURE_PIN = """\
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: fixture-pin
+spec:
+  validationActions: [Audit]
+  matchConditions:
+    - name: claims-a-policy-version
+      expression: "object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''"
+    - name: only-this-fixture-version
+      expression: "object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '9.9.9'"
+"""
+
 _FIXTURE_UNPROBEABLE = """\
 apiVersion: policies.kyverno.io/v1alpha1
 kind: ValidatingPolicy
@@ -534,7 +630,50 @@ def selfcheck() -> None:
         m2 = {k: v for k, v in manifest2.items() if k != "wall_clock"}
         assert m1 == m2, "regenerating identical subjects must be byte-identical (minus wall_clock)"
 
-    # 9. an unrecognized predicate shape fails loud, never silently
+    # 9. a predicate that reads PIN_LABEL itself does not clobber pin_choice
+    # (AC2/AC4): the expr x pin cross for it must still vary between
+    # pin=inside and pin=outside wherever the CEL truth value leaves room
+    # to. The generic fixtures above never exercise this -- neither 'team'
+    # nor 'legacy' collides with PIN_LABEL -- which is exactly why the real
+    # collision (cage-tier's claims-a-policy-version, every rendered
+    # policy's own-version self-scope matchCondition) shipped untested.
+    pin_dir = Path(tempfile.mkdtemp())
+    (pin_dir / "fixture-pin.yaml").write_text(_FIXTURE_PIN)
+    # inside_pin deliberately != the fixture's own literal ('9.9.9') -- the
+    # same mismatch main() has for real between old_v and the new_v it
+    # passes as inside_pin, so this fixture also catches an unrelated
+    # predicate's satisfied-pin=inside pod coincidentally colliding with
+    # this one's.
+    pin_entries = generate_spine(pin_dir, inside_pin="1.2.3", source_tag="old")
+    pin_expr_pin = [e for e in pin_entries if e.pair == "expr-pin"]
+    by_cell: dict[str, set[str]] = {}
+    for e in pin_expr_pin:
+        cell = e.axis_detail.split(" pin=")[0]
+        by_cell.setdefault(cell, set()).add(e.pod["metadata"]["labels"].get(PIN_LABEL, "<absent>"))
+    # claims-a-policy-version (!=): satisfied and violated both have two
+    # valid byte-level encodings, and pin_choice must pick between them.
+    assert len(by_cell["fixture-pin.yaml:claims-a-policy-version@satisfied"]) == 2, by_cell
+    assert len(by_cell["fixture-pin.yaml:claims-a-policy-version@violated"]) == 2, by_cell
+    # only-this-fixture-version (==): violated has two valid encodings;
+    # satisfied has exactly one (the literal itself) -- that collapse is
+    # correct, not a regression, so it is asserted as == 1, not left mute.
+    assert len(by_cell["fixture-pin.yaml:only-this-fixture-version@violated"]) == 2, by_cell
+    # Cells with exactly one valid byte-level representation (satisfied for
+    # a literal equality; absent, either op -- there is exactly one way to
+    # have no label at all) collapse to <= 1 survivor honestly: either its
+    # single representative made it into the spine, or an equally-valid
+    # equivalent cell elsewhere in this same tiny fixture already claimed
+    # the identical content first and content-hash dedup (by design) kept
+    # only one. Either way that is not a distinctness violation, so these
+    # are asserted as <= 1, not required to be present.
+    for cell in (
+        "fixture-pin.yaml:only-this-fixture-version@satisfied",
+        "fixture-pin.yaml:claims-a-policy-version@absent",
+        "fixture-pin.yaml:only-this-fixture-version@absent",
+    ):
+        assert len(by_cell.get(cell, set())) <= 1, (cell, by_cell)
+
+    # 10. an unrecognized predicate shape fails loud, never silently
     bad_dir = Path(tempfile.mkdtemp())
     (bad_dir / "weird.yaml").write_text(_FIXTURE_UNPROBEABLE)
     try:
