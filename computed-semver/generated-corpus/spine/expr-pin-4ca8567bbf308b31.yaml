@@ -9,5 +9,5 @@ spec:
   containers:
   - image: nginx:1.25
     name: app
-    securityContext:
-      runAsNonRoot: true
+  securityContext:
+    runAsNonRoot: true

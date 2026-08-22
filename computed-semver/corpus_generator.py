@@ -27,8 +27,14 @@ manifest.
 **An entry is a plain pod.** No band, no residual, no claim metadata -- a
 residual for an infrastructure workload would manufacture the assertion the
 corpus exists to prevent. Claim source (which subject produced an entry, and
-which axis pair) lives only in the manifest, keyed under a `populations` dict
-so ticket 20's witness set can add a sibling key without restructuring.
+which axis pair) lives only in the manifest, keyed under a `populations`
+dict. Ticket 20's witness set turned out not to fit as a sibling key here
+after all -- a witness entry is a per-name provenance record (shape,
+presence, missing-real-infra status), not an aggregate-with-checksum like
+`generated-spine`, so forcing it into this dict would have been the
+restructuring this shape was meant to avoid. It lives instead in its own
+generated-corpus/witness-manifest.yaml (witness_set.build_witness_manifest);
+this manifest's shape and CLI are exactly what ticket 19 left them.
 
 **No size ceiling anywhere.** The entry count and the wall-clock are
 published in the manifest instead -- a ceiling truncates silently.
@@ -57,7 +63,7 @@ DISTRIBUTION = REPO / "distribution"
 
 # Bumped by hand when this module's own logic changes. Not part of the
 # subject, so it cannot itself bump a policy version (spec.md, "The corpus").
-GENERATOR_VERSION = "0.1.1"
+GENERATOR_VERSION = "0.1.2"
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
@@ -132,7 +138,17 @@ _LABEL_RE = re.compile(
     r"(?P<op>!=|==)\s*'(?P<value>[^']*)'"
 )
 _CONTAINER_BOOL_RE = re.compile(
-    r"c\.\?securityContext\.\?(?P<field>\w+)\.orValue\((?P<default>true|false)\)\s*==\s*(?P<want>true|false)"
+    # cs-20 fix: an un-anchored `c\.` spuriously matched the "c" that ends
+    # "...spec.?securityContext...", misclassifying the POD-level
+    # require-nonroot predicate as a per-CONTAINER one -- probe_for then
+    # wrote satisfied/violated into containers[0].securityContext instead of
+    # spec.securityContext, so the "satisfied" pods it built for that
+    # predicate actually FAILED the real policy under `kyverno apply` (found
+    # while building cs-20's witness-shape classifier, which mirrors this
+    # regex to read a real pod's state back). The negative lookbehind
+    # requires `c` to start a CEL lambda parameter (preceded by `(`, `,` or
+    # whitespace, or string start) rather than end an unrelated identifier.
+    r"(?<![\w.])c\.\?securityContext\.\?(?P<field>\w+)\.orValue\((?P<default>true|false)\)\s*==\s*(?P<want>true|false)"
 )
 _SPEC_BOOL_RE = re.compile(
     r"object\.spec\.\?securityContext\.\?(?P<field>\w+)\.orValue\((?P<default>true|false)\)\s*==\s*(?P<want>true|false)"
@@ -435,9 +451,9 @@ def build_manifest(old_subject_dir: Path, new_subject_dir: Path, inside_pin: str
         "generator_version": GENERATOR_VERSION,
         "wall_clock": time.monotonic() - start,  # measured; nothing anywhere enforces a ceiling on it
         "populations": {
-            # ticket 20 adds a sibling key here (the witness set: five
-            # rederive fixtures + six real unlabelled workloads) -- same
-            # shape, no restructuring.
+            # Ticket 20's witness set lives in its own
+            # generated-corpus/witness-manifest.yaml, not here -- see the
+            # module docstring for why a sibling key was dropped.
             "generated-spine": {
                 "checksum": f"sha256:{checksum}",
                 "counts": {
@@ -600,15 +616,17 @@ def selfcheck() -> None:
 
     # 8. the manifest: checksum, per-population entry counts, generator
     # version, wall-clock (measured, never asserted against a ceiling), and
-    # provenance keyed by population so ticket 20 can add a sibling witness
-    # set without restructuring.
+    # provenance keyed by population. Ticket 20's witness set lives in its
+    # own witness-manifest.yaml instead of a sibling key here (module
+    # docstring); this manifest stays exactly ticket 19's single population.
     with tempfile.TemporaryDirectory() as td:
         out_dir = Path(td)
         manifest = build_manifest(old_dir, new_dir, inside_pin="1.0.0", out_dir=out_dir)
         assert manifest["generator_version"] == GENERATOR_VERSION
         assert isinstance(manifest["wall_clock"], float) and manifest["wall_clock"] >= 0
         assert set(manifest["populations"]) == {"generated-spine"}, (
-            "populations is keyed by witness/population name -- ticket 20 adds a sibling key here"
+            "populations is keyed by population name -- generated-spine is the only one; "
+            "ticket 20's witness set is a separate manifest file, see module docstring"
         )
         spine = manifest["populations"]["generated-spine"]
         assert spine["checksum"].startswith("sha256:")
