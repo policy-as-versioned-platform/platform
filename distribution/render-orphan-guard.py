@@ -25,6 +25,15 @@ import yaml
 HERE = Path(__file__).resolve().parent
 LABEL = "policy-as-versioned.dev/policy-version"
 
+# cs-22: the identity FAMILY label (never the version-pin label above). The
+# orphan guard has no per-policy version of its own -- it is numbered by the
+# platform release tag, not a policy tag -- so it is legitimately unversioned.
+# `platform-machinery` is a real label value the pairing rule
+# (computed-semver/pairing.py) recognises as a CLASS, exactly like any other
+# identity family, never as a name-based exclusion.
+IDENTITY_LABEL = "policy-as-versioned.dev/policy"
+IDENTITY = "platform-machinery"
+
 
 def versions(path: Path, retire: str | None = None) -> list[str]:
     """The declared version array — the single source of truth."""
@@ -44,7 +53,10 @@ def orphan_guard(allowed: list[str]) -> dict:
     return {
         "apiVersion": "policies.kyverno.io/v1alpha1",
         "kind": "ValidatingPolicy",
-        "metadata": {"name": "policy-version-orphan-guard"},
+        "metadata": {
+            "name": "policy-version-orphan-guard",
+            "labels": {IDENTITY_LABEL: IDENTITY},
+        },
         "spec": {
             "validationActions": ["Deny"],
             "matchConstraints": {
@@ -78,6 +90,9 @@ def selfcheck() -> None:
     # allow-list is exactly the array — no drift
     og = orphan_guard(vs)
     assert og["spec"]["variables"][0]["expression"] == "['1.0.0', '2.0.0']"
+    # cs-22: carries the platform-machinery identity, so the pairing rule
+    # recognises it as a class rather than needing a by-name exclusion.
+    assert og["metadata"]["labels"][IDENTITY_LABEL] == IDENTITY, og["metadata"]
     # retiring a version drops it from the allow-list
     assert versions(HERE / "versions.yaml", retire="2.0.0") == ["1.0.0"]
     assert orphan_guard(["1.0.0"])["spec"]["variables"][0]["expression"] == "['1.0.0']"

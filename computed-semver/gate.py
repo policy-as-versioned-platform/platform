@@ -53,6 +53,7 @@ import yaml
 
 import cage_engine
 import corpus_generator
+import pairing
 import rederive_bumps
 
 HERE = Path(__file__).resolve().parent
@@ -223,6 +224,17 @@ def run_gate(repo: RepoState, declared: str) -> dict:
         # the bump instead of only accepting the declared one -- the gate
         # measures the release rather than trusting the publisher's number.
         if repo.old_subject_dir is not None:
+            # cs-22: pair old against new correctly before trusting ANY
+            # computed bump out of it -- "a wrong pairing produces a
+            # confident wrong bump." Refuses and names the file on movement
+            # traced to an unversioned member, on two trees disagreeing over
+            # the same declared version, per pairing.py's own docstring.
+            pairing_check = pairing.check_pairing(repo.old_subject_dir, repo.subject_dir)
+            if not pairing_check.ok:
+                doc["outcome"] = {"result": "refused", "reason": pairing_check.reason}
+                doc["wall_clock"] = time.monotonic() - start
+                return doc
+
             pods = _corpus_pod_paths(repo.corpus_dir, manifest)
             result = cage_engine.classify_repo(repo.old_subject_dir, repo.subject_dir, pods)
             doc["bump"]["computed"] = result.computed_bump
@@ -480,6 +492,49 @@ def selfcheck() -> None:
     assert doc["outcome"]["reason"] is not None
     assert "major" in doc["outcome"]["reason"] and "minor" in doc["outcome"]["reason"], doc["outcome"]["reason"]
 
+    # cs-22: pairing is wired into the seam itself, not just its own module.
+    # Movement traced to an unversioned member refuses through run_gate and
+    # names the file -- before cage_engine ever runs, so this needs no
+    # kyverno CLI.
+    old_dir3 = Path(tempfile.mkdtemp())
+    new_dir3 = subject_with(["1.0.0"]).subject_dir
+    (old_dir3 / "labeled.yaml").write_text(pairing._policy_yaml(
+        "labeled-1-0-0", "posture", "1.0.0", ["x == 1"]))
+    (new_dir3 / "labeled.yaml").write_text(pairing._policy_yaml(
+        "labeled-1-0-0", "posture", "1.0.0", ["x == 1"]))
+    (old_dir3 / "rogue.yaml").write_text(pairing._policy_yaml(
+        "rogue", None, None, ["y == 1"]))
+    (new_dir3 / "rogue.yaml").write_text(pairing._policy_yaml(
+        "rogue", None, None, ["y == 2"]))  # real movement, no identity, no version
+    corpus3 = Path(tempfile.mkdtemp())
+    manual_manifest(corpus3, fixtures)
+    repo3 = RepoState(subject_dir=new_dir3, corpus_dir=corpus3, old_subject_dir=old_dir3)
+    doc = run_gate(repo3, "1.1.0")
+    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert "rogue.yaml" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+    assert "unversioned" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+
+    # ... but a platform-machinery member's movement does not block the
+    # gate -- it is numbered by the platform release tag, not a
+    # policy-version label. A MutatingPolicy with no `dial` variable is
+    # skipped by cage_engine (ticket cs-21's own modeled-kinds rule), so
+    # this needs no kyverno CLI either -- purely proving the PAIRING
+    # decision passes it through.
+    old_dir4 = Path(tempfile.mkdtemp())
+    new_dir4 = subject_with(["1.0.0"]).subject_dir
+    for d, allowed in ((old_dir4, "['1.0.0']"), (new_dir4, "['1.0.0', '2.0.0']")):
+        (d / "orphan-guard.yaml").write_text(yaml.safe_dump({
+            "apiVersion": "policies.kyverno.io/v1alpha1", "kind": "MutatingPolicy",
+            "metadata": {"name": "policy-version-orphan-guard",
+                         "labels": {pairing.IDENTITY_LABEL: pairing.PLATFORM_MACHINERY}},
+            "spec": {"matchConditions": [{"name": "n", "expression": f"'1.0.0' in {allowed}"}]},
+        }, sort_keys=False))
+    corpus4 = Path(tempfile.mkdtemp())
+    manual_manifest(corpus4, fixtures)
+    repo4 = RepoState(subject_dir=new_dir4, corpus_dir=corpus4, old_subject_dir=old_dir4)
+    doc = run_gate(repo4, "1.1.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
@@ -492,7 +547,10 @@ def selfcheck() -> None:
         "a declared bump weaker than computed refuses, naming the moved "
         "corpus entries and the CEL expression in one sentence with no "
         "viability language; a stronger declared bump passes and prints the "
-        "discrepancy; the declared number is never rewritten"
+        "discrepancy; the declared number is never rewritten; cs-22: movement "
+        "traced to an unversioned member refuses through the seam itself and "
+        "names the file, while a platform-machinery member's movement does "
+        "not block the gate"
     )
 
 
