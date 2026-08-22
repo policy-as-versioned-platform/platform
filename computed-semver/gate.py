@@ -57,6 +57,7 @@ import corpus_generator
 import coverage
 import pairing
 import rederive_bumps
+import release_integrity
 import witness_set
 
 HERE = Path(__file__).resolve().parent
@@ -95,11 +96,18 @@ class RepoState:
     single-predecessor path); when None, run_gate falls back to
     `old_subject_dir`'s single-tree comparison exactly as before this
     ticket -- no regression for cs-21/cs-22 callers that never wire a
-    window."""
+    window.
+
+    `release` -- cs-26: the four extra structural gate rules' inputs
+    (release_integrity.ReleaseIntegrity) -- the frozen-tree check, the
+    re-render check, the mandatory-member check and the empty-commit check.
+    Optional and defaults to None: no regression for any RepoState built by
+    tickets 18-24, which never wire this."""
     subject_dir: Path
     corpus_dir: Path
     old_subject_dir: Path | None = None
     window: comparison_window.ComparisonWindow | None = None
+    release: release_integrity.ReleaseIntegrity | None = None
 
 
 def existing_versions(subject_dir: Path) -> list[str]:
@@ -231,6 +239,20 @@ def run_gate(repo: RepoState, declared: str) -> dict:
     # subject tree, when one is available (cs-21). The coverage matrix
     # remains later tickets' job.
     doc["outcome"] = {"result": "passed", "reason": None}
+
+    # cs-26: the four extra structural gate rules -- frozen-tree, re-render,
+    # mandatory-member, empty-commit. Runs before movement/coverage: none of
+    # those are trustworthy if the release artefacts themselves are not what
+    # they claim to be. Only when a caller wires release_integrity in (no
+    # regression for tickets 18-24's RepoStates, which never do).
+    if repo.release is not None:
+        release_reason = release_integrity.refusal(repo.release, declared)
+        if release_reason is not None:
+            doc["outcome"] = {"result": "refused", "reason": release_reason}
+            doc["wall_clock"] = time.monotonic() - start
+            doc["limits"] = coverage.compute_limits(doc["movement"])
+            return doc
+
     manifest = _read_corpus_manifest(repo.corpus_dir)
     if manifest is not None:
         spine = manifest.get("populations", {}).get("generated-spine", {})
@@ -846,6 +868,70 @@ def selfcheck() -> None:
     assert doc_e["coverage"]["cells"] == 3, doc_e["coverage"]
     assert doc_e["coverage"]["pairs"] == len(full_entries), doc_e["coverage"]
 
+    # cs-26: the four extra structural gate rules, wired through the SEAM
+    # itself (run_gate), not just inside release_integrity.py's own
+    # selfcheck -- proves RepoState.release actually reaches run_gate, and
+    # that a RepoState without it (every case above) is unaffected.
+    import subprocess as _sp
+
+    def _git26(repo: Path, *args: str) -> None:
+        _sp.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
+                 env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                      "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                      "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"})
+
+    cs26_repo = Path(tempfile.mkdtemp())
+    _git26(cs26_repo, "init", "-q")
+    cs26_policies = cs26_repo / "distribution" / "policies"
+    cs26_v1 = cs26_policies / "v1.0.0"
+    cs26_v1.mkdir(parents=True)
+    for fname, text in release_integrity.corpus_generator._version_tree.render_tree("1.0.0").items():
+        (cs26_v1 / fname).write_text(text)
+    _git26(cs26_repo, "add", "-A")
+    _git26(cs26_repo, "commit", "-q", "-m", "release 1.0.0")
+    _git26(cs26_repo, "tag", "policy/v1.0.0")
+
+    cs26_v2 = cs26_policies / "v2.0.0"
+    cs26_v2.mkdir(parents=True)
+    for fname, text in release_integrity.corpus_generator._version_tree.render_tree("2.0.0").items():
+        (cs26_v2 / fname).write_text(text)
+
+    cs26_release = release_integrity.ReleaseIntegrity(
+        git_repo=cs26_repo, policies_dir=cs26_policies,
+        prior_versions={"1.0.0": "policy/v1.0.0"},
+        version_array=[{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": "abc123"}],
+    )
+    cs26_subject = subject_with(["1.0.0"]).subject_dir
+    cs26_repo_state = RepoState(subject_dir=cs26_subject, corpus_dir=cs26_subject / "corpus-unused",
+                                 release=cs26_release)
+
+    # clean: passes, exactly like a RepoState with no `release` wired
+    doc26 = run_gate(cs26_repo_state, "2.0.0")
+    assert doc26["outcome"]["result"] == "passed", doc26["outcome"]
+
+    # rule 1 through the seam: hand-edit the ALREADY-RELEASED 1.0.0 tree at HEAD
+    (cs26_v1 / "cage-netpol.yaml").write_text("hand-edited\n")
+    doc26 = run_gate(cs26_repo_state, "2.0.0")
+    assert doc26["outcome"]["result"] == "refused", doc26["outcome"]
+    assert "1.0.0" in doc26["outcome"]["reason"] and "policy/v1.0.0" in doc26["outcome"]["reason"], doc26["outcome"]
+    for fname, text in release_integrity.corpus_generator._version_tree.render_tree("1.0.0").items():
+        (cs26_v1 / fname).write_text(text)  # restore
+    assert run_gate(cs26_repo_state, "2.0.0")["outcome"]["result"] == "passed"
+
+    # rule 4 through the seam: empty the commit on an already-released element
+    cs26_release_bad_commit = release_integrity.ReleaseIntegrity(
+        git_repo=cs26_repo, policies_dir=cs26_policies,
+        prior_versions={"1.0.0": "policy/v1.0.0"},
+        version_array=[{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": ""}],
+    )
+    doc26 = run_gate(
+        RepoState(subject_dir=cs26_subject, corpus_dir=cs26_subject / "corpus-unused",
+                  release=cs26_release_bad_commit),
+        "2.0.0",
+    )
+    assert doc26["outcome"]["result"] == "refused", doc26["outcome"]
+    assert "commit" in doc26["outcome"]["reason"] and "1.0.0" in doc26["outcome"]["reason"], doc26["outcome"]
+
     print(
         "selfcheck ok: every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
@@ -876,7 +962,12 @@ def selfcheck() -> None:
         "bump stays the strictest across the window; an array-only "
         "retirement classifies major on an otherwise byte-identical body, "
         "proved identical first; a first release records NO_PREDECESSOR and "
-        "still runs coverage in full -- all proved through run_gate itself"
+        "still runs coverage in full -- all proved through run_gate itself; "
+        "cs-26: a RepoState with no `release` wired is unaffected; wiring "
+        "one in and hand-editing an already-released tree's HEAD copy "
+        "refuses through run_gate itself and names the version and its real "
+        "tag; emptying an already-released array element's commit field "
+        "refuses through run_gate itself too, naming only that version"
     )
 
 

@@ -35,11 +35,18 @@ IDENTITY_LABEL = "policy-as-versioned.dev/policy"
 IDENTITY = "platform-machinery"
 
 
+def elements(path: Path) -> list[dict]:
+    """The declared version array's raw elements — version, tag, commit and
+    all. The one parse point `versions()` below reuses, and cs-26's
+    empty-commit gate rule reuses too (computed-semver/release_integrity.py)
+    — nothing else re-parses versions.yaml for the array's own shape."""
+    doc = yaml.safe_load(path.read_text())
+    return doc["spec"]["inputs"][0]["versions"]
+
+
 def versions(path: Path, retire: str | None = None) -> list[str]:
     """The declared version array — the single source of truth."""
-    doc = yaml.safe_load(path.read_text())
-    arr = doc["spec"]["inputs"][0]["versions"]
-    return [v["version"] for v in arr if v["version"] != retire]
+    return [v["version"] for v in elements(path) if v["version"] != retire]
 
 
 def orphan_guard(allowed: list[str]) -> dict:
@@ -87,6 +94,11 @@ def orphan_guard(allowed: list[str]) -> dict:
 def selfcheck() -> None:
     vs = versions(HERE / "versions.yaml")
     assert vs == ["1.0.0", "2.0.0"], vs
+    # elements() carries the raw dicts (commit field and all) versions()
+    # itself is built from -- one parse point, not two.
+    els = elements(HERE / "versions.yaml")
+    assert [e["version"] for e in els] == vs, els
+    assert all("commit" in e for e in els), els
     # allow-list is exactly the array — no drift
     og = orphan_guard(vs)
     assert og["spec"]["variables"][0]["expression"] == "['1.0.0', '2.0.0']"
