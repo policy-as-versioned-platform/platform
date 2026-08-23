@@ -22,11 +22,14 @@
 # for real, not padding.
 #
 # Part B proves the WIRING: cut-release-gate.py's own tag-set parsing
-# (policy tags gated, a platform's own `v*` tag skipped), the
-# commit-before-tag order, and refusal blocking both the commit and the
-# tag -- against a real (if throwaway) git clone of this repo, so
-# `distribution/versions.yaml`'s real array and real `policy/v*` tag history
-# are genuinely read, not mocked.
+# (policy tags gated, a platform's own `v*` tag skipped), the two-commit
+# (evidence, then array-correction) order before the tag, refusal blocking
+# every commit and the tag, and -- B3 -- that versions.yaml's `commit` field
+# for the cut version ends up naming the evidence commit exactly, the tag's
+# resolved commit's direct parent, never the tag's own commit and never the
+# stale pre-dispatch value -- against a real (if throwaway) git clone of
+# this repo, so `distribution/versions.yaml`'s real array and real
+# `policy/v*` tag history are genuinely read, not mocked.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch="$(mktemp -d)"
@@ -137,7 +140,7 @@ grep -q "not this gate's subject, skipped" b2.out || fail "B2: expected the skip
 echo "ok  B2: platform's own tag skipped outright, no evidence, no error"
 
 echo
-echo "B3. a real, legal, first-release (empty predecessor window) policy tag passes end to end -- gate, then a real commit BEFORE a real tag"
+echo "B3. a real, legal, first-release (empty predecessor window) policy tag passes end to end -- gate, then TWO real commits BEFORE a real tag"
 python3 - <<'PY'
 import sys
 sys.path.insert(0, "distribution")
@@ -183,15 +186,44 @@ assert d['bump']['computed']=='no predecessor', d['bump']"
 ./.github/scripts/cut-release-commit-evidence.sh tags-b3.json
 after_commit_head=$(git rev-parse HEAD)
 [ "$after_commit_head" != "$before_tag_head" ] || fail "B3: no new commit landed for the evidence"
+# after_commit_head is commit A (the evidence commit) -- it is NOT tree_sha
+# (the commit that rendered the tree, and the value versions.yaml's `commit`
+# field carried going INTO this dispatch). This is exactly the disagreement
+# an adversarial review found: left uncorrected, the array would go on
+# naming tree_sha for ever while the eventual tag resolves somewhere later.
+[ "$after_commit_head" != "$tree_sha" ] || fail "B3: evidence commit unexpectedly equals the tree-render commit -- test no longer isolates the bug this ticket fixes"
+
+./.github/scripts/cut-release-update-array-commit.sh tags-b3.json
+after_array_commit_head=$(git rev-parse HEAD)
+[ "$after_array_commit_head" != "$after_commit_head" ] || fail "B3: no new commit landed for the versions.yaml array update"
+[ "$(git rev-parse "${after_array_commit_head}^")" = "$after_commit_head" ] || fail "B3: the array-update commit is not the evidence commit's direct child"
+
 ./.github/scripts/cut-release-create-tags.sh tags-b3.json
 tag_commit=$(git rev-parse refs/tags/policy/v9.0.0^{commit})
-[ "$tag_commit" = "$after_commit_head" ] || fail "B3: tag does not resolve to the evidence commit ($tag_commit != $after_commit_head)"
-git show --stat "$after_commit_head" | grep -q "computed-semver/evidence/9.0.0.json" || fail "B3: evidence file not in the commit the tag points at"
-echo "ok  B3: gate passed for real, evidence committed BEFORE the tag, and the tag resolves to that exact commit"
+[ "$tag_commit" = "$after_array_commit_head" ] || fail "B3: tag does not resolve to the array-update commit ($tag_commit != $after_array_commit_head)"
+git show --stat "$after_commit_head" | grep -q "computed-semver/evidence/9.0.0.json" || fail "B3: evidence file not in the evidence commit"
+
+# THE invariant ticket 28's adopter gate (and cs-15's own acceptance
+# criterion) needs to hold forever: versions.yaml's `commit` field for the
+# cut version equals the EVIDENCE commit's real SHA (commit A) -- one commit
+# BEHIND the tag it actually resolves to (commit B) -- and commit A is
+# commit B's direct parent, so "the array's commit field" and "the tag's
+# resolved commit" relate by exactly one well-defined, documented hop, never
+# by accident and never by disagreement.
+recorded_commit=$(python3 -c "
+import yaml
+doc = yaml.safe_load(open('distribution/versions.yaml').read())
+els = {e['version']: e['commit'] for e in doc['spec']['inputs'][0]['versions']}
+print(els['9.0.0'])
+")
+[ "$recorded_commit" = "$after_commit_head" ] || fail "B3: versions.yaml commit field ($recorded_commit) != the evidence commit ($after_commit_head)"
+[ "$recorded_commit" != "$tag_commit" ] || fail "B3: versions.yaml commit field equals the tag's resolved commit -- should be its parent (one commit behind), not the same commit"
+echo "ok  B3: gate passed for real; evidence committed (A), then versions.yaml's commit field corrected to A in a second commit (B); the tag resolves to B, and versions.yaml's commit field for 9.0.0 equals A -- B's direct parent, one commit behind the tag, on purpose"
 
 echo
 echo "PASS: run_gate() refuses a real declared bump weaker than the real computed one and passes"
 echo "a legal-or-stronger one, against the real v2.0.0/v3.0.0 predecessor; cut-release-gate.py's"
 echo "wiring skips a platform-only tag, refuses cleanly with no commit and no tag when a policy"
-echo "tag's tree is missing, and -- on a real pass -- commits the signed evidence before creating"
-echo "the tag, which then resolves to that exact commit."
+echo "tag's tree is missing, and -- on a real pass -- commits the signed evidence, then commits a"
+echo "correction pointing versions.yaml's commit field at that evidence commit, and only then tags"
+echo "-- so the tag resolves to the array-update commit, one ahead of the commit the array names."

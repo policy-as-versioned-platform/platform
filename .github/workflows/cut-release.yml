@@ -41,6 +41,15 @@ name: cut-release
 # docstring for the one thing that flag touches (signing mechanics only,
 # never the verdict).
 #
+# On a pass this is now TWO commits, not one, before the tag:
+# cut-release-commit-evidence.sh's evidence commit, then
+# cut-release-update-array-commit.sh's own commit pointing
+# distribution/versions.yaml's array element(s) at that evidence commit's
+# real SHA. Two commits because one commit cannot carry its own SHA (the
+# same reason cs-15's release commit message gives for the same problem) --
+# the tag lands on the second commit, one ahead of the commit the array
+# names, on purpose.
+#
 # workflow_dispatch only, on purpose: this is a release-cutting ACT, not a
 # standing recurring automation.
 
@@ -135,6 +144,18 @@ jobs:
         # step failing stops the job, so a refusal never reaches this step.
         # A no-op when this dispatch cut no policy tags at all.
         run: ./.github/scripts/cut-release-commit-evidence.sh tags.json
+
+      - name: point versions.yaml's commit field(s) at the evidence commit, in a second commit
+        # cs-27: a commit cannot carry its own SHA (cs-15's own rule for this
+        # exact class of problem), so this is deliberately a SECOND commit,
+        # not folded into the one above -- it points distribution/versions.yaml's
+        # array element(s) for the version(s) this dispatch cuts at the real,
+        # now-known SHA of the evidence commit just made. The tag below lands
+        # on THIS commit, one ahead of the evidence commit the array names --
+        # see cut-release-update-array-commit.sh's own header for why that
+        # one-commit gap is correct, not a bug. A no-op when this dispatch cut
+        # no policy tags at all.
+        run: ./.github/scripts/cut-release-update-array-commit.sh tags.json
 
       - name: create the signed annotated tags (ambient Actions identity, no interactive login)
         run: ./.github/scripts/cut-release-create-tags.sh tags.json
