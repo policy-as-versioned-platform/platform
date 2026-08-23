@@ -96,8 +96,21 @@ fi
 grep -q "either .tags. or .version." both.err || fail "wrong error: $(cat both.err)"
 echo "ok: mixed dispatch refused"
 
+say "6. cs-27: every mis-shaped policy tag is refused here, before any tag exists -- not silently ungated"
+for bad in 'Policy/v3.0.0' 'POLICY/v3.0.0' 'policy/V3.0.0' 'policy//v3.0.0' ' policy/v3.0.0' 'policy/v3.0.0 ' 'policy/v3.0'; do
+  if VERSION_INPUT="" MESSAGE_INPUT="" \
+    TAGS_INPUT="$(jq -nc --arg t "$bad" '[{"tag":$t,"message":"m"}]')" \
+    python3 "$scripts/cut-release-normalize.py" >bad.out 2>bad.err; then
+    fail "normalize should have refused mis-shaped tag $(printf '%q' "$bad"), got: $(cat bad.out)"
+  fi
+  grep -q "not a legal shape" bad.err || fail "wrong error for $(printf '%q' "$bad"): $(cat bad.err)"
+done
+echo "ok: every case/slash/whitespace variant of a policy tag refused before any tag was created"
+
 echo
 echo "PASS: single-tag legacy form works, multi-tag dispatch cuts every tag"
 echo "on the same commit, the existing-tag refusal runs for every tag before"
-echo "any tag is created, and a failed atomic push leaves nothing on the"
-echo "remote."
+echo "any tag is created, a failed atomic push leaves nothing on the"
+echo "remote, and a mis-shaped policy tag (wrong case, stray slash or"
+echo "whitespace) is refused at normalize time -- it can never reach"
+echo "cut-release-gate.py's skip branch and get pushed ungated."

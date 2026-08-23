@@ -11,7 +11,7 @@
 #     the map's provenance is a transparency-log entry. That happens at `git commit`
 #     time (the wave-commit step), not here.
 #
-# ponytail: reuses ../feeds/sign.sh's key + shape rather than a new trust root --
+# ponytail: reuses ../feeds/keys' key file rather than a new trust root --
 # the Wardley layer is platform-published, same publisher as the reactive feeds.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

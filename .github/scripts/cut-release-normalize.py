@@ -9,10 +9,25 @@ Exactly one dispatch form is accepted:
 Reads from the environment (not argv/stdin containing raw `${{ inputs.* }}`
 text) so the workflow can pass attacker-influenced input safely, via `env:`,
 rather than interpolating it into a shell command line.
+
+cs-27: every tag is also checked here against the only two legal shapes --
+`v<semver>` (platform's own line, cs-07's subject) or `policy/v<semver>`
+(cs-27's publisher-gate subject, cut-release-gate.py's own POLICY_TAG_RE).
+This is the one seam every entry passes through before
+cut-release-refuse-existing.sh, cut-release-gate.py, cut-release-create-tags.sh
+and cut-release-push.sh ever see it, so it is the one place a shape check
+closes the gap for all four: a tag that is neither shape -- wrong case,
+extra/missing slash, leading/trailing whitespace, anything else -- fails the
+whole dispatch here, before any tag exists, rather than silently falling
+through cut-release-gate.py's `POLICY_TAG_RE.match` as "not this gate's
+subject, skipped" and reaching `git tag`/`git push` with no gate run at all.
 """
 import json
 import os
+import re
 import sys
+
+TAG_RE = re.compile(r"^(v\d+\.\d+\.\d+|policy/v\d+\.\d+\.\d+)$")
 
 
 def fail(msg: str) -> None:
@@ -50,6 +65,10 @@ def main() -> None:
     for e in entries:
         if not isinstance(e, dict) or not e.get("tag") or not e.get("message"):
             fail(f"every entry needs both tag and message: {e}")
+            return
+        if not TAG_RE.match(e["tag"]):
+            fail(f"tag {e['tag']!r} is not a legal shape -- must be exactly "
+                 f"vX.Y.Z or policy/vX.Y.Z (case-sensitive, no stray whitespace/slashes)")
             return
         if e["tag"] in seen:
             fail(f"tag {e['tag']} listed more than once in one dispatch")
