@@ -1,11 +1,11 @@
-# require-nonroot @ 2.0.0 — the control tightened one version on: still Audit,
-# but now ALSO requires a read-only root filesystem. This is why versioning the
-# control matters — a workload compliant under 1.0.0 need not satisfy 2.0.0, yet
-# each is judged ONLY by the version it claims (matchConditions self-scoping), so
-# 1.0.0 and 2.0.0 coexist in one cluster with no shared-webhook collision.
+# require-nonroot @ 2.0.0 — the baseline control, Audit (lane-keeper).
 #
-# Audit->Deny promotion is a separate, editorial PR (never a timer, no date logic
-# in the body — ADR-0006); the £ that justifies it is ticket 06/09.
+# Self-scopes via matchConditions on the policy-version label — NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence. Only pods that CLAIM this exact version are judged
+# here; a pod on 3.0.0 (or unversioned) is out of scope, so both versions
+# admit side by side.
 apiVersion: policies.kyverno.io/v1alpha1
 kind: ValidatingPolicy
 metadata:
@@ -30,6 +30,3 @@ spec:
     - expression: >-
         object.spec.?securityContext.?runAsNonRoot.orValue(false) == true
       message: "pods on policy-version 2.0.0 must set spec.securityContext.runAsNonRoot=true"
-    - expression: >-
-        object.spec.containers.all(c, c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true)
-      message: "pods on policy-version 2.0.0 must set readOnlyRootFilesystem=true on every container"

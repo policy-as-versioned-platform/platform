@@ -1,0 +1,43 @@
+# Self-scopes via matchConditions on the policy-version label -- NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: MutatingPolicy
+metadata:
+  name: cage-tier-3-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 3.0.0
+spec:
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+  matchConditions:
+  - name: claims-a-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
+  - name: only-this-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '3.0.0'
+  variables:
+  - name: rawTier
+    expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')
+  - name: tier
+    expression: 'variables.rawTier in [''baseline'', ''restricted'', ''quarantine''] ? variables.rawTier : ''baseline'''
+  - name: dial
+    expression: "{'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline-3-0-0',  'harden':'false','wafCpu':'0',   'wafMem':'0'},\n 'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted-3-0-0','harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},\n 'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine-3-0-0','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: "Object{\n  metadata: Object.metadata{ labels: {\"posture.acme.io/caged\": \"true\"} },\n  spec: Object.spec{\n    priorityClassName: variables.dial.pc,\n    containers: object.spec.containers.map(c, Object.spec.containers{\n      name: c.name,\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.cpu, \"memory\": variables.dial.mem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true',\n        runAsNonRoot: variables.dial.harden == 'true',\n        allowPrivilegeEscalation: false\n      }\n    }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{\n      name: \"waf-sidecar\",\n      image: \"ghcr.io/acme/coraza-waf:cage\",\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.wafCpu, \"memory\": variables.dial.wafMem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: true, runAsNonRoot: true, allowPrivilegeEscalation: false\n      }\n    }] : [])\n  }\n}"
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: "variables.dial.harden == 'true'\n  ? object.spec.containers.map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/containers/\" + string(object.spec.containers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
