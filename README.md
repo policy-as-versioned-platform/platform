@@ -40,7 +40,9 @@ Two dispatch forms, exactly one per run: the single-tag legacy form
 (`version` + `message` inputs) still works unchanged; a `tags` input (a JSON
 array of `{"tag","message"}` objects) cuts several tags off the same commit
 in one dispatch — ticket cs-13, needed for a repair release that publishes
-platform `1.0.0`, policy `1.0.2` and policy `2.0.1` from a single commit. The
+platform `1.0.0`, policy `2.0.0` and policy `3.0.0` from a single commit (an
+honest MAJOR renumbering off each line's own nominal start — see cs-15's
+release commit). The
 existing-tag refusal runs for every tag before any tag is created, and every
 tag is pushed in one atomic `git push` — either all of them land or none do.
 Each tag is gitsign-signed keyless, using the workflow run's own GitHub

@@ -11,9 +11,13 @@ pinned, signed dependency; they never author it.
 
 ```yaml
 versions:
-  - { version: "1.0.0", tag: "policy/v1.0.0", commit: "", action: "Audit" }
-  - { version: "2.0.0", tag: "policy/v2.0.0", commit: "", action: "Audit" }
+  - { version: "2.0.0", tag: "policy/v2.0.0", commit: "<resolved sha>" }
+  - { version: "3.0.0", tag: "policy/v3.0.0", commit: "<resolved sha>" }
 ```
+
+(cs-15: no `action` field any more — nothing read it, `validationActions`
+inside each policy body is the copy admission actually consults; and no
+`commit` field is ever left empty — cs-26's gate refuses that.)
 
 Ranged once in `resourcesTemplate`, it fans out — and, because flux-operator
 renders resources *once per input element* (with `range` only over fields

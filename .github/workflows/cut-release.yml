@@ -7,8 +7,10 @@ name: cut-release
 #
 # cs-13: this workflow carries a LIST of tags in one dispatch now, not just
 # one -- a named change, not a silent one. The repair release cuts three tags
-# (platform 1.0.0, policy 1.0.2, policy 2.0.1) off a single commit; see
-# spec.md, "The repair release". Two dispatch forms, exactly one per run:
+# (platform 1.0.0, policy 2.0.0, policy 3.0.0) off a single commit; see
+# spec.md, "The repair release", and cs-15's release commit for why those two
+# policy numbers (an honest MAJOR renumbering, not the ticket's original
+# 1.0.2/2.0.1). Two dispatch forms, exactly one per run:
 #   - single-tag (unchanged, still works for existing callers): `version` + `message`
 #   - multi-tag (new): `tags`, a JSON array of {"tag","message"} objects
 # The list handling, the existing-tag refusal, tag creation and the push

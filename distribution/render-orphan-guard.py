@@ -91,9 +91,17 @@ def orphan_guard(allowed: list[str]) -> dict:
     }
 
 
+def _allow_expr(vs: list[str]) -> str:
+    return "[" + ", ".join(f"'{v}'" for v in vs) + "]"
+
+
 def selfcheck() -> None:
+    # Asserts derive from whatever versions.yaml currently declares, not a
+    # hardcoded literal -- the array grows and shrinks over real releases
+    # (cs-15 replaced 1.0.0/2.0.0 with 2.0.0/3.0.0), and this selfcheck must
+    # not need editing on every one.
     vs = versions(HERE / "versions.yaml")
-    assert vs == ["1.0.0", "2.0.0"], vs
+    assert len(vs) >= 2, f"expected at least the two founding versions, got {vs}"
     # elements() carries the raw dicts (commit field and all) versions()
     # itself is built from -- one parse point, not two.
     els = elements(HERE / "versions.yaml")
@@ -101,17 +109,24 @@ def selfcheck() -> None:
     assert all("commit" in e for e in els), els
     # allow-list is exactly the array — no drift
     og = orphan_guard(vs)
-    assert og["spec"]["variables"][0]["expression"] == "['1.0.0', '2.0.0']"
+    assert og["spec"]["variables"][0]["expression"] == _allow_expr(vs)
     # cs-22: carries the platform-machinery identity, so the pairing rule
     # recognises it as a class rather than needing a by-name exclusion.
     assert og["metadata"]["labels"][IDENTITY_LABEL] == IDENTITY, og["metadata"]
     # retiring a version drops it from the allow-list
-    assert versions(HERE / "versions.yaml", retire="2.0.0") == ["1.0.0"]
-    assert orphan_guard(["1.0.0"])["spec"]["variables"][0]["expression"] == "['1.0.0']"
-    # the rendered dirs on disk match the array (the fan-out cannot orphan a dir)
-    dirs = sorted(p.name[1:] for p in (HERE / "policies").glob("v*") if p.is_dir())
-    assert dirs == vs, f"policies/ dirs {dirs} != array {vs}"
-    print("selfcheck ok: allow-list == array == policies/ dirs; retire drops a version")
+    retired = vs[-1]
+    remaining = versions(HERE / "versions.yaml", retire=retired)
+    assert remaining == [v for v in vs if v != retired], remaining
+    assert orphan_guard(remaining)["spec"]["variables"][0]["expression"] == _allow_expr(remaining)
+    # every declared version has a rendered dir (the fan-out cannot orphan a
+    # dir the array still points at). NOT the other direction: cs-15 retired
+    # 1.0.0/2.0.0 from the array while deliberately leaving their rendered
+    # dirs on disk as historical/reference trees (nothing a tag ever pointed
+    # at, per that release's own reasoning) -- extra dirs the array no
+    # longer names are harmless and honest, only a MISSING one is a bug.
+    dirs = {p.name[1:] for p in (HERE / "policies").glob("v*") if p.is_dir()}
+    assert set(vs) <= dirs, f"array {vs} names a version with no policies/ dir, got dirs {sorted(dirs)}"
+    print("selfcheck ok: allow-list == array; every array version has a policies/ dir; retire drops a version")
 
 
 def main(argv: list[str]) -> int:

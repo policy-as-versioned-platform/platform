@@ -565,7 +565,14 @@ def selfcheck() -> None:
 
     cov_subject = subject_with(["1.0.0"]).subject_dir
     (cov_subject / "p.yaml").write_text(fixture)
-    full_entries = corpus_generator.generate_spine(cov_subject, inside_pin="1.0.0", source_tag="old")
+    # inside_pin must actually BE inside the real, live distribution/versions.yaml
+    # array -- witness_set.check_witness_shapes (called through run_gate below)
+    # classifies pin_inside against that real array, not against subject_with's
+    # own synthetic legality window above. A hardcoded "1.0.0" here would drift
+    # the moment the real array's shape changes (cs-15 replaced 1.0.0/2.0.0 with
+    # 2.0.0/3.0.0), silently breaking the gate-1/gate-2 refusal checks below.
+    real_inside_pin = corpus_generator._orphan_guard.versions(corpus_generator.DISTRIBUTION / "versions.yaml")[0]
+    full_entries = corpus_generator.generate_spine(cov_subject, inside_pin=real_inside_pin, source_tag="old")
 
     full_corpus = Path(tempfile.mkdtemp())
     write_spine(full_entries, full_corpus)

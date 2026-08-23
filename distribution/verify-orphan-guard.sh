@@ -13,18 +13,27 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-say "1. render the orphan-guard from the version array (declares 1.0.0, 2.0.0)"
+declared_version="$(python3 -c "
+import importlib.util
+from pathlib import Path
+here = Path('$HERE')
+spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
+og = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(og)
+print(og.versions(here / 'versions.yaml')[0])
+")"
+say "1. render the orphan-guard from the version array (declares $declared_version, ...)"
 python3 "$HERE/render-orphan-guard.py" > "$WORK/orphan-guard.yaml"
 
-cat > "$WORK/pods.yaml" <<'YAML'
+cat > "$WORK/pods.yaml" <<YAML
 apiVersion: v1
 kind: Pod
-metadata: { name: declared, labels: { "policy-as-versioned.dev/policy-version": "1.0.0" } }
+metadata: { name: declared, labels: { "policy-as-versioned.dev/policy-version": "$declared_version" } }
 spec: { containers: [{ name: c, image: nginx }] }
 ---
 apiVersion: v1
 kind: Pod
-metadata: { name: orphan, labels: { "policy-as-versioned.dev/policy-version": "3.0.0" } }
+metadata: { name: orphan, labels: { "policy-as-versioned.dev/policy-version": "9.9.9" } }
 spec: { containers: [{ name: c, image: nginx }] }
 ---
 apiVersion: v1
@@ -33,14 +42,14 @@ metadata: { name: unversioned }
 spec: { containers: [{ name: c, image: nginx }] }
 YAML
 
-say "2. an undeclared version (3.0.0) is denied; a declared one (1.0.0) admits"
+say "2. an undeclared version (9.9.9) is denied; a declared one ($declared_version) admits"
 # kyverno apply exits non-zero when a resource is denied — that IS the pass
 # condition here, so capture (|| true) and assert on the text, not the code.
 out="$(kyverno apply "$WORK/orphan-guard.yaml" --resource "$WORK/pods.yaml" 2>&1 || true)"
 grep -q "resource default/Pod/orphan failed" <<<"$out" \
-  || fail "orphan pod (3.0.0) was NOT denied — a version outside the array could run"
+  || fail "orphan pod (9.9.9) was NOT denied — a version outside the array could run"
 if grep -q "resource default/Pod/declared failed" <<<"$out"; then
-  fail "a DECLARED version (1.0.0) was wrongly denied by the orphan-guard"
+  fail "a DECLARED version ($declared_version) was wrongly denied by the orphan-guard"
 fi
 # exactly one fail (the orphan), one skip (unversioned, out of scope)
 grep -qE 'pass: 1, fail: 1, warn: 0, error: 0, skip: 1' <<<"$out" \

@@ -405,7 +405,14 @@ def selfcheck() -> None:
         (out_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
 
     with tempfile.TemporaryDirectory() as td:
-        entries = corpus_generator.generate_spine(subj, inside_pin="1.0.0", source_tag="old")
+        # inside_pin must actually BE inside the real, live distribution/
+        # versions.yaml array: `allowed` a few lines below is read from that
+        # same real array (matching check_witness_shapes' own production
+        # read), so a hardcoded "1.0.0" here would drift the moment the real
+        # array's shape changes (cs-15 replaced 1.0.0/2.0.0 with 2.0.0/3.0.0)
+        # and silently defeat this exact round-trip proof.
+        real_inside_pin = corpus_generator._orphan_guard.versions(corpus_generator.DISTRIBUTION / "versions.yaml")[0]
+        entries = corpus_generator.generate_spine(subj, inside_pin=real_inside_pin, source_tag="old")
         outside_entries = [e for e in entries if "pin=outside" in e.axis_detail]
         assert outside_entries, "fixture setup broken: no pin=outside entries generated"
 

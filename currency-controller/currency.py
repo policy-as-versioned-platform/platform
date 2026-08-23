@@ -61,6 +61,28 @@ POSTURE_LABEL = "posture.acme.io/version"
 DEPOSTURE, EVICT = "deposture", "evict"
 
 
+def _default_supported() -> str:
+    """A sensible default for `plan --supported` when SUPPORTED_VERSIONS isn't
+    set: the versions distribution/versions.yaml actually declares right now,
+    not a hardcoded literal that goes stale every time the array changes (cs-15
+    already found and fixed this exact bug in five other modules). Pure stdlib
+    -- a plain regex over the array text, not a yaml import, to keep this
+    module's "no pip deps, runs in a bare python:3-slim" guarantee. Falls back
+    to the old literal only if the file can't be found (e.g. run outside a
+    checkout), so `plan` still has *a* default rather than crashing.
+    """
+    import re
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        text = open(os.path.join(here, "..", "distribution", "versions.yaml")).read()
+        versions = re.findall(r'version:\s*"([0-9]+\.[0-9]+\.[0-9]+)"', text)
+        if versions:
+            return ",".join(versions)
+    except OSError:
+        pass
+    return "1.0.0,2.0.0"
+
+
 # ---------------------------------------------------------------------------
 # Pure core (no cluster; this is the tested logic)
 # ---------------------------------------------------------------------------
@@ -208,8 +230,9 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("selfcheck", help="run the asserts (no cluster)")
     pl = sub.add_parser("plan", help="offline: read a pod list JSON on stdin, print the plan")
-    pl.add_argument("--supported", default=os.environ.get("SUPPORTED_VERSIONS", "1.0.0,2.0.0"),
-                    help="comma-list of supported versions (default 1.0.0,2.0.0)")
+    pl.add_argument("--supported", default=os.environ.get("SUPPORTED_VERSIONS", _default_supported()),
+                    help="comma-list of supported versions "
+                         "(default: read live from distribution/versions.yaml)")
     pl.add_argument("--action", choices=[DEPOSTURE, EVICT], default=DEPOSTURE)
     rc = sub.add_parser("reconcile", help="in-cluster: one bounded reconcile pass")
     rc.add_argument("--action", choices=[DEPOSTURE, EVICT], default=DEPOSTURE)

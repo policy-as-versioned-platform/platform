@@ -28,8 +28,8 @@ metadata:
 spec:
   inputs:
     - versions:
-        - { version: "1.0.0", tag: "policy/v1.0.0", commit: "", action: "Audit" }
-        - { version: "2.0.0", tag: "policy/v2.0.0", commit: "", action: "Audit" }
+        - { version: "2.0.0", tag: "policy/v2.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
+        - { version: "3.0.0", tag: "policy/v3.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---

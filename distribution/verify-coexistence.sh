@@ -28,7 +28,7 @@ python3 "$HERE/render-orphan-guard.py" --selfcheck >/dev/null \
 CTX="${CTX:-kind-driftwood}"
 if have kubectl && kubectl --context "$CTX" get validatingpolicy >/dev/null 2>&1; then
   say "3. live: both ValidatingPolicies present in the SAME webhook config"
-  for v in 1-0-0 2-0-0; do
+  for v in 2-0-0 3-0-0; do
     kubectl --context "$CTX" get validatingpolicy "require-nonroot-$v" >/dev/null 2>&1 \
       || fail "require-nonroot-$v not installed live (fan-out incomplete)"
   done

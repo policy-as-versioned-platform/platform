@@ -583,7 +583,14 @@ def selfcheck() -> None:
 
     # 2. the real, live subject: every cell genuinely reached -- an honest
     #    empirical fact about this repo today, not asserted in the abstract.
-    real_subject = corpus_generator._materialize_subject("2.0.0")
+    # Derived from whatever versions.yaml currently declares (its last/newest
+    # element), never a hardcoded literal -- the array changes shape over
+    # real releases (cs-15 replaced 1.0.0/2.0.0 with 2.0.0/3.0.0), and this
+    # selfcheck must not need editing on every one. Same pattern as this
+    # module's own --update-baseline path below, and render-orphan-guard.py's
+    # selfcheck.
+    live_version = corpus_generator._orphan_guard.versions(corpus_generator.DISTRIBUTION / "versions.yaml")[-1]
+    real_subject = corpus_generator._materialize_subject(live_version)
     real_corpus = HERE / "generated-corpus"
     real_result = evaluate(real_subject, real_corpus)
     assert real_result.applicable, "the committed generated-corpus/ manifest must be a real spine"

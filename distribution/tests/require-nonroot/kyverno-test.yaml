@@ -7,24 +7,11 @@ kind: Test
 metadata:
   name: require-nonroot-coexistence
 policies:
-  - ../../policies/v1.0.0/require-nonroot.yaml
   - ../../policies/v2.0.0/require-nonroot.yaml
+  - ../../policies/v3.0.0/require-nonroot.yaml
 resources:
   - resources.yaml
 results:
-  # --- policy 1.0.0 sees only the 1.0.0 pods ---
-  - policy: require-nonroot-1-0-0
-    kind: Pod
-    resources: [pod-1-compliant]
-    result: pass
-  - policy: require-nonroot-1-0-0
-    kind: Pod
-    resources: [pod-1-violating]
-    result: fail
-  - policy: require-nonroot-1-0-0
-    kind: Pod
-    resources: [pod-2-compliant, pod-2-violating, pod-unversioned]
-    result: skip
   # --- policy 2.0.0 sees only the 2.0.0 pods ---
   - policy: require-nonroot-2-0-0
     kind: Pod
@@ -36,5 +23,18 @@ results:
     result: fail
   - policy: require-nonroot-2-0-0
     kind: Pod
-    resources: [pod-1-compliant, pod-1-violating, pod-unversioned]
+    resources: [pod-3-compliant, pod-3-violating, pod-unversioned]
+    result: skip
+  # --- policy 3.0.0 sees only the 3.0.0 pods ---
+  - policy: require-nonroot-3-0-0
+    kind: Pod
+    resources: [pod-3-compliant]
+    result: pass
+  - policy: require-nonroot-3-0-0
+    kind: Pod
+    resources: [pod-3-violating]
+    result: fail
+  - policy: require-nonroot-3-0-0
+    kind: Pod
+    resources: [pod-2-compliant, pod-2-violating, pod-unversioned]
     result: skip
