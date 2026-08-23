@@ -19,11 +19,21 @@ name: release
 # design, trigger other workflows -- the tag lands but this workflow's own
 # `push: tags:` event never fires. workflow_dispatch is the documented way
 # round that: verify+publish stays reachable for every tag, chained or not.
+#
+# cs-27: `policy/v*.*.*` is a SEPARATE pattern from `v*.*.*` on purpose -- a
+# GitHub Actions tag-filter `*` does not cross a `/`, so a pattern covering
+# `v1.0.0` would silently never match `policy/v2.0.0` at all. For a
+# `policy/v*.*.*` tag this workflow adds one extra, cheaper check (cs-27,
+# below the gitsign step): the signed release-gate evidence committed
+# alongside that tag verifies offline and its recorded outcome/version match
+# the tag -- catching a policy tag pushed by any route other than
+# cut-release.yml's own gate step.
 
 on:
   push:
     tags:
       - "v*.*.*"
+      - "policy/v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -37,6 +47,8 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
   GITSIGN_VERSION: 0.17.1
   GITSIGN_SHA256: 69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae
+  COSIGN_VERSION: 2.4.1
+  COSIGN_SHA256: 8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b
   KYVERNO_VERSION: 1.18.2
   KYVERNO_SHA256: cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b
   EXPECTED_IDENTITY_REGEXP: ^https://github\.com/policy-as-versioned-platform/platform/\.github/workflows/cut-release\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\.x)$
@@ -57,6 +69,10 @@ jobs:
           curl -sSL -o gitsign "https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
           echo "${GITSIGN_SHA256}  gitsign" | sha256sum -c -
           chmod +x gitsign && sudo mv gitsign /usr/local/bin/gitsign
+
+          curl -sSL -o cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum -c -
+          chmod +x cosign && sudo mv cosign /usr/local/bin/cosign
 
           curl -sSL -o kyverno.tar.gz "https://github.com/kyverno/kyverno/releases/download/v${KYVERNO_VERSION}/kyverno-cli_v${KYVERNO_VERSION}_linux_x86_64.tar.gz"
           echo "${KYVERNO_SHA256}  kyverno.tar.gz" | sha256sum -c -
@@ -83,6 +99,34 @@ jobs:
           gitsign verify-tag "${TAG}" \
             --certificate-identity-regexp="${EXPECTED_IDENTITY_REGEXP}" \
             --certificate-oidc-issuer="${EXPECTED_ISSUER}"
+
+      - name: cheaper check -- the signed release-gate evidence matches this tag (policy tags only)
+        # cs-27. This is the CHEAP check spec.md asks release.yml to keep: it
+        # catches a `policy/v*` tag pushed by any route other than
+        # cut-release.yml's own gate step -- it does not recompute the bump
+        # (the adopter/this workflow does not re-run the publisher's
+        # classification, spec.md, "The adopter computes its own composed
+        # bump and does not recompute the publisher's"). Three things, all
+        # offline from the commit this tag already resolves to (the checkout
+        # above already has it): the evidence + bundle are the files this
+        # exact tag's commit carries, `cosign verify-blob` accepts the
+        # bundle's signature identity-pinned to the SAME cut-release.yml
+        # identity gitsign just verified, and the evidence's own recorded
+        # outcome/version agree with a pass and with this tag.
+        if: startsWith(env.TAG, 'policy/v')
+        run: |
+          set -euo pipefail
+          version="${TAG#policy/v}"
+          evidence="computed-semver/evidence/${version}.json"
+          bundle="${evidence}.bundle"
+          [ -f "$evidence" ] || { echo "FAIL: no evidence file committed at $evidence for tag ${TAG}"; exit 1; }
+          [ -f "$bundle" ] || { echo "FAIL: no cosign bundle committed at $bundle for tag ${TAG}"; exit 1; }
+          cosign verify-blob \
+            --bundle="$bundle" \
+            --certificate-identity-regexp="${EXPECTED_IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer="${EXPECTED_ISSUER}" \
+            "$evidence"
+          python3 .github/scripts/release-verify-evidence.py "$evidence" "$version" "$TAG"
 
       - name: tag still resolves to the commit this run was triggered from
         # Only meaningful on the push-triggered path: GITHUB_SHA there IS the

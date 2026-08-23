@@ -29,6 +29,18 @@ name: cut-release
 # provenance chain; a different, equally real identity. See release.yml for
 # the matching identity-pinned verification.
 #
+# cs-27: the publisher gate runs here, BEFORE `git tag` -- a gate after the
+# tag can only burn the number (spec.md, "Where the gate runs"). It reads the
+# declared bump straight from the tag(s) this dispatch names (see
+# .github/scripts/cut-release-gate.py's own module docstring for exactly how
+# a multi-tag dispatch splits between platform's own `v*` line, cs-07's
+# subject, and `policy/v*`, this gate's subject), signs the evidence
+# `cosign sign-blob` keyless on BOTH outcomes, and on a refusal stops this
+# job here -- no commit, no tag, ever, for any input. There is no override:
+# grep cut-release-gate.py for CUT_RELEASE_TEST_MODE and see its own
+# docstring for the one thing that flag touches (signing mechanics only,
+# never the verdict).
+#
 # workflow_dispatch only, on purpose: this is a release-cutting ACT, not a
 # standing recurring automation.
 
@@ -52,6 +64,10 @@ permissions:
 env:
   GITSIGN_VERSION: 0.17.1
   GITSIGN_SHA256: 69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae
+  COSIGN_VERSION: 2.4.1
+  COSIGN_SHA256: 8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b
+  KYVERNO_VERSION: 1.18.2
+  KYVERNO_SHA256: cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b
 
 jobs:
   cut:
@@ -61,12 +77,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: install pinned gitsign (binary + checksum, no marketplace action)
+      - name: install pinned gitsign + cosign + kyverno (binary + checksum, no marketplace action)
+        # kyverno is the publisher gate's own dependency: computed-semver's
+        # cage_engine.py shells out to the real `kyverno apply` CLI (per
+        # corpus fixture, per ValidatingPolicy -- rederive_bumps.cel_pass,
+        # unchanged since ticket cs-01) to compute movement, the same binary
+        # release.yml already installs for the shift-left proof.
         run: |
           set -euo pipefail
           curl -sSL -o gitsign "https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
           echo "${GITSIGN_SHA256}  gitsign" | sha256sum -c -
           chmod +x gitsign && sudo mv gitsign /usr/local/bin/gitsign
+
+          curl -sSL -o cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  cosign" | sha256sum -c -
+          chmod +x cosign && sudo mv cosign /usr/local/bin/cosign
+
+          curl -sSL -o kyverno.tar.gz "https://github.com/kyverno/kyverno/releases/download/v${KYVERNO_VERSION}/kyverno-cli_v${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          echo "${KYVERNO_SHA256}  kyverno.tar.gz" | sha256sum -c -
+          tar xzf kyverno.tar.gz kyverno && chmod +x kyverno && sudo mv kyverno /usr/local/bin/kyverno
+
+          pip install --quiet pyyaml
 
       - name: normalize the single-tag or multi-tag dispatch into tags.json
         # Inputs go through `env:`, not interpolated straight into the run
@@ -83,6 +114,27 @@ jobs:
 
       - name: refuse any tag that already exists -- checked for EVERY tag before ANY tag is created
         run: ./.github/scripts/cut-release-refuse-existing.sh tags.json
+
+      - name: publisher gate -- run_gate() on every policy tag, evidence signed cosign keyless (pass or refuse)
+        # No override at any scope: this step's own exit code is the only
+        # thing that decides whether the job continues. See
+        # cut-release-gate.py's module docstring for the multi-tag split and
+        # for exactly what CUT_RELEASE_TEST_MODE does and does not touch.
+        run: python3 .github/scripts/cut-release-gate.py tags.json
+
+      - name: upload the signed gate evidence as a run artifact (always -- a refusal's own evidence matters most)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publisher-gate-evidence
+          path: computed-semver/evidence/
+          if-no-files-found: ignore
+
+      - name: commit the signed evidence into the release commit, BEFORE the tag
+        # Reached only when the gate step above exited 0 -- a workflow `run:`
+        # step failing stops the job, so a refusal never reaches this step.
+        # A no-op when this dispatch cut no policy tags at all.
+        run: ./.github/scripts/cut-release-commit-evidence.sh tags.json
 
       - name: create the signed annotated tags (ambient Actions identity, no interactive login)
         run: ./.github/scripts/cut-release-create-tags.sh tags.json

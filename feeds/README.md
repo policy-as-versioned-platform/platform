@@ -13,13 +13,22 @@ threat-register/v1,v2/register.json(.sig)   institution -> headline threat -> le
 cve/v1,v2/cve-feed.json(.sig)               trivy/GHSA-shaped: cve -> cvss/severity/epss
 eol/v1,v2/eol-feed.json(.sig)               endoflife.date-shaped: component -> eol_date + base rate
 keys/feeds-signing-key(.pub).pem            shared ed25519 keypair (ponytail: repo-local demo key)
-sign.sh / verify.sh                         offline sign / verify <feed> <version> <file>
+verify.sh                                   offline verify <feed> <version> <file> against the committed .sig
 to_fair_scenario.py                         feed entry -> fair.py scenario (unmodified fair.py consumes it)
-verify-feeds.sh                             the whole beat: sign+verify, tamper rejection, £ moves on a
+verify-feeds.sh                             the whole beat: verify, tamper rejection, £ moves on a
                                              bump, EOL ramps as a time-varying thread
 ```
 
 Run `./verify-feeds.sh` (offline, no cluster) for the full beat.
+
+`sign.sh` (the repo-local ed25519-via-openssl signer that produced the committed
+`.sig` files above) is gone as of ticket cs-27: that ticket replaces this shape with
+`cosign sign-blob` keyless for the one thing this repo now signs on an ongoing basis
+(release-gate evidence, `computed-semver/evidence/`), rather than adding a second
+signing mechanism alongside it. The committed feed `.sig` files here are unaffected
+and still verify against `keys/feeds-signing-key.pub.pem` exactly as before --
+re-signing a feed is not a live path in this codebase (each versioned feed file ships
+once, signed at authoring time).
 
 ## EOL as a time-varying thread
 
