@@ -63,7 +63,7 @@ DISTRIBUTION = REPO / "distribution"
 
 # Bumped by hand when this module's own logic changes. Not part of the
 # subject, so it cannot itself bump a policy version (spec.md, "The corpus").
-GENERATOR_VERSION = "0.1.2"
+GENERATOR_VERSION = "0.1.3"
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
@@ -304,9 +304,78 @@ def _posture_equals_claim_probe() -> Probe:
     )
 
 
+def _nonroot_or_attested_hardened_probe() -> Probe:
+    """require-nonroot@2.0.1's `variables.nonroot || (variables.attested &&
+    variables.hardened)` -- cs-16's widening. Three variables, read straight
+    off distribution/policies/v2.0.1/require-nonroot.yaml's own `variables:`
+    block (not the validations expression string itself, which never repeats
+    their CEL bodies):
+
+      nonroot:  object.spec.?securityContext.?runAsNonRoot.orValue(false) == true
+      attested: object.metadata.?labels['policy-as-versioned.dev/root-attestation']
+                    .orValue('') != ''
+      hardened: object.spec.containers.all(c,
+                    c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true &&
+                    c.?securityContext.?capabilities.?drop.orValue([]).exists(d, d == 'ALL'))
+
+    satisfied takes the WIDENED branch on purpose (nonroot explicitly false,
+    attested + hardened both true) rather than the trivial nonroot=true
+    branch -- that's the one case 2.0.0 could never admit, so it's the case
+    worth a corpus entry proving. violated sets all three fields PRESENT but
+    failing (mirrors the real root-attested-unhardened fixture in
+    policy/tests/conditional/resources.yaml, plus an explicit nonroot=false),
+    so it stays byte-distinct from `absent` below even though both evaluate
+    to the same CEL falsehood.
+
+    absent: no matchCondition in require-nonroot.yaml gates on nonroot,
+    attested, or hardened the way posture-trust-boundary's `carries-posture`
+    gates on the posture label -- every orValue default resolves the moment
+    a pod exists, so there is no CEL-observable "this predicate did not
+    fire" state here (unlike _posture_equals_claim_probe's absent, which
+    mirrors a real matchCondition exclusion). The nearest honest analogue is
+    the same convention _spec_bool_probe/_container_bool_probe already use
+    per single field: leave every constituent field untouched and let
+    orValue's defaults apply -- generalized here to all three fields at
+    once. This reproduces the real root-bare fixture's shape (same file)
+    and is a genuinely distinct pod from `violated` (fields absent entirely,
+    not present-and-false), so all three states still get their own corpus
+    entry."""
+    ATTEST_LABEL = "policy-as-versioned.dev/root-attestation"
+
+    def satisfied(pod: dict) -> None:
+        _set_spec_sc(pod, "runAsNonRoot", False)
+        _set_label(pod, ATTEST_LABEL, "SEC-PROBE")
+        containers = pod.setdefault("spec", {}).setdefault(
+            "containers", [{"name": "app", "image": "nginx:1.25"}]
+        )
+        sc = containers[0].setdefault("securityContext", {})
+        sc["readOnlyRootFilesystem"] = True
+        sc.setdefault("capabilities", {})["drop"] = ["ALL"]
+
+    def violated(pod: dict) -> None:
+        _set_spec_sc(pod, "runAsNonRoot", False)
+        _set_label(pod, ATTEST_LABEL, "")  # present, empty -- != '' is false
+        containers = pod.setdefault("spec", {}).setdefault(
+            "containers", [{"name": "app", "image": "nginx:1.25"}]
+        )
+        containers[0]["securityContext"] = {
+            "readOnlyRootFilesystem": False,
+            "capabilities": {"drop": []},
+        }
+
+    def absent(pod: dict) -> None:
+        pass  # leave spec.securityContext, the label, and every container's
+        # securityContext untouched -- orValue's defaults apply, mirroring
+        # the real root-bare fixture.
+
+    return Probe(satisfied=satisfied, violated=violated, absent=absent)
+
+
 # Expressions that don't match a generic shape, keyed by a stable substring.
 MANUAL_PROBES: dict[str, object] = {
     "variables.posture == variables.claimed": _posture_equals_claim_probe,
+    "variables.nonroot || (variables.attested && variables.hardened)":
+        _nonroot_or_attested_hardened_probe,
 }
 
 

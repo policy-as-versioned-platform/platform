@@ -145,6 +145,40 @@ def _classify_posture_equals_claim(pod: dict) -> str:
     return "satisfied" if labels[posture_label] == claim else "violated"
 
 
+def _classify_nonroot_or_attested_hardened(pod: dict) -> str:
+    """The reverse of corpus_generator._nonroot_or_attested_hardened_probe.
+    Computes the real CEL truth value from the pod's actual fields (deciding
+    satisfied vs. violated), then -- only when it's violated -- asks whether
+    every constituent field is entirely untouched (mirrors the probe's own
+    `absent`: no securityContext anywhere, no attestation label) rather than
+    explicitly present-and-failing (`violated`)."""
+    attest_label = "policy-as-versioned.dev/root-attestation"
+    spec = pod.get("spec") or {}
+    sc = spec.get("securityContext") or {}
+    nonroot_present = "runAsNonRoot" in sc
+    nonroot = sc.get("runAsNonRoot") is True
+
+    labels = _labels(pod)
+    attested_present = attest_label in labels
+    attested = labels.get(attest_label, "") != ""
+
+    containers = spec.get("containers") or []
+    hardened_present = any("securityContext" in c for c in containers)
+
+    def _container_hardened(c: dict) -> bool:
+        csc = c.get("securityContext") or {}
+        drop = ((csc.get("capabilities") or {}).get("drop")) or []
+        return csc.get("readOnlyRootFilesystem") is True and "ALL" in drop
+
+    hardened = bool(containers) and all(_container_hardened(c) for c in containers)
+
+    if nonroot or (attested and hardened):
+        return "satisfied"
+    if not nonroot_present and not attested_present and not hardened_present:
+        return "absent"
+    return "violated"
+
+
 def classify_state(pred: corpus_generator.Predicate, pod: dict) -> str:
     """Which of satisfied/violated/absent a real pod is in for one subject
     predicate. Dispatches on the same regex families corpus_generator's
@@ -158,6 +192,8 @@ def classify_state(pred: corpus_generator.Predicate, pod: dict) -> str:
         if substring in expr:
             if substring == "variables.posture == variables.claimed":
                 return _classify_posture_equals_claim(pod)
+            if substring == "variables.nonroot || (variables.attested && variables.hardened)":
+                return _classify_nonroot_or_attested_hardened(pod)
             raise ValueError(f"no manual classifier wired for {substring!r}")
     m = corpus_generator._CONTAINER_BOOL_RE.search(expr)
     if m:
