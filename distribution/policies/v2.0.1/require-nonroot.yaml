@@ -1,0 +1,60 @@
+# require-nonroot @ 2.0.1 — a PATCH backport, folded in from the second,
+# never-array-listed `policy/policies/v1.0.0/may-run-root-if-attested.yaml`
+# tree. Same identity family and name as every other require-nonroot version
+# (ticket 22's pairing rule keys on (identity, name-with-version-stripped) --
+# renaming this member would make it a brand-new unpaired policy instead of
+# the SAME control widening, and would make require-nonroot@2.0.0 read as
+# silently removed). Still Audit, still self-scoped, but the rule itself
+# widens: run as non-root (2.0.0's own check, unchanged), OR run as root IF
+# you carry a root-attestation AND every container drops ALL caps AND mounts
+# a read-only root filesystem. Anyone who passed 2.0.0 still passes 2.0.1 --
+# nothing narrows -- so this is a patch, not a minor or major (see the
+# release commit for the real `cage_engine.classify_repo` proof).
+#
+# Self-scopes via matchConditions on the policy-version label — NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence. Only pods that CLAIM this exact version are judged
+# here; a pod on 2.0.0/3.0.0 (or unversioned) is out of scope, so every version
+# admits side by side.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: require-nonroot-2-0-1
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: require-nonroot
+    policy-as-versioned.dev/policy-version: "2.0.1"
+spec:
+  validationActions: [Audit]
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: only-this-policy-version
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '2.0.1'
+  variables:
+    - name: nonroot
+      expression: "object.spec.?securityContext.?runAsNonRoot.orValue(false) == true"
+    # Condition C, part 1: a non-empty attestation reference (who signed off the
+    # root requirement). Empty/absent -> not attested.
+    - name: attested
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/root-attestation'].orValue('') != ''
+    # Condition C, part 2: every container is hardened -- read-only root fs AND
+    # drops ALL capabilities. Uniform over all containers.
+    - name: hardened
+      expression: >-
+        object.spec.containers.all(c,
+          c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true &&
+          c.?securityContext.?capabilities.?drop.orValue([]).exists(d, d == 'ALL'))
+  validations:
+    - expression: "variables.nonroot || (variables.attested && variables.hardened)"
+      message: >-
+        pods on policy-version 2.0.1 must run as non-root, OR (if they must run
+        as root) carry a policy-as-versioned.dev/root-attestation AND drop ALL
+        capabilities + mount a read-only root filesystem on every container

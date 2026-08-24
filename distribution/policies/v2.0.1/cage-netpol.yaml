@@ -1,0 +1,34 @@
+# Self-scopes via matchConditions on the policy-version label -- NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: GeneratingPolicy
+metadata:
+  name: cage-netpol-2-0-1
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 2.0.1
+spec:
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+  matchConditions:
+  - name: is-caged
+    expression: object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
+  - name: only-this-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '2.0.1'
+  variables:
+  - name: nsName
+    expression: string(object.metadata.namespace)
+  generate:
+  - expression: "generator.Apply(variables.nsName, [dyn({\n  \"apiVersion\": dyn(\"networking.k8s.io/v1\"),\n  \"kind\": dyn(\"NetworkPolicy\"),\n  \"metadata\": dyn({\"name\": dyn(\"cage-egress-lockdown\"), \"namespace\": dyn(variables.nsName),\n               \"labels\": dyn({\"app.kubernetes.io/managed-by\": dyn(\"kyverno\"), \"posture.acme.io/cage\": dyn(\"egress-lockdown\")})}),\n  \"spec\": dyn({\n    \"podSelector\": dyn({\"matchLabels\": dyn({\"posture.acme.io/caged\": dyn(\"true\")})}),\n    \"policyTypes\": dyn([\"Egress\"]),\n    \"egress\": dyn([dyn({\n      \"to\": dyn([dyn({\"namespaceSelector\": dyn({\"matchLabels\": dyn({\"kubernetes.io/metadata.name\": dyn(\"kube-system\")})})})]),\n      \"ports\": dyn([dyn({\"protocol\": dyn(\"UDP\"), \"port\": dyn(53)})])})])})})\n])"

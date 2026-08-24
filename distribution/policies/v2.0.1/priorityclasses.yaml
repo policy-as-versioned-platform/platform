@@ -1,0 +1,38 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-baseline-2-0-1
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 2.0.1
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — baseline tier: evicted before healthy workloads under pressure.'
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-restricted-2-0-1
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 2.0.1
+value: -100
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — restricted tier: evicted before baseline-caged workloads.'
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-quarantine-2-0-1
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 2.0.1
+value: -1000
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — quarantine tier: first to be evicted, the hardest cage short of Deny.'
