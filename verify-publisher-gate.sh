@@ -21,6 +21,27 @@
 # part alone takes several minutes -- that cost is the real engine running
 # for real, not padding.
 #
+# cs-16 update: the real v2.0.0 -> v3.0.0 PASS case used to compute "major"
+# via posture-trust-boundary.yaml -- proven, while chasing a genuine patch
+# backport's own false refusal, to have been a vacuous self-scope match, not
+# a real narrowing (posture-trust-boundary.yaml's body is byte-identical
+# between v2.0.0 and v3.0.0 modulo the version literal; cage_engine.py's own
+# module docstring and selfcheck #15 carry the full mechanism and the real
+# `kyverno apply skip:1 vs fail:1` proof). Now that cage_engine.py neutralizes
+# only the named self-scope matchCondition before comparing, this real pair
+# honestly computes "none" -- there is no other modeled real content
+# movement between v2.0.0 and v3.0.0 either (require-nonroot's real widening
+# there is Audit-only, which never registers movement by CONTEXT.md's own
+# admitted/refused rule). The PASS case below asserts that honest "none",
+# not the old "major". The REFUSAL case can no longer be demonstrated from
+# the unmodified real v2.0.0/v3.0.0 pair -- there is no genuine narrowing in
+# it -- so it now applies ONE disclosed, real mutation on top of the real
+# v3.0.0 tree: require-nonroot's own file comment already names this
+# transition as planned future work ("Audit->Deny promotion is a separate,
+# editorial PR"), so promoting it here is not an invented scenario, just an
+# early, explicit instance of a change this repo already intends to make.
+# Everything else about the tree, the corpus, and the gate stays real.
+#
 # Part B proves the WIRING: cut-release-gate.py's own tag-set parsing
 # (policy tags gated, a platform's own `v*` tag skipped), the two-commit
 # (evidence, then array-correction) order before the tag, refusal blocking
@@ -51,18 +72,21 @@ DIST = corpus_generator.DISTRIBUTION
 assert DIST == repo / "distribution", f"corpus_generator resolved the wrong repo: {DIST}"
 
 
-def subject_with(real_version: str, legal_history: list[str]) -> Path:
-    real_tree = DIST / "policies" / f"v{real_version}"
+def subject_with(tree: Path, legal_history: list[str]) -> Path:
+    # gate.RepoState.subject_dir doubles as comparison_window.evaluate's own
+    # `new_subject_dir` (gate.py passes it straight through) -- it must
+    # reflect the REAL tree actually under test, mutated copy included, or
+    # the movement computed below silently compares against the wrong body.
     d = Path(tempfile.mkdtemp(dir=scratch))
-    for f in real_tree.glob("*.yaml"):
+    for f in tree.glob("*.yaml"):
         if f.name != "kustomization.yaml":
             (d / f.name).write_text(f.read_text())
     (d / "versions.yaml").write_text(yaml.safe_dump({"versions": legal_history}))
     return d
 
 
-def run(declared: str) -> dict:
-    subject = subject_with("3.0.0", ["2.0.0"])
+def run(declared: str, new_tree: Path) -> dict:
+    subject = subject_with(new_tree, ["2.0.0"])
     corpus_dir = Path(tempfile.mkdtemp(dir=scratch))
     # inside_pin stays '3.0.0' -- the literal v3.0.0's own self-scope
     # matchConditions actually carries (render-version-tree.py baked it in
@@ -70,39 +94,65 @@ def run(declared: str) -> dict:
     # hypothetical `declared` under test here. Varying `declared` alone
     # against the SAME real committed body is exactly what proves the gate's
     # bump-comparison rule, isolated from corpus generation's own pin axis.
-    corpus_generator.build_manifest(DIST / "policies" / "v2.0.0", DIST / "policies" / "v3.0.0",
+    corpus_generator.build_manifest(DIST / "policies" / "v2.0.0", new_tree,
                                      inside_pin="3.0.0", out_dir=corpus_dir)
     window = comparison_window.ComparisonWindow(
         old_window=["2.0.0"], new_window=["2.0.0"],
-        subject_tree_for=lambda v: DIST / "policies" / f"v{v}",
+        subject_tree_for=lambda v: new_tree if v == "3.0.0" else DIST / "policies" / f"v{v}",
     )
     repo_state = gate.RepoState(subject_dir=subject, corpus_dir=corpus_dir, window=window)
     return gate.run_gate(repo_state, declared)
 
 
-print("-- declared 3.0.0 (the real tag's own number) --")
-doc_pass = run("3.0.0")
+print("-- declared 3.0.0 (the real tag's own number), against the REAL, unmodified v3.0.0 tree --")
+doc_pass = run("3.0.0", DIST / "policies" / "v3.0.0")
 assert doc_pass["outcome"]["result"] == "passed", doc_pass["outcome"]
-assert doc_pass["bump"] == {"declared": "major", "computed": "major"}, doc_pass["bump"]
-assert any(m["policy"] == "posture-trust-boundary.yaml" and m["verdict"] == "major"
-           for m in doc_pass["movement"]), "expected posture-trust-boundary.yaml to carry the real major movement"
+# cs-16: posture-trust-boundary.yaml's real body is byte-identical between
+# v2.0.0 and v3.0.0 modulo the version literal (see cage_engine.py's module
+# docstring and selfcheck #15) -- the "major" this used to compute was the
+# self-scope vacuous-match artifact, not real movement. require-nonroot's
+# real widening there is Audit-only, which never registers movement either
+# (CONTEXT.md's own admitted/refused rule). Honestly, this real pair has no
+# modeled content movement at all -- "none" -- and a declared "major" is
+# simply stronger than required, which the gate allows (over-declaring never
+# refuses).
+assert doc_pass["bump"] == {"declared": "major", "computed": "none"}, doc_pass["bump"]
+assert all(m["verdict"] == "none" for m in doc_pass["movement"]), doc_pass["movement"]
 print(json.dumps({"outcome": doc_pass["outcome"], "bump": doc_pass["bump"],
-                   "movement_policies": [m["policy"] for m in doc_pass["movement"]]}, indent=2))
+                   "movement": [(m["policy"], m["verdict"]) for m in doc_pass["movement"]]}, indent=2))
 (scratch / "evidence-pass-3.0.0.json").write_text(json.dumps(doc_pass, indent=2))
-print(f"ok  PASS proved for real: declared major == computed major, against the real "
-      f"v2.0.0->v3.0.0 predecessor (posture-trust-boundary.yaml genuinely narrowed)")
+print(f"ok  PASS proved for real: declared major (over-declared) >= computed none, against the "
+      f"real, UNMODIFIED v2.0.0->v3.0.0 predecessor -- honestly no real content movement there")
 
 print()
-print("-- declared 2.1.0 (legal, but weaker than the SAME real content's computed bump) --")
-doc_refused = run("2.1.0")
+print("-- declared 2.1.0, against v3.0.0 with ONE disclosed real mutation: require-nonroot promoted Audit->Deny --")
+# require-nonroot.yaml's own real v3.0.0 comment already names this as
+# planned future work ("Audit->Deny promotion is a separate, editorial PR");
+# applying it here is an early, explicit instance of a change this repo
+# already intends, not a fabricated scenario. The CEL body is untouched --
+# only validationActions changes -- so this is a genuine narrowing: a pod
+# that already fails require-nonroot's real "must run as non-root" check
+# (the corpus generates one on purpose) flips from Audit-admitted to
+# Deny-refused.
+mutated_v3 = Path(tempfile.mkdtemp(dir=scratch))
+for f in (DIST / "policies" / "v3.0.0").glob("*.yaml"):
+    if f.name == "kustomization.yaml":
+        continue
+    text = f.read_text()
+    if f.name == "require-nonroot.yaml":
+        assert "validationActions: [Audit]" in text, "require-nonroot.yaml's real shape changed"
+        text = text.replace("validationActions: [Audit]", "validationActions: [Deny]")
+    (mutated_v3 / f.name).write_text(text)
+
+doc_refused = run("2.1.0", mutated_v3)
 assert doc_refused["outcome"]["result"] == "refused", doc_refused["outcome"]
 assert doc_refused["bump"] == {"declared": "minor", "computed": "major"}, doc_refused["bump"]
-assert "posture-trust-boundary.yaml" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
+assert "require-nonroot.yaml" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
 assert "weaker than the computed bump" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
 print(json.dumps({"outcome": doc_refused["outcome"], "bump": doc_refused["bump"]}, indent=2))
 (scratch / "evidence-refused-2.1.0.json").write_text(json.dumps(doc_refused, indent=2))
-print(f"ok  REFUSAL proved for real: declared minor < computed major, same real predecessor, "
-      f"reason names posture-trust-boundary.yaml")
+print(f"ok  REFUSAL proved for real: declared minor < computed major, real v2.0.0 predecessor plus "
+      f"the one disclosed require-nonroot Audit->Deny mutation, reason names require-nonroot.yaml")
 PY
 
 say "Part B: cut-release-gate.py's own wiring, against a real (throwaway) clone of this repo"
@@ -256,14 +306,42 @@ assert record["old_subject_dir"] == "distribution/policies/v2.0.0", (
 )
 print(f"ok  Part C: gate_one('2.0.1', ...) built its corpus against {record['old_subject_dir']} "
       f"(the real lower neighbor), not distribution/policies/v3.0.0")
+
+# cs-16's SECOND, deeper bug (found while proving the backport passes for
+# real): even against the correct predecessor, gate_one('2.0.1', ...) used
+# to REFUSE -- major, driven entirely by posture-trust-boundary.yaml, a
+# self-scoped ValidatingPolicy whose real body is byte-identical between
+# v2.0.0 and v2.0.1 modulo the version literal. The corpus's `inside_pin`
+# pins every generated pod to the CANDIDATE version only, so the OLD body's
+# own `only-this-policy-version` matchCondition vacuously skipped almost
+# every corpus pod (kyverno `skip`, read as trivially "admitted") while the
+# NEW body evaluated the same pods for real -- a spurious major with nothing
+# to do with the real release content. cage_engine.py now neutralizes only
+# that named matchCondition before comparing (see its module docstring and
+# selfcheck #15 for the full mechanism and the real kyverno proof); this is
+# the regression guard against it recurring at the real, live seam.
+assert record["outcome"]["result"] == "passed", (
+    f"cs-16 regression: gate_one('2.0.1', ...) refused a genuine patch backport -- "
+    f"{record['outcome']}"
+)
+assert record["bump"] == {"declared": "patch", "computed": "none"}, record["bump"]
+ptb = next(m for m in record["movement"] if m["policy"] == "posture-trust-boundary.yaml")
+assert ptb["verdict"] == "none", (
+    f"cs-16 regression: posture-trust-boundary.yaml classified {ptb['verdict']!r}, "
+    f"not 'none' -- the self-scope vacuous-match artifact is back"
+)
+print("ok  Part C: gate_one('2.0.1', ...) PASSES against the real, correct predecessor -- "
+      "posture-trust-boundary.yaml honestly classifies 'none', not the old spurious 'major'")
 PY
 
 echo
-echo "PASS: run_gate() refuses a real declared bump weaker than the real computed one and passes"
-echo "a legal-or-stronger one, against the real v2.0.0/v3.0.0 predecessor; cut-release-gate.py's"
-echo "wiring skips a platform-only tag, refuses cleanly with no commit and no tag when a policy"
-echo "tag's tree is missing, and -- on a real pass -- commits the signed evidence, then commits a"
-echo "correction pointing versions.yaml's commit field at that evidence commit, and only then tags"
-echo "-- so the tag resolves to the array-update commit, one ahead of the commit the array names;"
-echo "and a real backport (cs-16's own 2.0.1, cut between 2.0.0 and the already-shipped 3.0.0)"
-echo "builds its corpus against the real lower neighbor, never the higher, unrelated line."
+echo "PASS: run_gate() refuses a real declared bump weaker than the real computed one (a disclosed,"
+echo "real Audit->Deny mutation on top of v3.0.0) and passes a legal-or-stronger one against the"
+echo "real, UNMODIFIED v2.0.0/v3.0.0 predecessor -- which honestly computes 'none', not the old"
+echo "spurious 'major' (cs-16); cut-release-gate.py's wiring skips a platform-only tag, refuses"
+echo "cleanly with no commit and no tag when a policy tag's tree is missing, and -- on a real pass --"
+echo "commits the signed evidence, then commits a correction pointing versions.yaml's commit field at"
+echo "that evidence commit, and only then tags -- so the tag resolves to the array-update commit, one"
+echo "ahead of the commit the array names; a real backport (cs-16's own 2.0.1, cut between 2.0.0 and"
+echo "the already-shipped 3.0.0) builds its corpus against the real lower neighbor, never the higher,"
+echo "unrelated line, AND now genuinely PASSES the gate end to end."
