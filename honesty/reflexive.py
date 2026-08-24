@@ -78,7 +78,14 @@ def _entries(feed):
 
 
 def feed_integrity():
-    key = os.path.join(FEEDS, "keys", "feeds-signing-key.pem")
+    # The PUBLIC key (feeds-signing-key.pub.pem), not the private one -- the
+    # private key is deliberately never committed, so checking for it here
+    # made signing_key_present always False on a clean checkout (ticket
+    # multi-org-estate/25). verify-feeds.sh and verify.sh both check the same
+    # public key to VERIFY a signature; this flag reports the same thing:
+    # can a feed's signature actually be checked here, not whether this
+    # checkout can sign new ones.
+    key = os.path.join(FEEDS, "keys", "feeds-signing-key.pub.pem")
     report = {
         "signing_key_present": os.path.exists(key),
         "feeds": [],
