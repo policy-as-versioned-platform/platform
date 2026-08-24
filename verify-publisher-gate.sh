@@ -220,10 +220,50 @@ print(els['9.0.0'])
 [ "$recorded_commit" != "$tag_commit" ] || fail "B3: versions.yaml commit field equals the tag's resolved commit -- should be its parent (one commit behind), not the same commit"
 echo "ok  B3: gate passed for real; evidence committed (A), then versions.yaml's commit field corrected to A in a second commit (B); the tag resolves to B, and versions.yaml's commit field for 9.0.0 equals A -- B's direct parent, one commit behind the tag, on purpose"
 
+cd "$here"
+
+say "Part C: cs-16 regression -- a BACKPORT's corpus/classification basis is the LOWER neighbor, never the higher one"
+echo "distribution/versions.yaml's REAL array right now is [2.0.0, 2.0.1, 3.0.0] (cs-16's own real"
+echo "backport, prepared but not yet tagged) -- exactly the three-element, cut-in-the-middle shape"
+echo "this bug needs: cutting 2.0.1 with 3.0.0 already sitting above it in the array. Before the fix,"
+echo "gate_one()'s old_for_corpus picked max(old_window) = 3.0.0 (the highest version ANYWHERE in the"
+echo "array, unrelated and already shipped) instead of 2.0.0 (the real, lower predecessor) -- this"
+echo "proves the corpus is now built against 2.0.0, not 3.0.0."
+python3 - "$here" <<'PY'
+import sys, importlib.util
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+sys.path.insert(0, str(repo / "computed-semver"))
+import corpus_generator  # noqa: E402
+
+spec = importlib.util.spec_from_file_location("cut_release_gate", repo / ".github/scripts/cut-release-gate.py")
+crg = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(crg)
+
+array = corpus_generator._orphan_guard.elements(crg.DISTRIBUTION / "versions.yaml")
+array_versions = {e["version"] for e in array}
+assert {"2.0.0", "2.0.1", "3.0.0"} <= array_versions, (
+    f"cs-16's real backport array shape is gone from distribution/versions.yaml ({array_versions}) -- "
+    f"this regression test needs the real cut-in-the-middle case, not a fixture"
+)
+legal_history = crg.real_tag_history(repo)
+
+record = crg.gate_one("2.0.1", ["2.0.1"], array, legal_history)
+assert record["old_subject_dir"] == "distribution/policies/v2.0.0", (
+    f"cs-16 regression: old_for_corpus picked {record['old_subject_dir']!r}, "
+    f"not v2.0.0 -- the backport's corpus basis is the higher, unrelated 3.0.0 line again"
+)
+print(f"ok  Part C: gate_one('2.0.1', ...) built its corpus against {record['old_subject_dir']} "
+      f"(the real lower neighbor), not distribution/policies/v3.0.0")
+PY
+
 echo
 echo "PASS: run_gate() refuses a real declared bump weaker than the real computed one and passes"
 echo "a legal-or-stronger one, against the real v2.0.0/v3.0.0 predecessor; cut-release-gate.py's"
 echo "wiring skips a platform-only tag, refuses cleanly with no commit and no tag when a policy"
 echo "tag's tree is missing, and -- on a real pass -- commits the signed evidence, then commits a"
 echo "correction pointing versions.yaml's commit field at that evidence commit, and only then tags"
-echo "-- so the tag resolves to the array-update commit, one ahead of the commit the array names."
+echo "-- so the tag resolves to the array-update commit, one ahead of the commit the array names;"
+echo "and a real backport (cs-16's own 2.0.1, cut between 2.0.0 and the already-shipped 3.0.0)"
+echo "builds its corpus against the real lower neighbor, never the higher, unrelated line."

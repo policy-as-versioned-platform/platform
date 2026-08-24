@@ -144,7 +144,19 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
 
     subject_dir = build_current_subject(version, legal_history)
 
-    old_for_corpus = max(old_window, key=comparison_window.parse_semver) if old_window else version
+    # A backport lands BELOW an already-existing higher version (e.g. 2.0.1
+    # cut into [2.0.0, 2.0.1, 3.0.0] with 3.0.0 already shipped) -- one
+    # determination, reused for BOTH the comparison window's own backport
+    # narrowing (movement/classification, below) and the corpus-generation
+    # predecessor here, so the two can never disagree about which line sits
+    # directly below `version` (this is exactly the bug this comment block
+    # replaces: `max(old_window)` picked the highest version ANYWHERE in the
+    # array, not the highest one BELOW `version`, so a backport's corpus was
+    # built against an unrelated, already-shipped higher line).
+    is_backport = any(comparison_window.parse_semver(v) > comparison_window.parse_semver(version)
+                       for v in old_window)
+    below_declared = comparison_window.window_below(old_window, version, backport=is_backport)
+    old_for_corpus = below_declared[-1] if below_declared else version
     old_tree = DISTRIBUTION / "policies" / f"v{old_for_corpus}"
     new_tree = DISTRIBUTION / "policies" / f"v{version}"
     corpus_dir = Path(tempfile.mkdtemp(prefix=f"gate-corpus-{version}-"))
@@ -162,6 +174,7 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         old_window=old_window,
         new_window=new_window,
         subject_tree_for=lambda v: DISTRIBUTION / "policies" / f"v{v}",
+        backport=is_backport,
     )
     prior_versions = {e["version"]: e["tag"] for e in array if e["version"] in old_window}
     release = release_integrity.ReleaseIntegrity(
@@ -181,7 +194,7 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
     record = dict(doc)
     record["declared"] = version
     record["subject_dir"] = str(new_tree.relative_to(REPO))
-    record["old_subject_dir"] = str(old_tree.relative_to(REPO)) if old_window else None
+    record["old_subject_dir"] = str(old_tree.relative_to(REPO)) if below_declared else None
     record["computed_bump"] = doc["bump"]["computed"]
     return record
 
