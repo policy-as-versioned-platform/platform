@@ -14,7 +14,11 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 have kyverno || fail "kyverno CLI required"
-POL="$HERE/policies/v1.0.0/may-run-root-if-attested.yaml"
+# cs-16: policy/policies/v1.0.0/ is deleted -- this rule folded into
+# distribution/policies/v2.0.1/require-nonroot.yaml as a patch widening on
+# the 2.0.0 line. Lineage follows content, not the old directory-name
+# coincidence.
+POL="$PLATFORM/distribution/policies/v2.0.1/require-nonroot.yaml"
 
 say "1. the conditional matrix: C admits uniformly, non-C fails, unversioned skips"
 out="$(kyverno apply "$POL" --resource "$HERE/tests/conditional/resources.yaml" 2>&1 || true)"

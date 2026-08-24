@@ -31,7 +31,11 @@ flowchart TB
     fail --> sel
 ```
 
-## The conditional rule — `policies/v1.0.0/may-run-root-if-attested.yaml`
+## The conditional rule — `../distribution/policies/v2.0.1/require-nonroot.yaml`
+
+(cs-16: folded in as a patch widening on the 2.0.0 line; the standalone
+`policies/v1.0.0/` tree this used to live in — never in the version array —
+is deleted. Lineage follows content, not the old directory-name coincidence.)
 
 `Audit` ValidatingPolicy, self-scoped on `policy-as-versioned.dev/policy-version`
 (matchConditions, **not** objectSelector — see `../distribution/README.md`). The

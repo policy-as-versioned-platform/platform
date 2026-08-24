@@ -1,11 +1,16 @@
-# The conditional-policy matrix. All claim version 1.0.0 except the unversioned
+# The conditional-policy matrix. All claim version 2.0.1 except the unversioned
 # one (which self-scopes OUT). Condition C = attested AND every container hardened
 # (readOnlyRootFilesystem + drop ALL caps). "You may run root IF C" — uniform.
+#
+# cs-16: retargeted from the deleted policy/policies/v1.0.0/ (claiming 1.0.0) to
+# distribution/policies/v2.0.1/require-nonroot.yaml, which now carries this same
+# conditional rule as a patch widening on the 2.0.0 line -- every pod here claims
+# 2.0.1, not 1.0.0.
 apiVersion: v1
 kind: Pod
 metadata:
   name: nonroot
-  labels: { "policy-as-versioned.dev/policy-version": "1.0.0" }
+  labels: { "policy-as-versioned.dev/policy-version": "2.0.1" }
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx }]
@@ -17,7 +22,7 @@ kind: Pod
 metadata:
   name: root-attested-hardened
   labels:
-    "policy-as-versioned.dev/policy-version": "1.0.0"
+    "policy-as-versioned.dev/policy-version": "2.0.1"
     "policy-as-versioned.dev/root-attestation": "SEC-1234"
 spec:
   containers:
@@ -32,7 +37,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: root-bare
-  labels: { "policy-as-versioned.dev/policy-version": "1.0.0" }
+  labels: { "policy-as-versioned.dev/policy-version": "2.0.1" }
 spec:
   containers: [{ name: c, image: nginx }]
 ---
@@ -43,7 +48,7 @@ kind: Pod
 metadata:
   name: root-attested-unhardened
   labels:
-    "policy-as-versioned.dev/policy-version": "1.0.0"
+    "policy-as-versioned.dev/policy-version": "2.0.1"
     "policy-as-versioned.dev/root-attestation": "SEC-1234"
 spec:
   containers: [{ name: c, image: nginx }]
