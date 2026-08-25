@@ -180,8 +180,8 @@ def selfcheck() -> None:
     assert len(obs) == 3, f"expected 3 observations, got {len(obs)}"
 
     fmap = {f["target"]["target-id"]: f["target"]["status"]["state"] for f in finds}
-    assert fmap["nist-800-53:AC-6"] == "not-satisfied", fmap   # legacy-till fails
-    assert fmap["nist-800-53:CM-6"] == "satisfied", fmap       # RDS passes
+    assert fmap["ac-6"] == "not-satisfied", fmap   # legacy-till fails
+    assert fmap["cm-6"] == "satisfied", fmap       # RDS passes
 
     # THE up-flow join: a cage's risk related-observation resolves to an
     # observation we emit here (identical uuid), by construction not by luck.
@@ -190,7 +190,7 @@ def selfcheck() -> None:
     root_sc = cage.fair.load(str(HERE.parent / "policy" / "scenarios" / "driftwood-root-residual.json"))
     till = cage.select(root_sc, "driftwood", cage.enforce.tolerance_for("driftwood"), mode="warn")
     risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="may-run-root-if-attested",
-                            control="nist-800-53:AC-6")
+                            control="ac-6")
     linked = risk["related-observations"][0]["observation-uuid"]
     emitted = {o["uuid"] for o in obs}
     assert linked in emitted, f"broken chain: risk points at {linked}, not among {emitted}"
@@ -199,7 +199,7 @@ def selfcheck() -> None:
     # is not-satisfied (evidence -> verdict -> risk).
     linked_obs = next(o for o in obs if o["uuid"] == linked)
     assert {"name": "result", "value": "fail"} in linked_obs["props"], linked_obs
-    ac6 = next(f for f in finds if f["target"]["target-id"] == "nist-800-53:AC-6")
+    ac6 = next(f for f in finds if f["target"]["target-id"] == "ac-6")
     assert {"observation-uuid": linked} in ac6["related-observations"], ac6
 
     # determinism: re-render is byte-identical.

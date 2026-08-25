@@ -25,8 +25,8 @@ import json, sys
 r = json.load(open(sys.argv[1]))["assessment-results"]["results"][0]
 assert r["observations"], "no observations"
 fmap = {f["target"]["target-id"]: f["target"]["status"]["state"] for f in r["findings"]}
-assert fmap.get("nist-800-53:AC-6") == "not-satisfied", fmap
-assert fmap.get("nist-800-53:CM-6") == "satisfied", fmap
+assert fmap.get("ac-6") == "not-satisfied", fmap
+assert fmap.get("cm-6") == "satisfied", fmap
 print(f"   {len(r['observations'])} observations, {len(r['findings'])} findings; "
       f"AC-6 not-satisfied, CM-6 satisfied")
 PY
@@ -44,7 +44,7 @@ emitted = {o["uuid"] for o in
 root_sc = cage.fair.load(sys.argv[1] + "/../policy/scenarios/driftwood-root-residual.json")
 till = cage.select(root_sc, "driftwood", cage.enforce.tolerance_for("driftwood"), mode="warn")
 risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="may-run-root-if-attested",
-                        control="nist-800-53:AC-6")
+                        control="ac-6")
 linked = risk["related-observations"][0]["observation-uuid"]
 assert linked in emitted, f"risk {risk['uuid'][:8]} points at {linked[:8]}, not emitted"
 # and the £ is carried as a facet under our own system URI
