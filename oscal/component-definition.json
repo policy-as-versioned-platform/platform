@@ -25,7 +25,6 @@
                 "control-id": "ac-6",
                 "description": "Least Privilege — a workload runs as non-root, or (if root) is attested + hardened.",
                 "props": [
-                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "may-run-root-if-attested" },
                   { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-nonroot" }
                 ]
               },
@@ -34,7 +33,7 @@
                 "control-id": "cm-6",
                 "description": "Configuration Settings — versioned policy is pinned; unversioned workloads are rejected.",
                 "props": [
-                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-policy-version" }
+                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "governed-namespace-requires-claim" }
                 ]
               }
             ]

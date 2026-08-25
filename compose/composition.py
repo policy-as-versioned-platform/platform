@@ -325,12 +325,13 @@ def _version_array(root: Path) -> list[dict]:
     return doc["spec"]["inputs"][0]["versions"]
 
 
-def load_implementations(root: Path) -> tuple[dict[str, dict[tuple[str, str], dict]], dict]:
+def load_implementations(root: Path) -> tuple[dict[str, dict[tuple[str, str], dict]], list[dict]]:
     """Every admission member of every live policy version, keyed within
     each version on (identity family, name with its version stripped) --
     ADR-0016's fix for the prototype's (family, version) key, which drops a
-    second member of one family in silence. Plus the orphan guard, rendered
-    through the parent's own offline twin under a second numbering axis."""
+    second member of one family in silence. Plus every `platform-machinery`
+    guard (orphan guard, governed-namespace guard), each rendered through
+    the parent's own offline twin under a second numbering axis."""
     live = [v["version"] for v in _version_array(root)]
     members_by_version: dict[str, dict[tuple[str, str], dict]] = {}
 
@@ -355,7 +356,7 @@ def load_implementations(root: Path) -> tuple[dict[str, dict[tuple[str, str], di
                 }
         members_by_version[version] = members
 
-    return members_by_version, _load_guard(root)
+    return members_by_version, _load_guards(root)
 
 
 def load_overlay_add(party_doc: dict) -> dict[tuple[str, str, str], dict]:
@@ -384,16 +385,32 @@ def load_overlay_add(party_doc: dict) -> dict[tuple[str, str, str], dict]:
     return out
 
 
-def _load_guard(root: Path) -> dict:
-    rog_path = root / "distribution" / "render-orphan-guard.py"
-    spec = importlib.util.spec_from_file_location("render_orphan_guard", rog_path)
-    twin = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(twin)
-    guard_doc = twin.orphan_guard(twin.versions(root / "distribution" / "versions.yaml"))
-    return {
-        "kind": guard_doc["kind"], "doc": guard_doc,
-        "path": "distribution/versions.yaml (rendered from the array)",
-    }
+def _load_module(root: Path, filename: str, module_name: str):
+    path = root / "distribution" / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_guards(root: Path) -> list[dict]:
+    """Every `platform-machinery` member: the orphan guard (ranged from the
+    version array) and the governed-namespace guard (static, ADR-0014's
+    fifth named gap). Both load through the parent's own offline twins, the
+    same reason `_load_guard` always has: `verify-*.sh` and the shift-left
+    check run without flux-operator in the loop."""
+    orphan_twin = _load_module(root, "render-orphan-guard.py", "render_orphan_guard")
+    orphan_doc = orphan_twin.orphan_guard(orphan_twin.versions(root / "distribution" / "versions.yaml"))
+    governed_twin = _load_module(root, "render-governed-namespace-guard.py", "render_governed_namespace_guard")
+    governed_doc = governed_twin.governed_namespace_guard()
+    return [
+        {"kind": orphan_doc["kind"], "doc": orphan_doc,
+         "path": "distribution/versions.yaml (rendered from the array)",
+         "out_path": "composed/orphan-guard.yaml", "member_name": "policy-version-orphan-guard"},
+        {"kind": governed_doc["kind"], "doc": governed_doc,
+         "path": "distribution/versions.yaml (static, ADR-0014)",
+         "out_path": "composed/governed-namespace-guard.yaml", "member_name": "governed-namespace-requires-claim"},
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -1095,7 +1112,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     merged: dict[tuple[str, str, str], dict] = {}
     conflicting_keys: set[tuple[str, str, str]] = set()
     implementations_parties: set[str] = set()
-    guard: dict | None = None
+    guards: list[dict] = []
     # (control_id, claimed policy name, claiming party) -- every OSCAL
     # control claim composition can see: each implementations parent's own
     # (ADR-0017: a claim belongs to whoever ships the implementation), plus
@@ -1110,7 +1127,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         impl_sha = next(p["sha"] for p in parents
                          if p["party"] == impl_party and p["kind"] == "implementations")
         impl_root = Path(parent_trees[impl_party])
-        members_by_version, this_guard = load_implementations(impl_root)
+        members_by_version, this_guards = load_implementations(impl_root)
         source_ref = f"{impl_party}@{impl_version}"
 
         for control_id, policy_name in _load_claims(impl_root.joinpath(*PARENT_CLAIMS_PATH)):
@@ -1140,9 +1157,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
                 merged[key] = dict(meta, source_party=impl_party, source_sha=impl_sha,
                                     source_ref=source_ref)
 
-        if guard is None:
-            guard = dict(this_guard, source_party=impl_party, source_sha=impl_sha,
-                         source_ref=source_ref)
+        if not guards:
+            guards = [dict(g, source_party=impl_party, source_sha=impl_sha,
+                           source_ref=source_ref) for g in this_guards]
 
     # The adopter's own overlay members -- shipped by the adopter, not any
     # parent (ADR-0017). A key already supplied by a parent is left alone;
@@ -1176,6 +1193,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     policy_owner: dict[str, str] = {}
     for (_version, _family, base), meta in merged.items():
         policy_owner.setdefault(base, meta["source_party"])
+    for g in guards:
+        policy_owner.setdefault(g["member_name"], g["source_party"])
 
     controls_edge = next((e for e in edges if e["kind"] == "controls"), None)
     nist_root: Path | None = None
@@ -1259,13 +1278,13 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
             "action": meta["action"],
         })
 
-    if guard is not None:
-        guard_doc = render_member(guard["doc"], None, adopter_party, guard["source_ref"], guard["path"])
-        rendered["composed/orphan-guard.yaml"] = yaml.safe_dump(guard_doc, **YAML_KWARGS)
+    for g in guards:
+        guard_doc = render_member(g["doc"], None, adopter_party, g["source_ref"], g["path"])
+        rendered[g["out_path"]] = yaml.safe_dump(guard_doc, **YAML_KWARGS)
         members_evidence.append({
-            "family": "platform-machinery", "name": "policy-version-orphan-guard",
-            "kind": guard["kind"], "version": None,
-            "source_party": guard["source_party"], "source_sha": guard["source_sha"], "action": None,
+            "family": "platform-machinery", "name": g["member_name"],
+            "kind": g["kind"], "version": None,
+            "source_party": g["source_party"], "source_sha": g["source_sha"], "action": None,
         })
 
     # The recorded hole ids -- open (new + recorded), never closed ones --
@@ -1461,15 +1480,15 @@ def _write_baseline_configmap(work: Path, baseline: str) -> None:
 # platform's own two dangling claims (ticket 10's named, still-open defect)
 # refuse every real composition regardless of holes. ----
 
-KNOWN_DANGLING_PLATFORM_CLAIMS = 2  # ac-6->may-run-root-if-attested, cm-6->require-policy-version
+KNOWN_DANGLING_PLATFORM_CLAIMS = 0  # ac-6/cm-6 fixed: ac-6's stale duplicate dropped,
+# cm-6 now claims governed-namespace-requires-claim (ADR-0014's fifth gap, built for real).
 
 
 def _assert_only_known_dangling(refusals: list[dict], context: str) -> None:
-    """Every real driftwood/tuppence/ludlow composition carries exactly
-    platform's two known-dangling claims (ticket 10 named them; ticket 14
-    is what now makes composition itself see them) and nothing else --
-    proof that composition adds no OTHER refusal for a party artefact that
-    otherwise checks out."""
+    """Every real driftwood/tuppence/ludlow composition carries zero
+    refusals -- platform's two formerly-dangling claims (ticket 10 named
+    them) are now fixed, and this proves composition adds no OTHER refusal
+    for a party artefact that otherwise checks out."""
     others = [r for r in refusals if r["kind"] != "dangling-claim"]
     assert not others, (context, others)
     assert len(refusals) == KNOWN_DANGLING_PLATFORM_CLAIMS, (context, refusals)
@@ -1510,6 +1529,8 @@ def _write_fixture_platform(root: Path, real_platform: Path, claims: list[tuple[
     _write_versions_yaml(root, [{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": "e" * 40}])
     shutil.copy(real_platform / "distribution" / "render-orphan-guard.py",
                 root / "distribution" / "render-orphan-guard.py")
+    shutil.copy(real_platform / "distribution" / "render-governed-namespace-guard.py",
+                root / "distribution" / "render-governed-namespace-guard.py")
     _write_admission_doc(root / "distribution" / "policies" / "v1.0.0" / "member-a.yaml",
                           "ValidatingPolicy", "member-a-1-0-0", "fam-a", "1.0.0",
                           validation_actions=["Audit"])
@@ -1606,15 +1627,15 @@ def selfcheck() -> None:
 
     document, rendered = compose(driftwood, parent_trees)
     assert document["party_artefact_errors"] == []
-    # ticket 14: the real platform component-definition carries two claims
-    # against a policy that does not exist anywhere (ticket 10 already
-    # named them; fixing them is that repo's job). Composition now catches
-    # them itself, so the real estate REFUSES today -- exactly the "reaches
-    # the adopter as a refused pull request" spec.md opens with.
-    assert document["outcome"] == "refused", document
+    # ticket 14 found the real platform component-definition carrying two
+    # claims against a policy that existed nowhere (ticket 10 named them).
+    # Both are now fixed (ac-6's stale duplicate dropped; cm-6 claims the
+    # real governed-namespace-requires-claim, ADR-0014's fifth gap, built)
+    # -- so the real estate now COMPOSES cleanly on its first run.
+    assert document["outcome"] == "composed", document
     _assert_only_known_dangling(document["refusals"], "real driftwood")
-    print("OK compose(): the real driftwood composes against its real pinned parents; the "
-          "only refusals present are platform's own two known-dangling claims")
+    print("OK compose(): the real driftwood composes against its real pinned parents; "
+          "platform's two formerly-dangling claims are fixed, zero refusals")
 
     assert {"outcome", "parents", "members", "refusals", "restatements", "cages",
             "holes", "ungoverned", "prices", "limits"} <= document.keys(), document.keys()
@@ -1648,7 +1669,7 @@ def selfcheck() -> None:
     print("OK parents[]: all four declared parent kinds resolve to a non-empty SHA")
 
     # --- two members of one family at one version both survive resolution ---
-    members_by_version, guard = load_implementations(parent_trees["platform"])
+    members_by_version, guards = load_implementations(parent_trees["platform"])
     live_version = sorted(members_by_version)[-1]
     at_version = members_by_version[live_version]
     assert ("graded-enforcement", "cage-tier") in at_version, at_version.keys()
@@ -1662,6 +1683,8 @@ def selfcheck() -> None:
         _write_versions_yaml(fixture_root, [{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": "f" * 40}])
         shutil.copy(parent_trees["platform"] / "distribution" / "render-orphan-guard.py",
                     fixture_root / "distribution" / "render-orphan-guard.py")
+        shutil.copy(parent_trees["platform"] / "distribution" / "render-governed-namespace-guard.py",
+                    fixture_root / "distribution" / "render-governed-namespace-guard.py")
         tree = fixture_root / "distribution" / "policies" / "v1.0.0"
         _write_admission_doc(tree / "member-a.yaml", "ValidatingPolicy", "member-a-1-0-0",
                               "one-family", "1.0.0", validation_actions=["Audit"])
@@ -1695,14 +1718,15 @@ def selfcheck() -> None:
     print("OK render_member: no validationActions field written onto cage-tier (Mutating) "
           "or cage-netpol (Generating)")
 
-    # --- orphan guard composes under the platform tag, matches the offline twin ---
-    guard_rendered = yaml.safe_load(rendered["composed/orphan-guard.yaml"])
-    assert render_is_faithful(guard_rendered, guard["doc"])
-    guard_member = next(m for m in document["members"] if m["name"] == "policy-version-orphan-guard")
-    assert guard_member["family"] == "platform-machinery"
-    assert guard_member["version"] is None
-    print("OK orphan guard: composes under the platform tag (no policy-version), "
-          "renders back to the offline twin's output")
+    # --- both platform-machinery guards compose under the platform tag, matching their offline twins ---
+    for g in guards:
+        g_rendered = yaml.safe_load(rendered[g["out_path"]])
+        assert render_is_faithful(g_rendered, g["doc"]), g["member_name"]
+        g_member = next(m for m in document["members"] if m["name"] == g["member_name"])
+        assert g_member["family"] == "platform-machinery"
+        assert g_member["version"] is None
+    print("OK guards: orphan guard and governed-namespace-requires-claim both compose under "
+          "the platform tag (no policy-version), rendering back to their offline twins' output")
 
     # --- the header ---
     header = yaml.safe_load(rendered["composed/HEADER.yaml"])
@@ -1733,11 +1757,11 @@ def selfcheck() -> None:
     print("OK ungoverned[]: real driftwood's own namespace already carries governed: \"true\", "
           "so composition records zero ungoverned namespaces")
 
-    # --- verify mode + CLI wrapper: a CLEAN fixture, since the real estate
-    # cannot reach outcome=="composed" today (platform's two dangling
-    # claims always refuse it) -- see _assert_only_known_dangling above.
-    # verify()/cmd_compose only ever run against an artefact that DID reach
-    # "composed", so a clean fixture is what actually exercises them. ---
+    # --- verify mode + CLI wrapper: a dedicated clean fixture, isolated from
+    # the real estate clone on disk so this test never writes into it (the
+    # real estate composes cleanly too now -- see the cmd_compose block
+    # against real driftwood, below -- this fixture just keeps the write
+    # side effects out of a real checkout). ---
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _write_fixture_catalog(root / "fixture-nist")
@@ -1779,20 +1803,21 @@ def selfcheck() -> None:
         assert (out / "composed" / "evidence.json").exists()
     print("OK cmd_compose: writes the rendered files and the evidence document, exits 0 on success")
 
-    # --- and against the real estate, cmd_compose exits non-zero today,
-    # for the known reason and nothing else (ticket 14's own honesty:
-    # composition now genuinely blocks the real driftwood's pull request) ---
+    # --- and against the real estate, cmd_compose now exits 0: platform's
+    # two formerly-dangling claims are fixed, so the real driftwood's first
+    # pull request composes and writes for real ---
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "cli-out"
         out.mkdir()
         (out / "party.yaml").write_text((driftwood / "party.yaml").read_text())
         shutil.copytree(driftwood / "gitops", out / "gitops")
         rc = cmd_compose(out, DEFAULT_ESTATE_CLONE, out)
-        assert rc == 1
-        assert not (out / "composed").exists()
-    print("OK cmd_compose: against the real estate, exits 1 today for platform's two known-"
-          "dangling claims, and writes nothing -- composition genuinely blocks the pull "
-          "request spec.md opens with")
+        assert rc == 0
+        assert (out / "composed" / "HEADER.yaml").exists()
+        assert (out / "composed" / "evidence.json").exists()
+    print("OK cmd_compose: against the real estate, exits 0 -- platform's two formerly-"
+          "dangling claims are fixed, and the real driftwood's first pull request composes "
+          "and writes for real")
 
     # --- refusal: a structurally invalid party artefact never composes, CLI exits non-zero ---
     with tempfile.TemporaryDirectory() as td:
@@ -1843,6 +1868,8 @@ def selfcheck() -> None:
             _write_versions_yaml(fx, [{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": "c" * 40}])
             shutil.copy(parent_trees["platform"] / "distribution" / "render-orphan-guard.py",
                         fx / "distribution" / "render-orphan-guard.py")
+            shutil.copy(parent_trees["platform"] / "distribution" / "render-governed-namespace-guard.py",
+                        fx / "distribution" / "render-governed-namespace-guard.py")
             _write_admission_doc(fx / "distribution" / "policies" / "v1.0.0" / "dup-member.yaml",
                                   "ValidatingPolicy", "dup-member-1-0-0", "dup-family", "1.0.0",
                                   validation_actions=[action])
@@ -1891,7 +1918,7 @@ def selfcheck() -> None:
         work = _adopter_copy("driftwood", Path(td))
         _with_restate(work, [{"name": "require-nonroot", "version": "2.0.0", "action": "Deny"}])
         document, files = compose(work, parent_trees)
-        assert document["outcome"] == "refused", document  # platform's known-dangling claims only
+        assert document["outcome"] == "composed", document
         _assert_only_known_dangling(document["refusals"], "stricter restatement")
         r = next(r for r in document["restatements"]
                  if r["rule"] == "require-nonroot/require-nonroot@2.0.0")
@@ -1917,9 +1944,8 @@ def selfcheck() -> None:
                 "scenario": scenario_rel, "why": "needs CAP_NET_RAW; cannot meet condition C",
             }])
             document, files = compose(work, parent_trees)
-            # a caged inability adds no refusal of its own -- the only
-            # refusals present are platform's known-dangling claims
-            assert document["outcome"] == "refused", document
+            # a caged inability adds no refusal of its own
+            assert document["outcome"] == "composed", document
             _assert_only_known_dangling(document["refusals"], f"weaker restatement ({org})")
             r = next(r for r in document["restatements"]
                      if r["rule"] == "posture/posture-trust-boundary@2.0.0")
@@ -2119,18 +2145,15 @@ def selfcheck() -> None:
               "\"member-a\", which fixture-platform ships, not fixture-adopter14' -- and still "
               "counts as coverage (a claim exists), orthogonal to the claim's own validity")
 
-    # --- and against the real estate: a claim whose policy exists nowhere
-    # refuses with needs_composition False, naming the two dangling
-    # platform claims today (ticket 14's own acceptance wording) ---
+    # --- and against the real estate: platform's former two dangling claims
+    # are fixed, so a claim whose policy exists nowhere no longer fires
+    # here -- proof the fix took, not just that the refusal path works
+    # (that path is still proved above via resolve_claims's own fixtures) ---
     real_doc, _ = compose(driftwood, parent_trees)
     dangling = [r for r in real_doc["refusals"] if r["kind"] == "dangling-claim"]
-    assert len(dangling) == 2, real_doc["refusals"]
-    assert all(r["needs_composition"] is False for r in dangling)
-    assert any("ac-6" in r["subject"] and "may-run-root-if-attested" in r["subject"] for r in dangling)
-    assert any("cm-6" in r["subject"] and "require-policy-version" in r["subject"] for r in dangling)
-    print("OK resolve_claims: the real platform component-definition's two dangling claims "
-          "(ac-6->may-run-root-if-attested, cm-6->require-policy-version) refuse with "
-          "needs_composition False, named exactly")
+    assert dangling == [], real_doc["refusals"]
+    print("OK resolve_claims: the real platform component-definition's two formerly-dangling "
+          "claims (ac-6, cm-6) are fixed -- zero dangling-claim refusals against the real estate")
 
     # --- the header carries the recorded hole ids (asserted against the
     # real estate's first composition, above: "OK HEADER.yaml/holes[]").
@@ -2228,8 +2251,13 @@ def selfcheck() -> None:
             if path == "composed/HEADER.yaml":
                 continue
             assert "ungoverned" not in text, path
-            assert GOVERNED_LABEL not in text, path
             assert "acme" not in text, path
+            # composed/governed-namespace-guard.yaml legitimately carries
+            # GOVERNED_LABEL in its own namespaceSelector (ADR-0014) -- a
+            # structurally different, correct use of the same string, not
+            # a leak of composition's own ungoverned-namespace bookkeeping.
+            if path != "composed/governed-namespace-guard.yaml":
+                assert GOVERNED_LABEL not in text, path
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
@@ -2361,9 +2389,9 @@ def selfcheck() -> None:
         "open at one and closed at two; every refusal carries needs_composition. TICKET 14: the "
         "baseline resolves by name exact-string, walking nested controls (ac-6.10 found); a "
         "prefixed or upper-case id is a hard failure, not a hole; the real estate's first "
-        "composition records 285 holes and refuses on none, but DOES refuse on platform's own "
-        "two dangling claims (ac-6->may-run-root-if-attested, cm-6->require-policy-version), "
-        "needs_composition False; a new hole refuses and names it; a closed hole is marked so; "
+        "composition records 285 holes and refuses on none -- platform's own two formerly-"
+        "dangling claims (ac-6, cm-6) are now fixed, so a real first composition composes "
+        "clean; a new hole refuses and names it; a closed hole is marked so; "
         "an adopter-added control refuses unfilled and is filled by the adopter's own claim "
         "against its own overlay.add member; a removed control and a widened baseline both "
         "refuse with no override; a claim against a parent's policy refuses; and the header "

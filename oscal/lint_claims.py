@@ -18,14 +18,17 @@ whoever ships the implementation, and an implementation that stopped
 existing does not un-claim itself. A claim whose control id resolves
 nowhere in the catalogue is not even a hole — it is a hard failure.
 
-Two dangling claims exist in component-definition.json TODAY: `cm-6` claims
-`require-policy-version` and `ac-6` claims `may-run-root-if-attested`.
-Neither policy is shipped. Fixing that is a different platform defect, not
-this ticket's (policy-composition ticket 10) — this ticket's job is only to
-make sure that defect has a red check instead of silence. Run plainly, this
-script names both, tags them EXPECTED-RED, and still exits non-zero: it
-never skips the check to reach green, and it will go green on its own the
-moment that other defect is fixed.
+Both claims ticket 10 originally found dangling (`cm-6`->`require-policy-version`,
+`ac-6`->`may-run-root-if-attested`) are now fixed: `ac-6`'s stale duplicate was
+dropped (the same rule already lives under `require-nonroot`, claimed
+separately), and `cm-6` now claims `governed-namespace-requires-claim`
+(ADR-0014's fifth named gap, built for real). `shipped_policy_names()` below
+also recognises the two `platform-machinery` guards (orphan guard,
+governed-namespace guard) as shipped, alongside the versioned policy trees --
+neither lives under `distribution/policies/v*/`, so a plain glob would miss
+them. `KNOWN_DANGLING` stays as the empty-set regression guard: a real green
+run should stay green, and a claim breaking again should go straight to FAIL,
+not silently back to EXPECTED-RED.
 
 Usage:
     lint_claims.py                 # the real check; exit 0 clean, 1 if any claim fails
@@ -53,19 +56,26 @@ DEFAULT_NIST_CATALOG_DIR = PLATFORM_ROOT.parent / "nist" / "catalog"
 POLICY_KINDS = {"ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy"}
 _SUFFIX = re.compile(r"-\d+-\d+-\d+$")  # the slugified-semver suffix result2oscal.py also strips
 
-# The two claims ticket 10 names as dangling today. A DIFFERENT platform
-# defect fixes them; naming them here lets this lint tell "still exactly the
-# known defect" from "something new broke".
-KNOWN_DANGLING: set[tuple[str, str]] = {
-    ("cm-6", "require-policy-version"),
-    ("ac-6", "may-run-root-if-attested"),
-}
+# Ticket 10's two originally-dangling claims, now fixed (see module
+# docstring). Empty by design: a regression should FAIL loudly, never
+# silently downgrade back to EXPECTED-RED.
+KNOWN_DANGLING: set[tuple[str, str]] = set()
+
+# The two platform-machinery guards (unversioned, cs-22's identity) --
+# neither lives under distribution/policies/v*/, so shipped_policy_names()
+# below names them explicitly rather than missing them by construction.
+PLATFORM_MACHINERY_NAMES = frozenset({
+    "policy-version-orphan-guard",
+    "governed-namespace-requires-claim",
+})
 
 
 def shipped_policy_names(version_trees: Path = VERSION_TREES) -> set[str]:
     """Every policy identity (name, version suffix stripped) the version
-    trees ship — the same identity the engine and result2oscal.py key on."""
-    names: set[str] = set()
+    trees ship — the same identity the engine and result2oscal.py key on —
+    plus the platform-machinery guards, which are real, shipped, claimable
+    members but are not versioned under distribution/policies/v*/."""
+    names: set[str] = set(PLATFORM_MACHINERY_NAMES)
     for path in sorted(version_trees.glob("v*/*.yaml")):
         for doc in yaml.safe_load_all(path.read_text()):
             if not doc or doc.get("kind") not in POLICY_KINDS:
@@ -159,9 +169,8 @@ def selfcheck() -> None:
     comp_def = json.loads(COMP_DEF.read_text())
     shipped = shipped_policy_names()
 
-    # 1. the dangling claims today are EXACTLY the two ticket 10 names — proves
-    #    the lint goes green the moment that other defect is fixed, and red if
-    #    a genuinely new one appears.
+    # 1. zero dangling claims today — both are fixed; a regression here means
+    #    something genuinely broke, not the known-and-tracked defect coming back.
     dangling = set(lint_policy_names(comp_def, shipped))
     assert dangling == KNOWN_DANGLING, f"dangling claims changed: {dangling}"
 
@@ -191,10 +200,10 @@ def selfcheck() -> None:
     fixture_unknown = lint_control_ids(fixture, catalog_ids)
     assert fixture_unknown == ["zz-999"], fixture_unknown
 
-    # 6. the real run is red today, for exactly the known reason and nothing
-    #    else — "mark the beat as expected-red", proved rather than stated.
+    # 6. the real run is green now — both known claims are fixed, proved
+    #    rather than stated.
     rc = run()
-    assert rc == 1, "expected the real run to stay red until the other platform defect is fixed"
+    assert rc == 0, "expected the real run to be green — both known dangling claims are fixed"
 
     print(f"selfcheck ok: {len(KNOWN_DANGLING)} known dangling claim(s), all other claims "
           "resolve, unknown-id fixture fails as required")

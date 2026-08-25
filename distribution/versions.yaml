@@ -93,3 +93,36 @@ spec:
           message: >-
             policy-version not in the platform-declared version array (orphan):
             no ResourceSet element declares it, so it cannot run.
+    ---
+    # The governed-namespace guard (ADR-0014's fifth named gap, now built):
+    # rendered ONCE, beside the orphan-guard above and not inside it. No
+    # dependency on the version array -- static, unlike the orphan-guard --
+    # so it needs no `range`. Offline twin: render-governed-namespace-guard.py
+    # (same split, same reason: verify-*.sh and shift-left run without
+    # flux-operator in the loop). CREATE only -- UPDATE stays out of scope so
+    # the currency-controller's de-posture patch keeps working. Starts Audit;
+    # promotes by editorial PR once every governed namespace is labelled
+    # (ADR-0014 consequences), same convention the orphan-guard's own entry
+    # already uses.
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: ValidatingPolicy
+    metadata:
+      name: governed-namespace-requires-claim    # cluster-scoped, namespaceSelector-bounded
+    spec:
+      validationActions: [Audit]
+      matchConstraints:
+        resourceRules:
+          - apiGroups: [""]
+            apiVersions: ["v1"]
+            operations: ["CREATE"]
+            resources: ["pods"]
+        namespaceSelector:
+          matchLabels:
+            policy-as-versioned.dev/governed: "true"
+      validations:
+        - expression: >-
+            object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
+          message: >-
+            this namespace is governed (policy-as-versioned.dev/governed: "true"); a pod
+            created here must carry a policy-as-versioned.dev/policy-version claim. Silence
+            is not an exemption (ADR-0014).
