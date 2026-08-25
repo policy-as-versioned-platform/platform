@@ -155,15 +155,41 @@ def wargame(intel=None):
     return wargame_enforcement(intel) + wargame_scenarios(intel)
 
 
+def wargame_cage_tier(prices, org):
+    """Ticket 16's `prices[]` -> cage-tier drift rows, in the SAME row shape
+    wargame_enforcement() uses (kind/org/control/tolerance/risk_bought_current/
+    drift) -- so proposer_bounds.confidence()/bound() gate a tier drift with no
+    second formula. `tolerance` is the price before the parent bump,
+    `risk_bought_current` is the price after: materiality is how far the
+    exposure moved relative to what it was, the same shape a band-crossing is
+    for an enforcement flip. Deliberately NOT folded into wargame() -- see
+    tier_pr.py's own docstring for why a real adopter run must call this
+    explicitly rather than pick up the war-gamer's demo fixture."""
+    rows = []
+    for price in prices:
+        rows.append({
+            "kind": "cage-tier",
+            "org": org,
+            "control": f"{price['source']}-{price['kind']}",
+            "tolerance": price.get("old_price"),
+            "risk_bought_current": price.get("new_price"),
+            "drift": bool(price.get("changed")),
+            "price": price,
+        })
+    return rows
+
+
 # --- propose (never dispose) --------------------------------------------------
 def propose(row):
-    """Turn a drift row into a signed-policy-PR proposal. Opened, never merged;
-    carries the version cross-check gate + the war-gamer's gitsign identity.
+    """Turn a drift row into a proposal. Opened, never merged; carries the
+    version cross-check gate + the war-gamer's gitsign identity.
 
     There is deliberately NO merge()/dispose() here -- the agent proposes, a human
     + the PR gate dispose. That absence IS the safety property (selfcheck asserts it)."""
     if not row["drift"]:
         return None
+    if row["kind"] == "cage-tier":
+        return _propose_tier(row)
     slug = f"{row['org']}-{row['control']}".replace("@", "-").replace(".", "-")
     return {
         "branch": f"wargamer/retune-{slug}",
@@ -182,6 +208,40 @@ def propose(row):
         "merged": False,              # propose-never-dispose: the agent never merges
         "auto_merge": False,
         "disposition": "OPEN -- awaiting human review + version cross-check gate",
+    }
+
+
+def _propose_tier(row):
+    """A priced cage-tier drift (ticket 16's `prices[]`) becomes a proposal
+    that tier_pr.py (ticket 17) lands as a real PR (an ordinary tier) or a
+    real issue (a proposed `deny`) -- this only shapes what gets landed. A
+    `deny` never travels as a label: `TIERS` holds only
+    baseline/restricted/quarantine, and the `cage-tier` MutatingPolicy
+    coerces an unrecognised label value to `baseline`, so a merged `deny`
+    label would silently INVERT the proposal (ADR-0015)."""
+    price = row["price"]
+    is_deny = price.get("proposed_as") == "issue"
+    slug = f"tier-{row['org']}-{row['kind']}-{price['source']}-{price['kind']}".replace("@", "-").replace(".", "-")
+    return {
+        "branch": f"wargamer/retune-{slug}",
+        "title": f"[war-gamer] cage-tier re-tune ({row['org']}, {price['source']}/{price['kind']}): "
+                 f"{price['old_tier']} -> {price['proposed_tier']}",
+        "actor": "wargamer-agent",
+        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log",
+        "signed": True,
+        "from_evidence": {"source": price["source"], "kind": price["kind"],
+                           "old_version": price.get("old_version"), "new_version": price.get("new_version")},
+        "change": None if is_deny else {
+            "label": "posture.acme.io/tier",
+            "from": price["old_tier"],
+            "to": price["proposed_tier"],
+        },
+        "proposal_kind": "issue" if is_deny else "pull_request",
+        "required_gate": GATE,
+        "merged": False,               # propose-never-dispose: the agent never merges
+        "auto_merge": False,
+        "disposition": ("OPEN -- issue, never a label, awaiting human review" if is_deny
+                         else "OPEN -- awaiting human review + version cross-check gate"),
     }
 
 
