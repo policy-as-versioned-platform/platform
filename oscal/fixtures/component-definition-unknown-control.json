@@ -1,0 +1,34 @@
+{
+  "_comment": "Fixture for lint_claims.py --selfcheck: proves a control id absent from the nist catalogue is a hard failure, not a hole (ticket policy-composition/10). zz-999 does not exist in any NIST 800-53r5 group at any nesting depth; require-nonroot is a real shipped policy so only the control-id half is exercised.",
+  "component-definition": {
+    "uuid": "b0c2f0d0-fix0-4000-8000-000000000001",
+    "metadata": {
+      "title": "fixture: unknown control id",
+      "last-modified": "2026-08-25T00:00:00Z",
+      "version": "0.0.0",
+      "oscal-version": "1.1.2"
+    },
+    "components": [
+      {
+        "uuid": "b0c2f0d0-fix0-4000-8000-000000000002",
+        "type": "policy",
+        "title": "fixture component",
+        "control-implementations": [
+          {
+            "uuid": "b0c2f0d0-fix0-4000-8000-000000000003",
+            "source": "https://github.com/policy-as-versioned-nist/nist/blob/v1.0.0/catalog/NIST_SP-800-53_rev5.2.0_catalog.json",
+            "implemented-requirements": [
+              {
+                "uuid": "b0c2f0d0-fix0-4000-8000-000000000004",
+                "control-id": "zz-999",
+                "props": [
+                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-nonroot" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

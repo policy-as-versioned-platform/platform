@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://policy-as-versioned.dev/schema/party-artefact.json",
+  "title": "party artefact",
+  "description": "One signed file per party (policy-composition ticket 11, spec.md 'The party artefact'; ADR-0012, ADR-0013). Declares the party's name, its roles, its parents as party+kind+version, its selected baseline name, and its overlay. Promoted from the shape spikes/cs-06b-cross-party-composition/material/parties/*.yaml proposed. The single source of truth for the allowed roles and parent kinds -- party_artefact.py reads its enums from this file rather than re-declaring them.",
+  "type": "object",
+  "required": ["party", "roles", "baseline", "inherits", "overlay"],
+  "additionalProperties": false,
+  "properties": {
+    "party": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The party this artefact declares, e.g. 'driftwood'."
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "enum": ["publisher", "risk-bearer", "adopter"] },
+      "description": "CONTEXT.md's Role entry. Roles compose; this is not a partition."
+    },
+    "baseline": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The named baseline this party selects from its controls parent, e.g. 'MODERATE'. May be widened by an overlay add, never narrowed (ADR-0013)."
+    },
+    "inherits": {
+      "type": "array",
+      "description": "Every parent this party pins, as party+kind+version. The version is the tag this party already pins in its own Flux/Renovate files.",
+      "items": {
+        "type": "object",
+        "required": ["party", "kind", "version"],
+        "additionalProperties": false,
+        "properties": {
+          "party": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": ["controls", "implementations", "pricing", "threat"],
+            "description": "controls: a catalogue + named baselines. implementations: policy bodies + control claims. pricing: a penalty schema, no rules. threat: a feed, no rules."
+          },
+          "version": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "overlay": {
+      "type": "object",
+      "required": ["add", "restate"],
+      "additionalProperties": false,
+      "properties": {
+        "add": {
+          "type": "array",
+          "description": "Members this party ships itself, versioned with its own composed artefact."
+        },
+        "restate": {
+          "type": "array",
+          "description": "An inherited ValidatingPolicy and the action this party wants for it. Stricter is accepted; weaker is a declared inability, caged and priced, never an override."
+        },
+        "controls": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Bare catalogue control ids (ticket 14; ADR-0013, ADR-0017) this party adds to its selected baseline, beyond what the baseline name already selects. May only grow: a composition refuses on any id that leaves the last signed composed artefact's selected set. Optional; defaults to none."
+        }
+      }
+    }
+  }
+}
