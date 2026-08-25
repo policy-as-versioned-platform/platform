@@ -65,6 +65,20 @@ on:
       tags:
         description: 'multi-tag form: JSON array of {"tag":"vX.Y.Z","message":"..."} objects, all cut on this commit (omit if using `version`/`message`)'
         required: false
+      backfill_evidence_only:
+        description: >-
+          policy-composition ticket 18: when "true", run the gate and commit
+          signed evidence for the named policy/v* tag(s), but create no tag
+          and push commits (not tags) straight to this branch instead --
+          for a version cut before the publisher gate (cs-27) existed, so it
+          never got evidence. The gate computes against the REAL, already-
+          committed distribution/policies/v<version> tree
+          (build_current_subject reads real files, not the tag object
+          itself), so this is a genuine, reproducible computation -- not a
+          fabricated value -- generated today rather than at original
+          release. Tags stay immutable; only evidence files are added.
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -122,6 +136,7 @@ jobs:
           cat tags.json
 
       - name: refuse any tag that already exists -- checked for EVERY tag before ANY tag is created
+        if: inputs.backfill_evidence_only != 'true'
         run: ./.github/scripts/cut-release-refuse-existing.sh tags.json
 
       - name: publisher gate -- run_gate() on every policy tag, evidence signed cosign keyless (pass or refuse)
@@ -145,6 +160,10 @@ jobs:
         # A no-op when this dispatch cut no policy tags at all.
         run: ./.github/scripts/cut-release-commit-evidence.sh tags.json
 
+      - name: backfill mode -- push the evidence commit straight to this branch (no tag, tags stay immutable)
+        if: inputs.backfill_evidence_only == 'true'
+        run: git push origin "HEAD:${{ github.ref_name }}"
+
       - name: point versions.yaml's commit field(s) at the evidence commit, in a second commit
         # cs-27: a commit cannot carry its own SHA (cs-15's own rule for this
         # exact class of problem), so this is deliberately a SECOND commit,
@@ -154,11 +173,16 @@ jobs:
         # on THIS commit, one ahead of the evidence commit the array names --
         # see cut-release-update-array-commit.sh's own header for why that
         # one-commit gap is correct, not a bug. A no-op when this dispatch cut
-        # no policy tags at all.
+        # no policy tags at all. Skipped in backfill mode: 2.0.0/2.0.1's
+        # array elements already carry their own, correct, original commit
+        # SHA -- backfilled evidence must not repoint them.
+        if: inputs.backfill_evidence_only != 'true'
         run: ./.github/scripts/cut-release-update-array-commit.sh tags.json
 
       - name: create the signed annotated tags (ambient Actions identity, no interactive login)
+        if: inputs.backfill_evidence_only != 'true'
         run: ./.github/scripts/cut-release-create-tags.sh tags.json
 
       - name: push every tag in one atomic push (git push only -- never the git-data REST API)
+        if: inputs.backfill_evidence_only != 'true'
         run: ./.github/scripts/cut-release-push.sh tags.json origin
