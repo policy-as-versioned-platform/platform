@@ -43,7 +43,7 @@ emitted = {o["uuid"] for o in
            json.load(open(sys.argv[2]))["assessment-results"]["results"][0]["observations"]}
 root_sc = cage.fair.load(sys.argv[1] + "/../policy/scenarios/driftwood-root-residual.json")
 till = cage.select(root_sc, "driftwood", cage.enforce.tolerance_for("driftwood"), mode="warn")
-risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="may-run-root-if-attested",
+risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="require-nonroot",
                         control="ac-6")
 linked = risk["related-observations"][0]["observation-uuid"]
 assert linked in emitted, f"risk {risk['uuid'][:8]} points at {linked[:8]}, not emitted"

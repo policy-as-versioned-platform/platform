@@ -189,7 +189,7 @@ def selfcheck() -> None:
     # ../graded/cage.py prices and cages the residual instead of exempting it.
     root_sc = cage.fair.load(str(HERE.parent / "policy" / "scenarios" / "driftwood-root-residual.json"))
     till = cage.select(root_sc, "driftwood", cage.enforce.tolerance_for("driftwood"), mode="warn")
-    risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="may-run-root-if-attested",
+    risk = cage.oscal_risk(till, subject="shop/legacy-till-0", policy="require-nonroot",
                             control="ac-6")
     linked = risk["related-observations"][0]["observation-uuid"]
     emitted = {o["uuid"] for o in obs}
