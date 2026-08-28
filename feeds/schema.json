@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://policy-as-versioned.dev/schema/feed-envelope.json",
+  "title": "feed envelope",
+  "description": "One envelope for every published feed (eco-system ticket 04/21; ADR-0019). The signature is the gitsign tag on the publisher repo and nothing else: there is no in-band signature field, because a signature cannot cover itself. Only `payload` differs between a regulator's penalty schema and a prediction-market move. A feed file lives at <feed-name>/v<MAJOR>/feed.json in its publisher repo, with rule.yaml and bump.yaml beside it and the payload schema at <feed-name>/payload.schema.json.",
+  "type": "object",
+  "required": ["kind", "name", "version", "published_by", "published_at", "payload_schema", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "enum": ["feed", "controls", "implementations"],
+      "description": "The closed parent kind. feed: anything that prices and carries no rules. controls: a catalogue plus named baselines. implementations: policy bodies plus control claims."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "The free name under the kind, e.g. 'threat-register', 'penalty-schema'. A new publisher declares a new name with no platform change."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$",
+      "description": "Semver, no leading v. Equal to the tag that signs it: '<name>/vX.Y.Z' on a multi-feed repo, 'vX.Y.Z' on a single-feed repo."
+    },
+    "published_by": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The publishing party's name, as on its party.yaml."
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$",
+      "description": "RFC 3339 date-time."
+    },
+    "payload_schema": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repo-relative path or URL of the JSON Schema the payload validates against. A change here is always a major bump."
+    },
+    "payload": {
+      "type": "object",
+      "description": "The feed body. Validated against payload_schema, never here."
+    }
+  }
+}

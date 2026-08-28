@@ -9,8 +9,9 @@ the whole thesis is special pleading.
 
 Three self-controls, each the deny-state of the platform-self scenario:
 
-  feed-integrity   feeds are SIGNED (../feeds/keys + .sig, verified offline by
-                   ../feeds/verify.sh), SOURCED (every feed entry names a source),
+  feed-integrity   feeds are SIGNED (the release.yml identity pin is the verification
+                   key, ADR-0019/0023; the .sig copies stay until the feed's consumers
+                   move to the feeds repo), SOURCED (every feed entry names a source),
                    and BOUNDED (../feeds/to_fair_scenario.py selfcheck asserts every
                    entry yields a valid lo<=mode<=hi triple — a feed can't inject an
                    out-of-range £).
@@ -42,8 +43,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "risk"))
 sys.path.insert(0, os.path.join(HERE, "..", "feeds"))
+sys.path.insert(0, os.path.join(HERE, "..", "party"))
 import enforce            # noqa: E402  the SAME appetite-band engine the estate uses
 import to_fair_scenario   # noqa: E402  the feed bounds checker
+import party_artefact     # noqa: E402  publish_capability: the one place that says "verifiable"
 
 FEEDS = os.path.join(HERE, "..", "feeds")
 SELF_SCENARIO = os.path.join(HERE, "scenarios", "platform-self.json")
@@ -78,16 +81,19 @@ def _entries(feed):
 
 
 def feed_integrity():
-    # The PUBLIC key (feeds-signing-key.pub.pem), not the private one -- the
-    # private key is deliberately never committed, so checking for it here
-    # made signing_key_present always False on a clean checkout (ticket
-    # multi-org-estate/25). verify-feeds.sh and verify.sh both check the same
-    # public key to VERIFY a signature; this flag reports the same thing:
-    # can a feed's signature actually be checked here, not whether this
-    # checkout can sign new ones.
-    key = os.path.join(FEEDS, "keys", "feeds-signing-key.pub.pem")
+    # verification_key_present (ticket 21, ADR-0019/0023 D3): can a consumer
+    # verify what this party signs? The gitsign tag is the only signature, so
+    # the "key" is the identity release.yml pins, not a .pem under feeds/keys
+    # (the retired flag was `signing_key_present`). One implementation:
+    # party/party_artefact.py's publish_capability, read off the platform's
+    # own party.yaml.
+    from pathlib import Path
+    platform_dir = Path(HERE).parent
+    with open(platform_dir / "party.yaml") as fh:
+        facts, _ = party_artefact.publish_capability(party_artefact.yaml.safe_load(fh), platform_dir)
     report = {
-        "signing_key_present": os.path.exists(key),
+        "verification_key_present": facts["verification_key_present"],
+        "can_publish": facts["can_publish"],
         "feeds": [],
         "bounded": None,
     }
@@ -134,7 +140,7 @@ def cmd_selfcheck(_a):
 
     # 2. Feed-integrity actually holds: signed + sourced + bounded.
     fi = feed_integrity()
-    assert fi["signing_key_present"], fi
+    assert fi["verification_key_present"], fi
     assert fi["feeds"], "no feeds found to govern"
     assert all(f["signed"] for f in fi["feeds"]), [f for f in fi["feeds"] if not f["signed"]]
     assert all(f["sourced"] for f in fi["feeds"]), [f for f in fi["feeds"] if not f["sourced"]]

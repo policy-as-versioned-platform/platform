@@ -193,6 +193,17 @@ compose() -- ADR-0006, ADR-0010, ADR-0015:
     drew it: a feed may re-price, and it may never apply -- nothing here
     ever reads `datetime.now()` or a scheduler of any kind.
 
+ECO-SYSTEM TICKET 21 (ADR-0019) opens the parent kind to `feed` with a
+free `name`: `{party: feeds, kind: feed, name: threat-register, version: v1}`
+resolves to `<estate>/feeds/threat-register/v1/feed.json`, the envelope is
+checked against `platform/feeds/schema.json` (stdlib only) and its `payload`
+is what the publisher's converter prices. `{party: ico, kind: feed, name:
+penalty-schema}` resolves the same way, falling back to ico's pre-envelope
+`schema/<version>/penalty-schema.json` until ico v3 lands. The legacy kinds
+`pricing` and `threat` stay as read-only aliases of those two names, so a
+header recorded before the rename still yields an "old" version. A file
+that is not a valid envelope is an `invalid-feed` refusal, never a crash.
+
 Usage:
     composition.py compose <adopter-dir> [--estate-clone DIR] [--out DIR]
     composition.py verify <adopter-dir> [--estate-clone DIR]
@@ -246,6 +257,22 @@ UNPINNED_VERSION_SUBDIR: dict[str, tuple[str, ...]] = {
     "threat": ("feeds", "threat-register", "{version}"),
 }
 
+# Eco-system ticket 21 (ADR-0019): the parent kind is closed to controls,
+# implementations, feed; a feed carries a free `name`. The two legacy kinds
+# stay as read-only aliases this phase so the three adopters still compose
+# without rewriting their pins.
+FEED_ALIASES: dict[str, str] = {"pricing": "penalty-schema", "threat": "threat-register"}
+FEED_KINDS = ("feed",) + tuple(FEED_ALIASES)
+FEED_SCHEMA_PATH = PLATFORM_DIR / "feeds" / "schema.json"
+# The converter each feed name is priced through, and the version key its
+# legacy raw shape carries (injected into the payload when the envelope
+# carries it instead, so the unmodified converters keep working).
+FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
+    "threat-register": ("feeds", "to_fair_scenario.py"),
+    "penalty-schema": ("schema", "to_fair_scenario.py"),
+}
+FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version"}
+
 YAML_KWARGS = dict(sort_keys=False, allow_unicode=True, width=4096)
 
 HEADER_COMMENT = (
@@ -266,7 +293,8 @@ class Refused(Exception):
 # --------------------------------------------------------------------------
 
 
-def resolve_sha(party: str, kind: str, version: str, adopter_dir: Path, tree_path: Path) -> str:
+def resolve_sha(party: str, kind: str, version: str, adopter_dir: Path, tree_path: Path,
+                name: str | None = None) -> str:
     """The commit SHA a parent edge resolves to. `controls`/`implementations`
     read the SHA Renovate already wrote into the adopter's own Flux pin
     (ADR-0012: reused, never re-derived). `pricing`/`threat` have no such
@@ -281,12 +309,15 @@ def resolve_sha(party: str, kind: str, version: str, adopter_dir: Path, tree_pat
         if not commit:
             raise Refused(f"{pin_rel}: spec.ref.commit is not set")
         return commit
-    return _resolve_unpinned_sha(tree_path, kind, version)
+    return _resolve_unpinned_sha(tree_path, kind, version, name)
 
 
-def _resolve_unpinned_sha(tree_path: Path, kind: str, version: str) -> str:
-    parts = UNPINNED_VERSION_SUBDIR.get(kind)
-    version_dir = tree_path.joinpath(*(p.format(version=version) for p in parts)) if parts else None
+def _resolve_unpinned_sha(tree_path: Path, kind: str, version: str, name: str | None = None) -> str:
+    if kind == "feed" and name:
+        version_dir = feed_file("", name, version, tree_path).parent
+    else:
+        parts = UNPINNED_VERSION_SUBDIR.get(kind)
+        version_dir = tree_path.joinpath(*(p.format(version=version) for p in parts)) if parts else None
     if (tree_path / ".git").exists():
         cmd = ["git", "-C", str(tree_path), "log", "-1", "--format=%H"]
         if version_dir is not None and version_dir.is_dir():
@@ -313,6 +344,100 @@ def _resolve_unpinned_sha(tree_path: Path, kind: str, version: str) -> str:
                      if p.is_file() and "__pycache__" not in p.parts):
         h.update(f.read_bytes())
     return h.hexdigest()
+
+
+def _parent_key(edge: dict) -> str:
+    """One identity per parent: the feed name for a feed (aliased or not),
+    the kind otherwise -- so `ico/pricing@v1` and `ico/feed:penalty-schema@v2`
+    are the same parent at two versions."""
+    return _feed_name(edge) or edge["kind"]
+
+
+def _feed_name(edge: dict) -> str | None:
+    """The feed name an edge subscribes to: `name` on a `feed` edge, the
+    aliased name on a legacy `pricing`/`threat` edge, None otherwise."""
+    if edge.get("kind") == "feed":
+        return edge.get("name")
+    return FEED_ALIASES.get(edge.get("kind"))
+
+
+def _major_dir(version: str) -> str:
+    """'v1' -> 'v1'; '1.4.0' -> 'v1'. A feed file lives at <name>/v<MAJOR>/."""
+    v = version.lstrip("v")
+    return "v" + v.split(".")[0]
+
+
+def feed_file(party: str, name: str, version: str, tree_path: Path) -> Path:
+    """Where a feed parent's file lives inside the party's own tree. The
+    envelope path `<name>/v<MAJOR>/feed.json` wins when it exists; otherwise
+    the pre-envelope location of the two migrating feeds."""
+    envelope = Path(tree_path) / name / _major_dir(version) / "feed.json"
+    if envelope.exists():
+        return envelope
+    # ponytail: bridge until ico v3 lands (penalty-schema) and the platform
+    # copies of threat-register are deleted; drop these two lines then.
+    if name == "penalty-schema":
+        return Path(tree_path) / "schema" / version / "penalty-schema.json"
+    if name == "threat-register":
+        return Path(tree_path) / "feeds" / "threat-register" / version / "register.json"
+    return envelope
+
+
+def _validate_envelope(doc: dict, where: str) -> None:
+    """A stdlib-only check of feeds/schema.json: required keys, types, the
+    kind enum, the version/date patterns, no extra keys. ponytail: no
+    jsonschema in the estate's python3; switch to it if the schema grows
+    beyond what this reads."""
+    schema = json.loads(FEED_SCHEMA_PATH.read_text())
+    props = schema["properties"]
+    errors = []
+    for k in schema["required"]:
+        if k not in doc:
+            errors.append(f"missing {k}")
+    for k in doc.keys() - props.keys():
+        errors.append(f"unknown key {k}")
+    types = {"string": str, "object": dict}
+    for k, spec in props.items():
+        if k not in doc:
+            continue
+        if "enum" in spec and doc[k] not in spec["enum"]:
+            errors.append(f"{k}: {doc[k]!r} not in {spec['enum']}")
+        if "type" in spec and not isinstance(doc[k], types[spec["type"]]):
+            errors.append(f"{k}: expected {spec['type']}")
+        if "pattern" in spec and isinstance(doc[k], str) and not re.match(spec["pattern"], doc[k]):
+            errors.append(f"{k}: {doc[k]!r} does not match {spec['pattern']}")
+        if spec.get("minLength") and isinstance(doc[k], str) and len(doc[k]) < spec["minLength"]:
+            errors.append(f"{k}: empty")
+    if errors:
+        raise Refused(f"{where}: not a valid feed envelope: " + "; ".join(errors))
+
+
+def load_feed_payload(path: Path, name: str, version: str) -> dict:
+    """The priced body of a feed parent. An envelope is validated against
+    feeds/schema.json and its `payload` returned; a pre-envelope raw file
+    (the bridge above) is returned as it is."""
+    doc = json.loads(Path(path).read_text())
+    if "payload" not in doc and "kind" not in doc:
+        return doc  # legacy raw shape
+    _validate_envelope(doc, str(path))
+    if doc["name"] != name:
+        raise Refused(f"{path}: envelope names feed {doc['name']!r}, pin says {name!r}")
+    payload = dict(doc["payload"])
+    # ponytail: the unmodified converters read their own version key from
+    # the body; fill it from the envelope when the payload does not carry it.
+    payload.setdefault(FEED_VERSION_KEY.get(name, "feed_version"), version)
+    return payload
+
+
+def _converter(name: str, tree_path: Path) -> Path:
+    """The publisher-shipped converter for a feed name: beside the feed in
+    its own tree if it ships one, else the estate's existing copy."""
+    for candidate in (Path(tree_path) / name / "to_fair_scenario.py",
+                      Path(tree_path).joinpath(*FEED_CONVERTERS[name]),
+                      PLATFORM_DIR.joinpath(*FEED_CONVERTERS[name])):
+        if candidate.exists():
+            return candidate
+    raise Refused(f"no converter for feed {name!r} under {tree_path}")
 
 
 # --------------------------------------------------------------------------
@@ -560,7 +685,7 @@ def check_diamonds(edges: list[dict]) -> list[dict]:
     invented for a case nothing here can produce yet."""
     by_parent: dict[tuple[str, str], dict[str, list[dict]]] = {}
     for edge in edges:
-        by_parent.setdefault((edge["party"], edge["kind"]), {}) \
+        by_parent.setdefault((edge["party"], _parent_key(edge)), {}) \
             .setdefault(edge["version"], []).append(edge)
     refusals = []
     for (party, kind), by_version in sorted(by_parent.items()):
@@ -599,14 +724,28 @@ def _load_scenario(rel_path: str) -> dict:
     return json.loads((PLATFORM_DIR / rel_path).read_text())
 
 
-def _threat_scenario(feed_version: str, party: str) -> dict:
+def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) -> dict:
+    """Resolve the feed file, unwrap its envelope, hand the payload to the
+    publisher's converter as a file (the converters take a path, unchanged)."""
+    path = feed_file("", name, version, tree_path)
+    if not path.exists():
+        raise Refused(f"feed {name}@{version}: no file at {path}")
+    payload = load_feed_payload(path, name, version)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(payload, fh)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(_converter(name, tree_path)), *args[:1], fh.name, *args[1:]],
+            capture_output=True, text=True, check=True)
+    finally:
+        Path(fh.name).unlink(missing_ok=True)
+    return json.loads(result.stdout)
+
+
+def _threat_scenario(feed_version: str, party: str, tree_path: Path = PLATFORM_DIR) -> dict:
     """REAL. Falls back to the pinned threat feed, through the estate's own
     converter, when a restate entry names no scenario of its own."""
-    result = subprocess.run(
-        [sys.executable, str(PLATFORM_DIR / "feeds" / "to_fair_scenario.py"), "threat",
-         str(PLATFORM_DIR / "feeds" / "threat-register" / feed_version / "register.json"), party],
-        capture_output=True, text=True, check=True)
-    return json.loads(result.stdout)
+    return _run_converter("threat-register", feed_version, tree_path, ["threat", party])
 
 
 def _cage_engine():
@@ -653,7 +792,8 @@ def _previous_cages(adopter_dir: Path) -> list[dict]:
 
 
 def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
-                        adopter_dir: Path) -> tuple[list[dict], list[dict], list[dict]]:
+                        adopter_dir: Path, parent_trees: dict[str, Path] | None = None
+                        ) -> tuple[list[dict], list[dict], list[dict]]:
     """Every `overlay.restate` entry against the merged member set. Returns
     (restatements, refusals, cages). Mutates `merged` in place: an accepted
     (stricter) restatement overwrites the rendered action; a weaker one does
@@ -664,7 +804,10 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
     refusals: list[dict] = []
     cages: list[dict] = []
     adopter_party = party_doc["party"]
-    threat_pin = next((p["version"] for p in parents if p["kind"] == "threat"), None)
+    threat_edge = next((p for p in parents if _feed_name(p) == "threat-register"), None)
+    threat_pin = threat_edge["version"] if threat_edge else None
+    threat_tree = Path((parent_trees or {}).get(threat_edge["party"], PLATFORM_DIR)) \
+        if threat_edge else PLATFORM_DIR
     previous_cages = _previous_cages(adopter_dir)
 
     for r in party_doc.get("overlay", {}).get("restate", []) or []:
@@ -716,7 +859,7 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
         if scenario_rel:
             scenario, priced_from = _load_scenario(scenario_rel), scenario_rel
         elif threat_pin is not None:
-            scenario, priced_from = _threat_scenario(threat_pin, adopter_party), \
+            scenario, priced_from = _threat_scenario(threat_pin, adopter_party, threat_tree), \
                 f"threat-register {threat_pin}"
         else:
             refusals.append({
@@ -965,15 +1108,10 @@ def _ico_scenario(ico_root: Path, version: str) -> dict:
     """REAL. ico's own converter, `build`, against its own
     <version>/penalty-schema.json -- the same subprocess convention
     `_threat_scenario` above already uses for the threat parent."""
-    result = subprocess.run(
-        [sys.executable, str(ico_root / "schema" / "to_fair_scenario.py"), "build",
-         str(ico_root / "schema" / version / "penalty-schema.json"),
-         ICO_REGIME, ICO_VIOLATION_TYPE],
-        capture_output=True, text=True, check=True)
-    return json.loads(result.stdout)
+    return _run_converter("penalty-schema", version, ico_root, ["build", ICO_REGIME, ICO_VIOLATION_TYPE])
 
 
-def _previous_parent_version(prev_header: dict | None, party: str, kind: str) -> str | None:
+def _previous_parent_version(prev_header: dict | None, edge: dict) -> str | None:
     """The version a pricing/threat parent was pinned to in the LAST SIGNED
     composed artefact's own header -- the "old" half of a price move. None
     on the first composition ever, or when the prior header never recorded
@@ -982,10 +1120,10 @@ def _previous_parent_version(prev_header: dict | None, party: str, kind: str) ->
     if prev_header is None:
         return None
     return next((p["version"] for p in prev_header.get("parents", [])
-                 if p["party"] == party and p["kind"] == kind), None)
+                 if p["party"] == edge["party"] and _parent_key(p) == _parent_key(edge)), None)
 
 
-def price_parent(edge: dict, adopter_party: str, tolerance: float, ico_root: Path | None,
+def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | None,
                   prev_version: str | None) -> dict:
     """One prices[] entry for one pricing/threat edge: priced at the OLD
     version (the last signed artefact's recorded pin, or -- with nothing
@@ -998,18 +1136,24 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, ico_root: Pat
     caging path already assumes."""
     party, kind, new_version = edge["party"], edge["kind"], edge["version"]
     old_version = prev_version if prev_version is not None else new_version
+    name = _feed_name(edge)
+    tree = Path(tree) if tree is not None else PLATFORM_DIR
 
-    if kind == "pricing":
-        old_sc, new_sc = _ico_scenario(ico_root, old_version), _ico_scenario(ico_root, new_version)
-    else:  # "threat"
-        old_sc = _threat_scenario(old_version, adopter_party)
-        new_sc = _threat_scenario(new_version, adopter_party)
+    if name == "penalty-schema":
+        old_sc, new_sc = _ico_scenario(tree, old_version), _ico_scenario(tree, new_version)
+    elif name == "threat-register":
+        old_sc = _threat_scenario(old_version, adopter_party, tree)
+        new_sc = _threat_scenario(new_version, adopter_party, tree)
+    else:
+        # ponytail: only the two migrating feeds price today; a third feed
+        # name gets its converter wired here when a publisher ships one.
+        raise Refused(f"feed {name!r} has no converter this composition can price through")
 
     cage = _cage_engine()
     old = cage.select(old_sc, adopter_party, tolerance, mode="warn")
     new = cage.select(new_sc, adopter_party, tolerance, mode="warn")
     return {
-        "source": party, "kind": kind,
+        "source": party, "kind": kind, **({"name": name} if kind == "feed" else {}),
         "old_version": old_version, "new_version": new_version,
         "old_price": old["uncaged_residual"], "new_price": new["uncaged_residual"],
         "old_tier": old["tier"], "proposed_tier": new["tier"],
@@ -1034,11 +1178,11 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
         return []
     prices: list[dict] = []
     for edge in edges:
-        if edge["kind"] not in ("pricing", "threat"):
+        if edge["kind"] not in FEED_KINDS:
             continue
-        ico_root = Path(parent_trees[edge["party"]]) if edge["kind"] == "pricing" else None
-        prev_version = _previous_parent_version(prev_header, edge["party"], edge["kind"])
-        prices.append(price_parent(edge, adopter_party, tolerance, ico_root, prev_version))
+        prev_version = _previous_parent_version(prev_header, edge)
+        prices.append(price_parent(edge, adopter_party, tolerance, parent_trees.get(edge["party"]),
+                                   prev_version))
     return prices
 
 
@@ -1094,11 +1238,14 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
             missing.append(f"{party}/{kind}@{version}: no parent tree provided")
             continue
         try:
-            sha = resolve_sha(party, kind, version, adopter_dir, Path(tree))
+            sha = resolve_sha(party, kind, version, adopter_dir, Path(tree), edge.get("name"))
         except Refused as e:
             missing.append(f"{party}/{kind}@{version}: {e}")
             continue
-        parents.append({"party": party, "kind": kind, "version": version, "sha": sha})
+        parent = {"party": party, "kind": kind, "version": version, "sha": sha}
+        if kind == "feed":
+            parent = {"party": party, "kind": kind, "name": edge["name"], "version": version, "sha": sha}
+        parents.append(parent)
     if missing:
         return _refused(missing), {}
 
@@ -1183,7 +1330,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "status": "closed" if len(implementations_parties) >= 2 else "open",
     }]
 
-    restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir)
+    restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
+                                                                parent_trees)
     refusals += restate_refusals
 
     # -----------------------------------------------------------------
@@ -1257,8 +1405,15 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     # -----------------------------------------------------------------
     # ticket 16: pricing and threat parents re-price, and never apply
     # -----------------------------------------------------------------
-    prices = compute_prices(edges, adopter_party, _appetite_tolerance(adopter_party),
-                             parent_trees, prev_header)
+    try:
+        prices = compute_prices(edges, adopter_party, _appetite_tolerance(adopter_party),
+                                 parent_trees, prev_header)
+    except Refused as e:
+        # a feed file that is not a valid envelope (ticket 21) refuses,
+        # naming the file -- never a crash, never a silently skipped price
+        prices = []
+        refusals.append({"kind": "invalid-feed", "subject": adopter_party,
+                         "detail": str(e), "needs_composition": True})
 
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
@@ -1399,9 +1554,9 @@ def main(argv: list[str]) -> int:
     if len(argv) > 1 and argv[1] == "--selfcheck":
         # composition.py ships inside platform's own repo, so `platform` is
         # always present here -- what can genuinely be missing is the rest
-        # of the estate this module composes AGAINST (driftwood, nist, ico),
+        # of the estate this module composes AGAINST (driftwood, nist, ico, feeds),
         # which only exists once clone-estate.sh has run.
-        missing = [name for name in ("driftwood", "nist", "ico")
+        missing = [name for name in ("driftwood", "nist", "ico", "feeds")
                    if not (DEFAULT_ESTATE_CLONE / name).is_dir()]
         if missing:
             print(f"SKIP: .estate-clone/{{{','.join(missing)}}} absent. Run ./clone-estate.sh first.")
@@ -1432,7 +1587,7 @@ def main(argv: list[str]) -> int:
 
 
 def _real_parent_trees() -> dict[str, Path]:
-    return {name: DEFAULT_ESTATE_CLONE / name for name in ("platform", "nist", "ico")}
+    return {name: DEFAULT_ESTATE_CLONE / name for name in ("platform", "nist", "ico", "feeds")}
 
 
 def _adopter_copy(name: str, dest: Path) -> Path:
@@ -1461,7 +1616,7 @@ def _bump_parent_version(work: Path, party: str, kind: str, version: str) -> Non
     would make to `party.yaml`."""
     doc = yaml.safe_load((work / "party.yaml").read_text())
     for edge in doc["inherits"]:
-        if edge["party"] == party and edge["kind"] == kind:
+        if _parent_key(edge) == _parent_key({"kind": kind}):
             edge["version"] = version
     (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
@@ -1645,7 +1800,7 @@ def selfcheck() -> None:
     # --- prices[] is populated on the real driftwood's first-ever composition
     # too, with nothing to compare a bump against yet (an honest "no move") ---
     assert len(document["prices"]) == 2, document["prices"]  # pricing + threat, both declared
-    assert {p["kind"] for p in document["prices"]} == {"pricing", "threat"}
+    assert {_parent_key(p) for p in document["prices"]} == {"penalty-schema", "threat-register"}
     for p in document["prices"]:
         assert p["old_version"] == p["new_version"], p  # nothing committed yet to bump against
         assert p["changed"] is False, p
@@ -1660,9 +1815,9 @@ def selfcheck() -> None:
     print("OK limits[]: the two-publisher-conflict limit prints open at driftwood's one "
           "pinned implementations publisher")
 
-    declared_kinds = {e["kind"] for e in yaml.safe_load(
+    declared_kinds = {_parent_key(e) for e in yaml.safe_load(
         (driftwood / "party.yaml").read_text())["inherits"]}
-    assert declared_kinds == {"controls", "implementations", "pricing", "threat"}
+    assert declared_kinds == {"controls", "implementations", "penalty-schema", "threat-register"}
     assert len(document["parents"]) == 4
     for parent in document["parents"]:
         assert parent["sha"], parent
@@ -1848,16 +2003,17 @@ def selfcheck() -> None:
         # ico/pricing carries no Flux pin (party_artefact.check_tags only
         # NOTES it), so a second declared version here can't also trip the
         # unrelated tag-mismatch refusal -- this is the diamond, isolated.
-        doc["inherits"].append({"party": "ico", "kind": "pricing", "version": "v2"})
+        ico_edge = next(e for e in doc["inherits"] if _parent_key(e) == "penalty-schema")
+        doc["inherits"].append(dict(ico_edge, version="v2"))
         (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
         document, files = compose(work, parent_trees)
         assert document["outcome"] == "refused", document
         diamond = [r for r in document["refusals"] if r["kind"] == "split-diamond"]
         assert len(diamond) == 1, document["refusals"]
-        assert diamond[0]["subject"] == "ico/pricing", diamond[0]
+        assert diamond[0]["subject"] == "ico/penalty-schema", diamond[0]
         assert "v1" in diamond[0]["detail"] and "v2" in diamond[0]["detail"], diamond[0]
         assert diamond[0]["needs_composition"] is True
-    print("OK check_diamonds: two edges to ico/pricing at two versions refuse, naming both")
+    print("OK check_diamonds: two edges to ico/penalty-schema at two versions refuse, naming both")
 
     # --- two sources for one rule with different content refuse, naming both;
     #     the two-publisher limit closes ---
@@ -2278,7 +2434,7 @@ def selfcheck() -> None:
         _bump_parent_version(work, "ico", "pricing", "v2")
         doc1, files1 = compose(work, parent_trees)
         _assert_only_known_dangling(doc1["refusals"], "ico bump, after")
-        price = next(p for p in doc1["prices"] if p["kind"] == "pricing")
+        price = next(p for p in doc1["prices"] if _parent_key(p) == "penalty-schema")
         assert price["source"] == "ico", price
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
         assert price["old_price"] != price["new_price"], price
@@ -2305,8 +2461,8 @@ def selfcheck() -> None:
         _bump_parent_version(work, "platform", "threat", "v2")
         doc1, files1 = compose(work, parent_trees)
         _assert_only_known_dangling(doc1["refusals"], "threat bump, after")
-        price = next(p for p in doc1["prices"] if p["kind"] == "threat")
-        assert price["source"] == "platform", price
+        price = next(p for p in doc1["prices"] if _parent_key(p) == "threat-register")
+        assert price["source"] in ("platform", "feeds"), price
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
         assert price["old_price"] != price["new_price"], price  # v2 raises tuppence's LEF
         assert price["old_tier"] == price["proposed_tier"] == "deny", price
@@ -2340,7 +2496,7 @@ def selfcheck() -> None:
         _bump_parent_version(work, "ico", "pricing", "v2")
         doc1, files1 = compose(work, crossing_parents)
         _assert_only_known_dangling(doc1["refusals"], "crossing fixture, after")
-        price = next(p for p in doc1["prices"] if p["kind"] == "pricing")
+        price = next(p for p in doc1["prices"] if _parent_key(p) == "penalty-schema")
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
         assert price["old_tier"] == "deny", price
         assert price["proposed_tier"] == "quarantine", price
