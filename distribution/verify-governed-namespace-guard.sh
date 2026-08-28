@@ -33,11 +33,10 @@ say "1. render-governed-namespace-guard.py --selfcheck (structural: shape, Audit
 python3 "$HERE/render-governed-namespace-guard.py" --selfcheck
 
 say "2. the validations expression itself, functionally, namespaceSelector stripped (kyverno CLI cannot evaluate it offline -- see this script's docstring)"
-python3 - "$WORK/policy.yaml" <<'PY'
+python3 - "$WORK/policy.yaml" "$HERE/render-governed-namespace-guard.py" <<'PY'
 import sys, yaml
-sys.path.insert(0, "distribution")
 import importlib.util
-spec = importlib.util.spec_from_file_location("g", "distribution/render-governed-namespace-guard.py")
+spec = importlib.util.spec_from_file_location("g", sys.argv[2])  # resolved from the script's own dir, cwd-independent
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 doc = g.governed_namespace_guard()

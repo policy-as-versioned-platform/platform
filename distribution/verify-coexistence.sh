@@ -24,18 +24,26 @@ say "2. offline: the orphan-guard allow-list is exactly the version array (no dr
 python3 "$HERE/render-orphan-guard.py" --selfcheck >/dev/null \
   || fail "orphan-guard allow-list drifted from the version array"
 
-# --- live tail: only if a cluster actually has both policies installed ---
-CTX="${CTX:-kind-driftwood}"
-if have kubectl && kubectl --context "$CTX" get validatingpolicy >/dev/null 2>&1; then
-  say "3. live: both ValidatingPolicies present in the SAME webhook config"
-  for v in 2-0-0 3-0-0; do
-    kubectl --context "$CTX" get validatingpolicy "require-nonroot-$v" >/dev/null 2>&1 \
-      || fail "require-nonroot-$v not installed live (fan-out incomplete)"
-  done
+# --- live tail: substrate first; then the fan-out must be reconciled there (the
+# policy-versions ResourceSet is what installs the versions, so without it there
+# is nothing to look at, not a failure); only then is a missing policy a FAIL.
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
+versions="$(cd "$HERE" && python3 -c 'import sys; sys.path.insert(0, "."); from pathlib import Path
+import importlib.util; s = importlib.util.spec_from_file_location("g", "render-orphan-guard.py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print(*m.versions(Path("versions.yaml")))')"
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" -n flux-system get resourceset policy-versions >/dev/null 2>&1; then
+  live_tail_skip "policy-versions ResourceSet not reconciled on $CTX (fan-out not installed there; see README live bring-up)"
 else
-  say "3. live tail skipped: no cluster with ValidatingPolicies at context '$CTX'"
-  say "   (offline coexistence proof above is the demonstrable claim; live"
-  say "    reconcile needs flux-operator + Kyverno installed — see README)"
+  say "3. live: every version in the array is installed as a ValidatingPolicy on $CTX"
+  for v in $versions; do
+    slug="$(tr . - <<<"$v")"
+    timeout 10 kubectl --context "$CTX" get validatingpolicy "require-nonroot-$slug" >/dev/null 2>&1 \
+      && say "   require-nonroot-$slug present" \
+      || fail "require-nonroot-$slug declared in versions.yaml but absent on $CTX (fan-out incomplete)"
+  done
 fi
 
-echo "PASS: two signed versions coexist; each judges only what claims it."
+pass_line "two signed versions coexist; each judges only what claims it"

@@ -44,18 +44,20 @@ grep -q "resource default/Pod/still-on-retired failed" <<<"$after" \
 [ -d "$HERE/policies/v${RETIRE}" ] || fail "fixture: policies/v${RETIRE} missing"
 say "   (live: dropping the array element prunes Kustomization policy-v$(echo "$RETIRE" | tr . -))"
 
-# --- live tail: only if a cluster is reachable. This is a passive read (the
-# script does not itself drive a live retire commit), so "still present" and
-# "no cluster" both mean "nothing to assert yet" and must say so plainly rather
-# than print a line that looks like a check but never gates anything.
-CTX="${CTX:-kind-driftwood}"
+# --- live tail: a passive read. "Pruned" may only be claimed after observing
+# the Kustomization PRESENT and then ABSENT across a retirement; one read cannot
+# see both, and absence alone is not evidence (a Kustomization that never
+# existed is also absent). So: SKIP with the reason, never a positive claim.
+# ponytail: a present->absent watch needs the script to drive a retire commit; add when a live retire beat exists.
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 slug="$(echo "$RETIRE" | tr . -)"
-if have kubectl && kubectl --context "$CTX" -n flux-system get kustomization "policy-v${slug}" >/dev/null 2>&1; then
-  say "4. live tail skipped: policy-v${slug} still reconciled at context '$CTX' — retirement PR not yet applied there (offline proof above is the demonstrable claim)"
-elif have kubectl && kubectl --context "$CTX" get kustomization -n flux-system >/dev/null 2>&1; then
-  say "4. live: policy-v${slug} Kustomization is gone at context '$CTX' — retirement pruned it live"
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif timeout 10 kubectl --context "$CTX" -n flux-system get kustomization "policy-v${slug}" >/dev/null 2>&1; then
+  live_tail_skip "policy-v${slug} observed PRESENT on $CTX; retirement not applied there, nothing pruned to observe"
 else
-  say "4. live tail skipped: no reachable cluster at context '$CTX' (see README)"
+  live_tail_skip "policy-v${slug} ABSENT on $CTX but never observed present by this script; absence is not evidence of pruning"
 fi
 
-echo "PASS: retiring a version (one array deletion) prunes it and denies stragglers."
+pass_line "retiring a version (one array deletion) prunes it and denies stragglers"

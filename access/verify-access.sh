@@ -9,7 +9,8 @@
 # Exits non-zero if any invariant the talk relies on is broken.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 echo "== offline: decision-engine asserts =="
@@ -93,12 +94,14 @@ if command -v kubectl >/dev/null; then
 fi
 
 # LIVE — only if the plane is already up; strictly bounded, never hangs.
-if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns access >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get ns access >/dev/null 2>&1; then
+  live_tail_skip "access plane not installed on $CTX (run access/up.sh)"
+else
   echo "== live: plane present =="
   timeout 20 kubectl --context "$CTX" -n access get pods 2>/dev/null | grep -q dex && echo "  ok   Dex present" || fail "Dex pod not present"
   timeout 20 kubectl --context "$CTX" -n access get pods 2>/dev/null | grep -q pomerium && echo "  ok   Pomerium present" || fail "Pomerium pod not present"
   echo "  (live WebAuthn + tpm_devid attestation need a human at the Secure Enclave / a (v)TPM — see device/secure-enclave.md)"
-else
-  echo "== live checks skipped (plane not up; run up.sh on the driftwood cluster) =="
 fi
-echo "verify-access: done"
+pass_line "the access plane wiring holds (Pomerium+Dex+WebAuthn device on the one SPIFFE root)"

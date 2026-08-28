@@ -17,7 +17,8 @@
 #   version exists; bounded): trigger one job and assert the pod is de-postured.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -98,7 +99,11 @@ else
 fi
 
 # ---- live tail: only if the CronJob is installed and a stale postured pod exists ----
-if have kubectl && timeout 10 kubectl --context "$CTX" -n currency-system get cronjob currency-controller >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" -n currency-system get cronjob currency-controller >/dev/null 2>&1; then
+  live_tail_skip "no currency-controller CronJob on $CTX (run currency-controller/up.sh)"
+else
   STALE=$(timeout 10 kubectl --context "$CTX" get pods -A -l posture.acme.io/version \
             -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}={.metadata.labels.posture\.acme\.io/version} {end}' 2>/dev/null || true)
   if [ -n "$STALE" ]; then
@@ -106,13 +111,10 @@ if have kubectl && timeout 10 kubectl --context "$CTX" -n currency-system get cr
     timeout 20 kubectl --context "$CTX" -n currency-system delete job currency-verify --ignore-not-found >/dev/null 2>&1 || true
     timeout 20 kubectl --context "$CTX" -n currency-system create job --from=cronjob/currency-controller currency-verify >/dev/null 2>&1 \
       && echo "  ok   reconcile job created (inspect: kubectl -n currency-system logs job/currency-verify)" \
-      || echo "  (could not create job — image pull or RBAC; see README)"
+      || live_tail_skip "could not create the reconcile job on $CTX (image pull or RBAC; see README)"
   else
-    say "5. live: CronJob installed but no postured pods to reconcile yet (nothing stale) — skipping trigger"
+    live_tail_skip "CronJob installed on $CTX but no postured pod exists to reconcile"
   fi
-else
-  say "5. live checks skipped: no currency-controller CronJob at context '$CTX'"
-  say "     (run estate/platform/currency-controller/up.sh; offline proofs above are the demonstrable claim)"
 fi
 
-echo "PASS: stale posture is re-evaluated post-admission; the re-patch drops BOTH labels so the SVID falls back to base-mesh."
+pass_line "stale posture is re-evaluated post-admission; the re-patch drops BOTH labels so the SVID falls back to base-mesh"

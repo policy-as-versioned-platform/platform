@@ -9,7 +9,8 @@
 # Exits non-zero if any invariant the talk relies on is broken.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 echo "== offline: structural invariants =="
@@ -132,7 +133,11 @@ fi
 # turns a PASSING check into a coin-flip FAIL (found live, debugging this
 # ticket's own new checks — a real, if minor, instance of the ticket-01 bug
 # class: a gate whose failure meant nothing).
-if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns spire-system >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get ns spire-system >/dev/null 2>&1; then
+  live_tail_skip "identity substrate not installed on $CTX (run identity/up.sh)"
+else
   echo "== live: substrate + mTLS proof =="
   OUT=$(timeout 20 kubectl --context "$CTX" -n spire-system get pods 2>/dev/null)
   echo "$OUT" | grep -q spire && echo "  ok   SPIRE pods present" || fail "SPIRE pods not present"
@@ -171,8 +176,8 @@ if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns s
     # "spiffe://" prepend renders a matchable principal and this call reaches.
     CODE=$(timeout 20 kubectl --context "$CTX" -n mesh-demo exec "$P" -c ping -- curl -sS -o /dev/null -w '%{http_code}' pong.mesh-demo/ 2>/dev/null)
     echo "$CODE" | grep -q 200 && echo "  ok   ping -> pong over SPIFFE mTLS (200)" || fail "ping -> pong over SPIFFE mTLS did not return 200"
+  else
+    echo "  SKIP (live tail): no app=ping pod in mesh-demo on $CTX, the SVID + mTLS reach was not observed"
   fi
-else
-  echo "== live checks skipped (substrate not up; run up.sh on the driftwood cluster) =="
 fi
-echo "verify-identity: done"
+pass_line "SPIRE is Istio's CA, mTLS STRICT, authz by SPIFFE principal, OpenBao trusts SPIRE JWKS"

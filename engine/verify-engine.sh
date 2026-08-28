@@ -10,7 +10,8 @@
 # ResourceSet) are actually registered.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 echo "== offline: structural invariants =="
@@ -52,7 +53,11 @@ if fails:
 print("  -- all offline invariants hold --")
 PY
 
-if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns kyverno >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get ns kyverno >/dev/null 2>&1; then
+  live_tail_skip "engine not installed on $CTX (run engine/up.sh)"
+else
   echo "== live: engine controllers + CRDs =="
   OUT=$(timeout 20 kubectl --context "$CTX" -n kyverno get pods 2>/dev/null)
   echo "$OUT" | grep -q kyverno && echo "  ok   Kyverno pods present" || fail "Kyverno pods not present"
@@ -66,7 +71,5 @@ if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns k
   echo "$OUT" | grep -q flux-operator && echo "  ok   flux-operator pod present" || fail "flux-operator pod not present"
   timeout 10 kubectl --context "$CTX" get crd resourcesets.fluxcd.controlplane.io >/dev/null 2>&1 \
     && echo "  ok   ResourceSet CRD registered" || fail "ResourceSet CRD missing"
-else
-  echo "== live checks skipped (engine not up; run estate/platform/engine/up.sh) =="
 fi
-echo "verify-engine: done"
+pass_line "Kyverno and flux-operator are pinned Flux HelmReleases with no FluxInstance"

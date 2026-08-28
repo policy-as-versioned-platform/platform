@@ -16,7 +16,8 @@
 #   6. server dry-run: a forger's posture is clobbered back to its real claim.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -98,7 +99,11 @@ PY
 # (distribution/versions.yaml), the one array, reused -- never re-parsed here. The
 # posture ClusterSPIFFEID is NOT one of the renderer's per-version members (see
 # posture/up.sh), so it stays checked by its real, unversioned name.
-if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
+  live_tail_skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then posture/up.sh)"
+else
   say "4. live: posture policies + ClusterSPIFFEID installed"
   while IFS= read -r v; do
     timeout 10 kubectl --context "$CTX" get mutatingpolicy "stamp-posture-$v" >/dev/null 2>&1 \
@@ -153,10 +158,6 @@ EOF
   OUT=$(echo "$CLOBBER" | timeout 20 kubectl --context "$CTX" apply --dry-run=server -f - -o jsonpath='{.metadata.labels.posture\.acme\.io/version}' 2>/dev/null || true)
   [ "$OUT" = "1.0.0" ] && echo "  ok   forged posture 9.9.9 clobbered to the real claim 1.0.0" \
     || echo "  (clobber dry-run returned '$OUT'; needs Kyverno mutating webhook live — see README)"
-else
-  say "4-6. live checks skipped: no cluster with the posture policies at context '$CTX'"
-  say "     (offline proofs above are the demonstrable claim; live needs Kyverno +"
-  say "      SPIRE installed and estate/platform/posture/up.sh applied)"
 fi
 
-echo "PASS: posture rides in the SVID path; the label is Kyverno-only; forging is refused."
+pass_line "posture rides in the SVID path; the label is Kyverno-only; forging is refused"

@@ -41,14 +41,23 @@ warn_ale="$(python3 "$PLATFORM/fair/fair.py" summary "$HERE/scenarios/driftwood-
 [ "$warn_ale" -gt 0 ] || fail "residual ALE is not positive — nothing to carry"
 say "   residual ALE with condition C unmet = £${warn_ale}/yr (the £ a cage prices and retains)"
 
-# --- live tail: only if a cluster is reachable ---
-CTX="${CTX:-kind-driftwood}"
-if have kubectl && kubectl --context "$CTX" get validatingpolicy >/dev/null 2>&1; then
-  say "4. live: applying the conditional pods to '$CTX' (dry-run) — same verdicts"
-  kubectl --context "$CTX" apply --dry-run=server -f "$HERE/tests/conditional/resources.yaml" >/dev/null 2>&1 \
-    || say "   (server dry-run rejected some pods — expected where Deny is on; verdicts hold)"
+# --- live tail: substrate first, then the 2.0.1 policy must be installed, then each verdict ---
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get validatingpolicy require-nonroot-2-0-1 >/dev/null 2>&1; then
+  live_tail_skip "require-nonroot-2-0-1 ValidatingPolicy not installed on $CTX (fan-out not reconciled there)"
 else
-  say "4. live tail skipped: no reachable cluster at context '$CTX'"
+  say "4. live: each pod against '$CTX' (server dry-run) — admit/deny must match the offline matrix"
+  # one dry-run per pod so each verdict is observed on its own, not inferred from a batch
+  for want in nonroot=admit root-attested-hardened=admit root-bare=deny root-attested-unhardened=deny; do
+    pod="${want%=*}"; verdict="${want#*=}"
+    if python3 -c 'import sys,yaml; [print("---"),print(yaml.safe_dump(d)) for d in yaml.safe_load_all(open(sys.argv[1])) if d and d["metadata"]["name"]==sys.argv[2]]' \
+         "$HERE/tests/conditional/resources.yaml" "$pod" \
+       | timeout 30 kubectl --context "$CTX" apply --dry-run=server -f - >/dev/null 2>&1; then got=admit; else got=deny; fi
+    [ "$got" = "$verdict" ] && say "   $pod: $got (as offline)" || fail "live: $pod was ${got}, offline matrix says $verdict"
+  done
 fi
 
-echo "PASS: one conditional rule admits everyone meeting C, and its residual is priced."
+pass_line "one conditional rule admits everyone meeting C, and its residual is priced"

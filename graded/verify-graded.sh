@@ -21,7 +21,8 @@
 #      caged (mutated) admit, not a deny.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -98,7 +99,11 @@ PY
 # distribution/verify-coexistence.sh checks require-nonroot-$v. Versions come
 # from render-orphan-guard.py's versions() (distribution/versions.yaml), the
 # one array, reused -- never re-parsed here.
-if have kubectl && timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
+  live_tail_skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then graded/up.sh)"
+else
   say "6. live: cage policies installed; a behind-posture pod is CAGED (mutated), not denied"
   while IFS= read -r v; do
     timeout 10 kubectl --context "$CTX" get mutatingpolicy "cage-tier-$v" >/dev/null 2>&1 \
@@ -131,11 +136,7 @@ EOF
   OUT=$(echo "$PROBE" | timeout 20 kubectl --context "$CTX" apply --dry-run=server -f - \
         -o jsonpath='{.metadata.labels.posture\.acme\.io/caged}' 2>/dev/null || true)
   [ "$OUT" = "true" ] && echo "  ok   behind-posture pod admitted with the caged label stamped (not denied)" \
-    || echo "  (server dry-run returned caged='$OUT'; needs Kyverno mutating webhook live — see README)"
-else
-  say "6. live checks skipped: no cluster with the cage policies at context '$CTX'"
-  say "   (offline proofs above are the demonstrable claim; live needs Kyverno installed +"
-  say "    estate/platform/graded/up.sh applied)"
+    || fail "behind-posture pod was NOT caged: server dry-run returned caged='$OUT' (Kyverno mutating webhook did not stamp it)"
 fi
 
-echo "PASS: behind-posture keeps running but caged by degree; the £ picks the tier; TCoR booked."
+pass_line "behind-posture keeps running but caged by degree; the £ picks the tier; TCoR booked"
