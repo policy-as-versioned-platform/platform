@@ -29,6 +29,7 @@ computed here, not read off kyverno's exit code directly.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -43,15 +44,31 @@ FIXTURES = CORPUS / "fixtures"
 ALL_FIXTURES = sorted(FIXTURES.glob("*.yaml"))
 
 
+_SUMMARY = re.compile(r"pass: (\d+), fail: (\d+), warn: (\d+), error: (\d+), skip: (\d+)")
+
+
 def cel_pass(policy_file: Path, fixture_file: Path) -> bool:
     """True if the real `kyverno apply` says this fixture satisfies this
-    policy's CEL body -- independent of validationActions (Audit/Deny)."""
+    policy's CEL body -- independent of validationActions (Audit/Deny).
+
+    Reads kyverno's own verdict summary, never its exit code. A non-zero
+    exit is also what kyverno returns when it could not evaluate at all
+    (a load error, a crash, a transient CLI failure); reading that as
+    "refused" turns an execution error into a false admitted->refused
+    movement on a byte-identical body. An evaluation that did not happen
+    is an error here, not a verdict."""
     proc = subprocess.run(
         ["kyverno", "apply", str(policy_file), "--resource", str(fixture_file)],
         capture_output=True,
         text=True,
     )
-    return proc.returncode == 0
+    m = _SUMMARY.search(proc.stdout)
+    if m is None or int(m.group(4)):
+        raise RuntimeError(
+            f"kyverno apply did not evaluate {policy_file.name} against {fixture_file.name} "
+            f"(exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()}"
+        )
+    return int(m.group(2)) == 0
 
 
 def action_of(policy_file: Path) -> str:

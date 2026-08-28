@@ -1,8 +1,20 @@
 # An institution dev's workload PR, pinned to policy-version 2.0.0 and
 # compliant with BOTH 2.0.0 and 3.0.0 -- passes the whole ±1 window.
+#
+# It carries posture.acme.io/tier=restricted on purpose. The cage
+# (cage-tier.yaml) mutates every version-claiming pod BEFORE validation runs,
+# and the default `baseline` tier sets readOnlyRootFilesystem=false on every
+# container -- which 3.0.0's require-nonroot then refuses. A baseline-tier pod
+# cannot satisfy 3.0.0's tightened rule at all; only restricted/quarantine
+# (harden=true) can. Declaring the tier here is what makes "compliant with
+# 3.0.0" true after the cage, not just before it.
 apiVersion: v1
 kind: Pod
-metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "2.0.0" } }
+metadata:
+  name: checkout-svc
+  labels:
+    policy-as-versioned.dev/policy-version: "2.0.0"
+    posture.acme.io/tier: restricted
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx, securityContext: { readOnlyRootFilesystem: true } }]
