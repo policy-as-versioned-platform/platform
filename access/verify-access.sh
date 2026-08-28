@@ -49,9 +49,14 @@ check("dex" in issuer, f"Dex advertises an OIDC issuer URL ({issuer})")
 pom = find("HelmRelease", "pomerium")
 check(bool(pom), "Pomerium Core HelmRelease present (IAP)")
 pv = pom[0]["spec"]["values"] if pom else {}
-idp = pv.get("config", {}).get("idp", {})
+# The chart reads the IdP at `authenticate.idp` — that is the only path that
+# reaches config.yaml as idp_provider_url. A copy under `config:` is inert, so
+# assert the live-bearing path, not a decorative one.
+idp = pv.get("authenticate", {}).get("idp", {})
 check(idp.get("provider") == "oidc" and idp.get("url") == issuer,
       "Pomerium consumes the estate OIDC issuer (Dex) — one human root, not a bolt-on")
+check(not pv.get("config", {}).get("idp"),
+      "no inert config.idp copy shadowing the real one")
 routes = pv.get("config", {}).get("routes", [])
 kube = [r for r in routes if "kubernetes.default" in str(r.get("to", ""))]
 check(bool(kube), "Pomerium has a route to the kube-apiserver (kubectl access)")
@@ -100,8 +105,34 @@ elif ! timeout 10 kubectl --context "$CTX" get ns access >/dev/null 2>&1; then
   live_tail_skip "access plane not installed on $CTX (run access/up.sh)"
 else
   echo "== live: plane present =="
-  timeout 20 kubectl --context "$CTX" -n access get pods 2>/dev/null | grep -q dex && echo "  ok   Dex present" || fail "Dex pod not present"
-  timeout 20 kubectl --context "$CTX" -n access get pods 2>/dev/null | grep -q pomerium && echo "  ok   Pomerium present" || fail "Pomerium pod not present"
+  # Ready HelmReleases, not just applied ones. A release pinned to a chart
+  # version that does not exist stays un-reconciled forever and creates no pod;
+  # asserting the pod alone hid that for weeks, so assert both.
+  hr_ready() {
+    [ "$(timeout 20 kubectl --context "$CTX" -n access get helmrelease "$1" \
+           -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ]
+  }
+  hr_msg() { timeout 20 kubectl --context "$CTX" -n access get helmrelease "$1" \
+               -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null; }
+  running() {
+    timeout 20 kubectl --context "$CTX" -n access get pods \
+      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
+      | grep -q "^$1.* Running$"
+  }
+  for r in dex pomerium; do
+    hr_ready "$r" && echo "  ok   HelmRelease $r Ready" || fail "HelmRelease $r not Ready: $(hr_msg "$r")"
+  done
+  running dex && echo "  ok   Dex pod Running" || fail "Dex pod not Running"
+  # Pomerium Core is split-service: the proxy is the component that actually
+  # terminates the human request and enforces the route policy.
+  running pomerium-proxy && echo "  ok   Pomerium proxy pod Running" || fail "Pomerium proxy pod not Running"
+  running pomerium-authenticate && echo "  ok   Pomerium authenticate pod Running" || fail "Pomerium authenticate pod not Running"
+  # The route policy is only real if Pomerium ACCEPTED it: the rendered config
+  # in the cluster must still carry the WebAuthn device criterion.
+  timeout 20 kubectl --context "$CTX" -n access get secret pomerium -o jsonpath='{.data.config\.yaml}' 2>/dev/null \
+    | base64 -d 2>/dev/null | grep -q 'device' \
+    && echo "  ok   rendered Pomerium config carries the device criterion" \
+    || fail "rendered Pomerium config has no device criterion"
   echo "  (live WebAuthn + tpm_devid attestation need a human at the Secure Enclave / a (v)TPM — see device/secure-enclave.md)"
 fi
 pass_line "the access plane wiring holds (Pomerium+Dex+WebAuthn device on the one SPIFFE root)"

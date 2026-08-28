@@ -18,8 +18,10 @@
 # fabricated scenario). It calls the real `kyverno` CLI once per corpus
 # fixture per ValidatingPolicy (rederive_bumps.cel_pass, unchanged) against
 # the full ~100-pod generated spine those two real trees produce, so this
-# part alone takes several minutes -- that cost is the real engine running
-# for real, not padding.
+# part alone costs several minutes of CPU -- that cost is the real engine
+# running for real, not padding. It is now spent CONCURRENTLY rather than
+# serially (see the `ponytail:` note above the parts for exactly what that
+# did, and did not, change).
 #
 # cs-16 update: the real v2.0.0 -> v3.0.0 PASS case used to compute "major"
 # via posture-trust-boundary.yaml -- proven, while chasing a genuine patch
@@ -59,12 +61,22 @@ trap 'rm -rf "$scratch"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo; echo "== $* =="; }
 
-say "Part A: gate.run_gate() against the REAL v2.0.0 -> v3.0.0 predecessor (several minutes -- real kyverno apply per corpus fixture)"
-python3 - "$here" "$scratch" <<'PY'
+# ponytail: Part A's two cases, Part B's real cut and Part C's real backport
+# are four INDEPENDENT real classifications -- each builds its own corpus in
+# its own temp tree (or its own throwaway clone) and runs its own real
+# kyverno passes -- so they run one process each, concurrently, and every
+# part's output is printed, in the original order, once all four have
+# finished. Same code, same real engine, same assertions, same evidence:
+# only the wall clock changes. Run serially this script took 332s, past
+# talk/verify-all.sh's own 300s per-script budget. Upgrade path if it creeps
+# back over: the real cost is the kyverno CLI itself, invoked once per corpus
+# fixture per policy by rederive_bumps.cel_pass, never batched.
+
+cat > "$scratch/part-a.py" <<'PY'
 import sys, json, tempfile
 from pathlib import Path
 
-repo, scratch = Path(sys.argv[1]), Path(sys.argv[2])
+repo, scratch, case = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 sys.path.insert(0, str(repo / "computed-semver"))
 import yaml, gate, comparison_window, corpus_generator  # noqa: E402
 
@@ -104,57 +116,62 @@ def run(declared: str, new_tree: Path) -> dict:
     return gate.run_gate(repo_state, declared)
 
 
-print("-- declared 3.0.0 (the real tag's own number), against the REAL, unmodified v3.0.0 tree --")
-doc_pass = run("3.0.0", DIST / "policies" / "v3.0.0")
-assert doc_pass["outcome"]["result"] == "passed", doc_pass["outcome"]
-# cs-16: posture-trust-boundary.yaml's real body is byte-identical between
-# v2.0.0 and v3.0.0 modulo the version literal (see cage_engine.py's module
-# docstring and selfcheck #15) -- the "major" this used to compute was the
-# self-scope vacuous-match artifact, not real movement. require-nonroot's
-# real widening there is Audit-only, which never registers movement either
-# (CONTEXT.md's own admitted/refused rule). Honestly, this real pair has no
-# modeled content movement at all -- "none" -- and a declared "major" is
-# simply stronger than required, which the gate allows (over-declaring never
-# refuses).
-assert doc_pass["bump"] == {"declared": "major", "computed": "none"}, doc_pass["bump"]
-assert all(m["verdict"] == "none" for m in doc_pass["movement"]), doc_pass["movement"]
-print(json.dumps({"outcome": doc_pass["outcome"], "bump": doc_pass["bump"],
-                   "movement": [(m["policy"], m["verdict"]) for m in doc_pass["movement"]]}, indent=2))
-(scratch / "evidence-pass-3.0.0.json").write_text(json.dumps(doc_pass, indent=2))
-print(f"ok  PASS proved for real: declared major (over-declared) >= computed none, against the "
-      f"real, UNMODIFIED v2.0.0->v3.0.0 predecessor -- honestly no real content movement there")
+if case == "pass":
+    print("-- declared 3.0.0 (the real tag's own number), against the REAL, unmodified v3.0.0 tree --")
+    doc_pass = run("3.0.0", DIST / "policies" / "v3.0.0")
+    assert doc_pass["outcome"]["result"] == "passed", doc_pass["outcome"]
+    # cs-16: posture-trust-boundary.yaml's real body is byte-identical between
+    # v2.0.0 and v3.0.0 modulo the version literal (see cage_engine.py's module
+    # docstring and selfcheck #15) -- the "major" this used to compute was the
+    # self-scope vacuous-match artifact, not real movement. require-nonroot's
+    # real widening there is Audit-only, which never registers movement either
+    # (CONTEXT.md's own admitted/refused rule). Honestly, this real pair has no
+    # modeled content movement at all -- "none" -- and a declared "major" is
+    # simply stronger than required, which the gate allows (over-declaring never
+    # refuses).
+    assert doc_pass["bump"] == {"declared": "major", "computed": "none"}, doc_pass["bump"]
+    assert all(m["verdict"] == "none" for m in doc_pass["movement"]), doc_pass["movement"]
+    print(json.dumps({"outcome": doc_pass["outcome"], "bump": doc_pass["bump"],
+                       "movement": [(m["policy"], m["verdict"]) for m in doc_pass["movement"]]}, indent=2))
+    (scratch / "evidence-pass-3.0.0.json").write_text(json.dumps(doc_pass, indent=2))
+    print(f"ok  PASS proved for real: declared major (over-declared) >= computed none, against the "
+          f"real, UNMODIFIED v2.0.0->v3.0.0 predecessor -- honestly no real content movement there")
+else:
+    print("-- declared 2.1.0, against v3.0.0 with ONE disclosed real mutation: require-nonroot promoted Audit->Deny --")
+    # require-nonroot.yaml's own real v3.0.0 comment already names this as
+    # planned future work ("Audit->Deny promotion is a separate, editorial PR");
+    # applying it here is an early, explicit instance of a change this repo
+    # already intends, not a fabricated scenario. The CEL body is untouched --
+    # only validationActions changes -- so this is a genuine narrowing: a pod
+    # that already fails require-nonroot's real "must run as non-root" check
+    # (the corpus generates one on purpose) flips from Audit-admitted to
+    # Deny-refused.
+    mutated_v3 = Path(tempfile.mkdtemp(dir=scratch))
+    for f in (DIST / "policies" / "v3.0.0").glob("*.yaml"):
+        if f.name == "kustomization.yaml":
+            continue
+        text = f.read_text()
+        if f.name == "require-nonroot.yaml":
+            assert "validationActions: [Audit]" in text, "require-nonroot.yaml's real shape changed"
+            text = text.replace("validationActions: [Audit]", "validationActions: [Deny]")
+        (mutated_v3 / f.name).write_text(text)
 
-print()
-print("-- declared 2.1.0, against v3.0.0 with ONE disclosed real mutation: require-nonroot promoted Audit->Deny --")
-# require-nonroot.yaml's own real v3.0.0 comment already names this as
-# planned future work ("Audit->Deny promotion is a separate, editorial PR");
-# applying it here is an early, explicit instance of a change this repo
-# already intends, not a fabricated scenario. The CEL body is untouched --
-# only validationActions changes -- so this is a genuine narrowing: a pod
-# that already fails require-nonroot's real "must run as non-root" check
-# (the corpus generates one on purpose) flips from Audit-admitted to
-# Deny-refused.
-mutated_v3 = Path(tempfile.mkdtemp(dir=scratch))
-for f in (DIST / "policies" / "v3.0.0").glob("*.yaml"):
-    if f.name == "kustomization.yaml":
-        continue
-    text = f.read_text()
-    if f.name == "require-nonroot.yaml":
-        assert "validationActions: [Audit]" in text, "require-nonroot.yaml's real shape changed"
-        text = text.replace("validationActions: [Audit]", "validationActions: [Deny]")
-    (mutated_v3 / f.name).write_text(text)
-
-doc_refused = run("2.1.0", mutated_v3)
-assert doc_refused["outcome"]["result"] == "refused", doc_refused["outcome"]
-assert doc_refused["bump"] == {"declared": "minor", "computed": "major"}, doc_refused["bump"]
-assert "require-nonroot.yaml" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
-assert "weaker than the computed bump" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
-print(json.dumps({"outcome": doc_refused["outcome"], "bump": doc_refused["bump"]}, indent=2))
-(scratch / "evidence-refused-2.1.0.json").write_text(json.dumps(doc_refused, indent=2))
-print(f"ok  REFUSAL proved for real: declared minor < computed major, real v2.0.0 predecessor plus "
-      f"the one disclosed require-nonroot Audit->Deny mutation, reason names require-nonroot.yaml")
+    doc_refused = run("2.1.0", mutated_v3)
+    assert doc_refused["outcome"]["result"] == "refused", doc_refused["outcome"]
+    assert doc_refused["bump"] == {"declared": "minor", "computed": "major"}, doc_refused["bump"]
+    assert "require-nonroot.yaml" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
+    assert "weaker than the computed bump" in doc_refused["outcome"]["reason"], doc_refused["outcome"]["reason"]
+    print(json.dumps({"outcome": doc_refused["outcome"], "bump": doc_refused["bump"]}, indent=2))
+    (scratch / "evidence-refused-2.1.0.json").write_text(json.dumps(doc_refused, indent=2))
+    print(f"ok  REFUSAL proved for real: declared minor < computed major, real v2.0.0 predecessor plus "
+          f"the one disclosed require-nonroot Audit->Deny mutation, reason names require-nonroot.yaml")
 PY
 
+part_a() {  # part_a <pass|refused> -- one real gate.run_gate() case per process
+python3 "$scratch/part-a.py" "$here" "$scratch" "$1"
+}
+
+part_b() {
 say "Part B: cut-release-gate.py's own wiring, against a real (throwaway) clone of this repo"
 clone="$scratch/clone"
 git clone --local --quiet "$here" "$clone" 2>/dev/null || git clone --quiet "$here" "$clone"
@@ -272,7 +289,9 @@ print(els['9.0.0'])
 echo "ok  B3: gate passed for real; evidence committed (A), then versions.yaml's commit field corrected to A in a second commit (B); the tag resolves to B, and versions.yaml's commit field for 9.0.0 equals A -- B's direct parent, one commit behind the tag, on purpose"
 
 cd "$here"
+}
 
+part_c() {
 say "Part C: cs-16 regression -- a BACKPORT's corpus/classification basis is the LOWER neighbor, never the higher one"
 echo "distribution/versions.yaml's REAL array right now is [2.0.0, 2.0.1, 3.0.0] (cs-16's own real"
 echo "backport, prepared but not yet tagged) -- exactly the three-element, cut-in-the-middle shape"
@@ -334,6 +353,21 @@ assert ptb["verdict"] == "none", (
 print("ok  Part C: gate_one('2.0.1', ...) PASSES against the real, correct predecessor -- "
       "posture-trust-boundary.yaml honestly classifies 'none', not the old spurious 'major'")
 PY
+}
+
+say "Part A: gate.run_gate() against the REAL v2.0.0 -> v3.0.0 predecessor (minutes of real kyverno CPU, one real apply per corpus fixture -- spent concurrently with Parts B and C)"
+echo "(Parts A, B and C all start now, one process each -- every part's output is printed, in order, below.)"
+part_a pass    > "$scratch/a-pass.log"    2>&1 & a_pass=$!
+part_a refused > "$scratch/a-refused.log" 2>&1 & a_refused=$!
+part_b         > "$scratch/b.log"         2>&1 & b_pid=$!
+part_c         > "$scratch/c.log"         2>&1 & c_pid=$!
+
+rc=0
+for spec in "a-pass:$a_pass" "a-refused:$a_refused" "b:$b_pid" "c:$c_pid"; do
+  wait "${spec#*:}" || rc=1
+  cat "$scratch/${spec%%:*}.log"
+done
+[ "$rc" -eq 0 ] || fail "a part above failed -- its own FAIL/assert line names which"
 
 echo
 echo "PASS: run_gate() refuses a real declared bump weaker than the real computed one (a disclosed,"

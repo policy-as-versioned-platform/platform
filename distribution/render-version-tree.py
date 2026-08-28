@@ -31,9 +31,10 @@ orphan-guard -- which ranges the WHOLE version array into one file -- this
 renderer takes exactly one version and writes exactly one tree: rendering
 every tree on every run and failing on any diff would freeze the dial table
 forever (spec.md, "Pinned delivery and rendering"). `write_tree` also refuses
-to touch a directory that already holds any of these files: once a tree is
-rendered and committed it is released, and the renderer never re-renders a
-released tree.
+to CHANGE a file a directory already holds: once a tree is rendered and
+committed it is released, and the renderer never rewrites a released tree.
+A file already present whose bytes equal this render is the released tree
+agreeing with the renderer, so it is left alone and the rest still renders.
 
 The orphan-guard itself is OUT OF SCOPE here (it is the aggregate over the
 array and cannot self-scope to one claim) -- ticket 22 gives it the
@@ -146,20 +147,30 @@ def render_tree(version: str) -> dict[str, str]:
 
 def write_tree(version: str, target: Path) -> None:
     """The live path: actually writes the rendered tree to disk -- what a
-    release commits. Refuses to overwrite a tree that already has any of
-    these files: a released tree is frozen, and this renders only the tree
-    being cut, never a tree already released."""
+    release commits. A released tree is frozen, so this refuses to CHANGE a
+    file that is already there. A file already there whose bytes are exactly
+    what this renderer produces is not a change: it is the released tree
+    agreeing with the renderer, which is the whole point of the check, so it
+    is left alone and the rest of the tree still renders. That distinction
+    matters on the demo path: render-and-prove.py seeds the workdir with a
+    COPY of the real committed tree before calling this, and every mandatory
+    member is committed today, so a bare "already present" refusal would
+    stop graded/up.sh and posture/up.sh on every run (it did, 2026-08-28)."""
     tree = render_tree(version)
-    collisions = sorted(f for f in tree if (target / f).exists())
-    if collisions:
+    conflicts = sorted(
+        f for f in tree
+        if (target / f).exists() and (target / f).read_text() != tree[f])
+    if conflicts:
         raise SystemExit(
-            f"refusing to render into {target}: {collisions} already present. "
-            "This renders only the tree being cut -- it never re-renders an "
-            "already-released tree."
+            f"refusing to render into {target}: {conflicts} already present and "
+            "DIFFERENT from this render. A released tree is frozen; a renderer "
+            "that disagrees with it must not silently overwrite it."
         )
     target.mkdir(parents=True, exist_ok=True)
     for fname, text in tree.items():
-        (target / fname).write_text(text)
+        f = target / fname
+        if not f.exists():
+            f.write_text(text)
 
 
 def selfcheck() -> None:
@@ -206,20 +217,32 @@ def selfcheck() -> None:
         assert f"'pc':'{base_name}'" not in dial_expr, f"un-rewritten base PriorityClass name {base_name} leaked into cage-tier"
 
     # live path vs offline twin: actually write to disk, read back, and they
-    # must be byte-identical -- and re-rendering the same (now populated)
-    # tree must refuse, never silently re-render a released tree.
+    # must be byte-identical. Re-rendering the SAME tree is then a no-op --
+    # the released tree already agrees with the renderer, which is what the
+    # demo path (render-and-prove.py) relies on. Re-rendering over a file
+    # that DIFFERS still refuses: a renderer that disagrees with a released
+    # tree must never silently overwrite it.
     with tempfile.TemporaryDirectory() as td:
         target = Path(td) / f"v{v}"
         write_tree(v, target)
         for fname, text in tree_a.items():
             on_disk = (target / fname).read_text()
             assert on_disk == text, f"{fname}: live path disagrees with the offline twin"
+
+        write_tree(v, target)   # identical tree: a no-op, never a refusal
+        for fname, text in tree_a.items():
+            assert (target / fname).read_text() == text, \
+                f"{fname}: re-rendering an identical tree changed it"
+
+        (target / "cage-tier.yaml").write_text("# a released file this renderer disagrees with\n")
         try:
             write_tree(v, target)
-        except SystemExit:
-            pass
+        except SystemExit as e:
+            assert "cage-tier.yaml" in str(e), str(e)
         else:
-            raise AssertionError("write_tree re-rendered an already-rendered tree instead of refusing")
+            raise AssertionError("write_tree overwrote a released file that DIFFERS from its render")
+        assert (target / "cage-tier.yaml").read_text().startswith("# a released file"), \
+            "the refusal must leave the released file untouched"
 
     # the authoring copies are read-only inputs -- untouched by any of the above
     assert "'pc':'cage-baseline'" in (GRADED / "cage-tier.yaml").read_text(), \
@@ -228,8 +251,9 @@ def selfcheck() -> None:
     print(
         "selfcheck ok: 7 mandatory members rendered for a named version; "
         "versioned names/labels/self-scope; cage-tier names its own "
-        "PriorityClasses; live path == offline twin; re-render of a rendered "
-        "tree refused; authoring copies untouched"
+        "PriorityClasses; live path == offline twin; re-rendering an identical "
+        "tree is a no-op; re-rendering over a DIFFERING released file refused; "
+        "authoring copies untouched"
     )
 
 

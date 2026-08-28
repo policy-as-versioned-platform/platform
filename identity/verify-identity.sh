@@ -142,6 +142,19 @@ else
   OUT=$(timeout 20 kubectl --context "$CTX" -n spire-system get pods 2>/dev/null)
   echo "$OUT" | grep -q spire && echo "  ok   SPIRE pods present" || fail "SPIRE pods not present"
 
+  # "present" is not "working": this pod list read `spire-agent ... CrashLoopBackOff`
+  # for eight days while every check below still passed, because the agent had
+  # cached a trust bundle that the server's rotated CA no longer matched
+  # (identity/up.sh now clears it). No agent means no Workload API socket, so
+  # every meshed sidecar loses SDS. Assert the DaemonSet is actually Ready.
+  READY=$(timeout 20 kubectl --context "$CTX" -n spire-system get ds spire-agent \
+    -o jsonpath='{.status.numberReady}/{.status.desiredNumberScheduled}' 2>/dev/null)
+  case "$READY" in
+    0/*|/*|"") fail "spire-agent DaemonSet has no Ready pod ($READY) — no SPIFFE Workload API socket for Envoy SDS" ;;
+    *) [ "${READY%%/*}" = "${READY##*/}" ] && echo "  ok   spire-agent DaemonSet fully Ready ($READY)" \
+         || fail "spire-agent DaemonSet not fully Ready ($READY)" ;;
+  esac
+
   # istiod comes up: not merely present (it ran 1/1 the whole time ticket 04's
   # bug was live) but with an available replica.
   AVAIL=$(timeout 20 kubectl --context "$CTX" -n istio-system get deploy istiod \

@@ -83,8 +83,13 @@ attestation need a human at the Secure Enclave / a (v)TPM (see
 
 ## Calibration knobs (real-world, not constants)
 
-- **Chart/appVersion pins** (`dex` 0.19.1, `pomerium` 52.3.0) — value schemas
-  drift across minors; bump to the release you tour and re-run verify.
+- **Chart/appVersion pins** (`dex` 0.19.1, `pomerium` 34.0.1 — the newest chart
+  on helm.pomerium.io, appVersion v0.22.x) — value schemas drift across minors;
+  bump to the release you tour and re-run verify. Check the pin exists
+  (`helm show chart pomerium --repo https://helm.pomerium.io --version X`): a
+  version that is not on the repo leaves the HelmRelease un-reconciled forever
+  and no proxy pod is ever created. Note the chart reads the IdP at
+  `authenticate.idp`, not `config.idp`; a copy under `config:` is inert.
 - **OP_TIER table** (`access.py`) — which op needs which factors. Static now;
   wire to `fair.py`'s £-crossover if the bar should move live with the risk £.
 - **DevID trust anchors** — `devid-ca.pem` / `endorsement-ca.pem` are the
