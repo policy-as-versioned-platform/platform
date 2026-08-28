@@ -59,8 +59,14 @@ for org, res in out.items():
         print(f\"    [{mark}] {r['control']:34} {r['deployed']:8} -> {r['implied']}\")
     drifts = [r for r in res['rows'] if r['drift']]
     props = res['proposals']
-    assert drifts, f'{org}: the forward signal surfaced no drift'
-    assert props, f'{org}: forward drift but no PR proposed'
+    # Per institution the seam is: a drift becomes a signed PR, no drift proposes
+    # nothing. An org whose own band the cage ladder already satisfies honestly
+    # surfaces no drift (ADR-0022 gave the ladder a running \`isolated\` rung where
+    # \`deny\` used to fall through) -- that is named, not asserted away. The estate
+    # as a whole must still surface drift; asserted after the loop.
+    assert bool(props) == bool(drifts), f'{org}: proposals must follow drift exactly ({len(drifts)} drift(s), {len(props)} PR(s))'
+    if not drifts:
+        print(f'    (no drift at {org}: its own band is already satisfied by the deployed cage)')
     for p in props:
         assert p['merged'] is False and p['auto_merge'] is False, 'war-gamer must never merge'
         assert 'cross-check' in p['required_gate'], 'PR must ride the version cross-check gate'
@@ -70,6 +76,7 @@ for org, res in out.items():
 # the band, not the signal, decides -- prove it: driftwood's loose band and ludlow's
 # strict one must NOT drift on the identical control set, or this is one org run
 # three times wearing different labels, not a per-institution forward layer.
+assert total_drifts, 'the forward signal surfaced no drift anywhere in the estate'
 dw_ids = {r['control'] for r in out['driftwood']['rows'] if r['drift']}
 lud_ids = {r['control'] for r in out['ludlow']['rows'] if r['drift']}
 assert dw_ids != lud_ids, ('driftwood and ludlow must diverge on at least one control', dw_ids, lud_ids)

@@ -14,8 +14,16 @@ in a reviewable PR whose justification is the £, never a timer (ADR-0006).
 Reuses the load-bearing maths in ../fair/fair.py (control_value); adds only the
 appetite comparison. No new risk engine.
 
+Appetite is a SIGNED FACT on each party's own party.yaml (`appetite.tolerance`,
+ADR-0021 / eco-system ticket 25). The platform-held fixture `appetite.json` is
+retired: a party's band is now declared by the party that carries it, next to
+its size, and nobody else. `tolerance_for()` below is the ONE helper that reads
+it — composition, the cage, the war-gamer and the reflexive self-check all come
+through here. A party with no declared appetite is a MISSING INSTRUMENT: it
+refuses (ADR-0020), it never defaults to a number nobody signed.
+
 Usage:
-    enforce.py decide <scenario.json> --org driftwood [--appetite appetite.json]
+    enforce.py decide <scenario.json> --org driftwood [--party-yaml path]
     enforce.py action <scenario.json> --org driftwood     # bare 'Audit'|'Deny'
     enforce.py selfcheck
 """
@@ -26,21 +34,59 @@ import json
 import os
 import sys
 
+import yaml
+
 # Reuse the FAIR engine one dir over — it is the single source of the £ maths.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fair"))
 import fair  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_APPETITE = os.path.join(HERE, "appetite.json")
+# .estate-clone/ — every party is a sibling directory of `platform`, each with
+# its own signed party.yaml. Same layout clone-estate.sh assembles.
+ESTATE_DIR = os.path.dirname(os.path.dirname(HERE))
+# Kept as the argparse default other modules already import (tcor, cage). None
+# means "resolve the party's own artefact"; an explicit path is a party.yaml.
+DEFAULT_APPETITE = None
 
 
-def tolerance_for(org, appetite_path=DEFAULT_APPETITE):
-    with open(appetite_path) as fh:
-        appetite = json.load(fh)
-    orgs = appetite.get("orgs", {})
-    if org not in orgs:
-        sys.exit(f"no risk appetite declared for org '{org}' in {appetite_path}")
-    return float(orgs[org]["tolerance"])
+class MissingInstrument(Exception):
+    """ADR-0020: the £ cannot be read, so no number may be emitted. Names what
+    is missing. Distinct from a priced hole, which is a missing BEHAVIOUR."""
+
+
+def party_yaml_path(org):
+    """The party's own signed artefact. `platform` signs the one next to this
+    module's own repo root; every other party is a sibling checkout."""
+    if org == "platform":
+        return os.path.join(os.path.dirname(HERE), "party.yaml")
+    return os.path.join(ESTATE_DIR, org, "party.yaml")
+
+
+def appetite_money(org, party_path=DEFAULT_APPETITE):
+    """`appetite.tolerance` = {amount, currency} off the party's OWN party.yaml.
+
+    Raises MissingInstrument naming the party and the file when the artefact is
+    absent or declares no appetite — never a default, never a fixture.
+    """
+    path = party_path or party_yaml_path(org)
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+    except OSError:
+        raise MissingInstrument(
+            f"no risk appetite for '{org}': no party artefact at {path}") from None
+    tolerance = (doc.get("appetite") or {}).get("tolerance")
+    if not isinstance(tolerance, dict) or "amount" not in tolerance:
+        raise MissingInstrument(
+            f"no risk appetite for '{org}': {path} declares no appetite.tolerance")
+    return {"amount": float(tolerance["amount"]), "currency": tolerance.get("currency")}
+
+
+def tolerance_for(org, party_path=DEFAULT_APPETITE):
+    """The band as a bare number, in the party's own appetite currency. Public
+    name and shape unchanged for every existing caller (cage, tcor, wargamer,
+    wardley, verify/proportionality); only the STORE moved."""
+    return appetite_money(org, party_path)["amount"]
 
 
 def decide(scenario, org, tolerance):
@@ -114,9 +160,30 @@ def cmd_selfcheck(_args):
                 assert "datetime" not in s and "time" not in s, \
                     f"date/timer logic leaked into enforcement: {s}"
 
+    # 5. The band is the PARTY's own signed fact, and a party that declares
+    #    none is a missing instrument that refuses (ADR-0020) -- never a
+    #    default and never a fixture.
+    import tempfile
+    assert dw == float(yaml.safe_load(open(party_yaml_path("driftwood")))
+                       ["appetite"]["tolerance"]["amount"]), dw
+    assert appetite_money("driftwood")["currency"] == "GBP", appetite_money("driftwood")
+    assert not os.path.exists(os.path.join(HERE, "appetite.json")), \
+        "risk/appetite.json is retired -- appetite is a signed fact on party.yaml"
+    with tempfile.TemporaryDirectory() as td:
+        bare = os.path.join(td, "party.yaml")
+        with open(bare, "w") as fh:
+            fh.write("party: nobody\nroles: [adopter]\n")
+        for missing in (bare, os.path.join(td, "nothing.yaml")):
+            try:
+                tolerance_for("nobody", missing)
+                raise AssertionError(f"a party with no appetite must refuse: {missing}")
+            except MissingInstrument as e:
+                assert "nobody" in str(e), e
+
     print(
-        "ok  driftwood(£%.0f tol): loose buys £%.0f -> Audit | tightened buys £%.0f -> Deny "
-        "| same loose under ludlow(£%.0f tol) -> Deny"
+        "ok  driftwood(£%.0f tol, from its OWN party.yaml): loose buys £%.0f -> Audit | "
+        "tightened buys £%.0f -> Deny | same loose under ludlow(£%.0f tol) -> Deny | "
+        "a party with no declared appetite refuses as a missing instrument"
         % (dw, d_loose["risk_bought"], d_tight["risk_bought"], lud)
     )
 
@@ -132,7 +199,8 @@ def main(argv=None):
         sp = sub.add_parser(name, help=helptext)
         sp.add_argument("scenario")
         sp.add_argument("--org", required=True)
-        sp.add_argument("--appetite", default=DEFAULT_APPETITE)
+        sp.add_argument("--party-yaml", dest="appetite", default=DEFAULT_APPETITE,
+                        help="read the band from THIS party.yaml instead of the party's own")
         sp.set_defaults(func=fn)
 
     pk = sub.add_parser("selfcheck", help="run the enforcement assertions")

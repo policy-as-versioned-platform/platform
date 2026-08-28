@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """cage.py — the graded enforcement envelope: tiers over dials, the £ picks the tier.
 
-Deny is only the bottom rung. A behind-posture workload does not get a blunt
-admit/deny — it keeps running, *caged by degree*. This module is the source of
-truth for:
+Nothing is ever denied. A behind-posture workload does not get a blunt
+admit/deny — it keeps running, *caged by degree*, and the bottom rung is
+`isolated`: a running cage with no ingress, no egress and first eviction
+(ADR-0022). This module is the source of truth for:
 
   1. NAMED TIERS -> DIAL SETTINGS, deterministically (PSS-style presets over the
      independent dials Kyverno actually injects: cpu/mem limits, drop-ALL-caps,
-     read-only-fs, an eviction PriorityClass, a WAF sidecar). One table; the
-     `cage-tier` MutatingPolicy mirrors it (verify-graded.sh cross-checks drift).
+     read-only-fs, an eviction PriorityClass, reach, a WAF sidecar). One table;
+     the `cage-tier` MutatingPolicy mirrors it (verify-graded.sh cross-checks
+     drift). The ladder is baseline < restricted < quarantine < isolated, plus
+     `infra` — declared by a platform-role party on its own Namespaces, never
+     selected by a price.
 
   2. THE £ SELECTS THE TIER. A cage is a *priced partial-reduce on a retained
      risk*: it collapses part of the behind-posture residual (R' > 0 still) at a
      booked run-cost (C_cage > 0). Given the workload's uncaged residual ALE and
      the org's appetite band, pick the LOOSEST tier whose caged residual still
-     fits — else Deny (the bottom rung). Same behind-posture workload -> baseline
+     fits — else `isolated`, the bottom rung — then clamped UP to the adopter's
+     own tighten-only `overlay.floor`. Same behind-posture workload -> baseline
      in loose-appetite driftwood, quarantine in strict-appetite ludlow.
 
   3. TCoR EMITTED. Total Cost of Risk of the chosen cage = caged residual +
@@ -35,7 +40,7 @@ No new risk engine, no new appetite store.
 
 Usage:
     cage.py dials <tier>                                   # tier -> dial JSON
-    cage.py select <scenario.json> --org driftwood         # £ picks tier + TCoR
+    cage.py select <scenario.json> --org driftwood [--floor quarantine]
     cage.py selfcheck
 """
 from __future__ import annotations
@@ -67,30 +72,69 @@ TIERS = {
         "reduce": 0.30, "cost": 500,
         "cpu": "500m", "mem": "256Mi",
         "priorityClass": "cage-baseline", "dropAll": False, "readOnlyRootFs": False,
-        "waf": "none",
+        "waf": "none", "reach": "cluster", "evictFirst": False,
     },
     "restricted": {
         "reduce": 0.70, "cost": 2000,
         "cpu": "250m", "mem": "128Mi",
         "priorityClass": "cage-restricted", "dropAll": True, "readOnlyRootFs": True,
-        "waf": "light",
+        "waf": "light", "reach": "namespace+named", "evictFirst": False,
     },
     "quarantine": {
         "reduce": 0.92, "cost": 6000,
         "cpu": "100m", "mem": "64Mi",
         "priorityClass": "cage-quarantine", "dropAll": True, "readOnlyRootFs": True,
-        "waf": "heavy",
+        "waf": "heavy", "reach": "namespace", "evictFirst": False,
+    },
+    # The bottom rung (ADR-0022, eco-system ticket 26): quarantine's dials, plus
+    # NO reach at all (no ingress, no egress) and FIRST eviction. It is a
+    # RUNNING, unreachable cage -- not a refusal. select_tier() returns it where
+    # it used to return "deny": nothing is ever denied, and an unknown or
+    # missing tier fails closed to here.
+    "isolated": {
+        "reduce": 0.98, "cost": 15000,
+        "cpu": "100m", "mem": "64Mi",
+        "priorityClass": "cage-isolated", "dropAll": True, "readOnlyRootFs": True,
+        "waf": "heavy", "reach": "none", "evictFirst": True,
+    },
+    # The substrate rung. NOT a priced cage and NOT in ORDER: it is declared by
+    # role on a Namespace manifest by a platform-role party (kube-system,
+    # flux-system, kyverno), never selected by the price. reduce/cost are 0
+    # because nothing here is a cage bought against a residual.
+    "infra": {
+        "reduce": 0.0, "cost": 0,
+        "cpu": None, "mem": None,
+        "priorityClass": "system-cluster-critical", "dropAll": False,
+        "readOnlyRootFs": False,
+        "waf": "none", "reach": "cluster", "evictFirst": False,
     },
 }
-# Loosest -> tightest. The selection walks this order and stops at the first fit.
-ORDER = ["baseline", "restricted", "quarantine"]
+# Loosest -> tightest. The selection walks this order and stops at the first fit;
+# falling off the end lands on the bottom rung, `isolated`. `infra` is
+# deliberately absent: it is platform-only and out of selection (ADR-0022).
+ORDER = ["baseline", "restricted", "quarantine", "isolated"]
+# Every value the `cage-tier` label may hold, strictest last but for `infra`,
+# which sits outside the ordering because it is a role declaration.
+LADDER = ORDER + ["infra"]
 
 
 def dials(tier):
     """The deterministic tier -> dial-settings expansion. Pure lookup, no surprises."""
     if tier not in TIERS:
-        sys.exit(f"unknown tier '{tier}' (known: {', '.join(ORDER)})")
+        sys.exit(f"unknown tier '{tier}' (known: {', '.join(LADDER)})")
     return dict(TIERS[tier])
+
+
+def clamp_to_floor(tier, floor):
+    """A party's own tighten-only floor (party.yaml `overlay.floor`, ADR-0022).
+    The selection never returns looser than the floor its adopter declared; it
+    may return stricter. Lowering the floor is priced as a delta elsewhere,
+    never refused here."""
+    if floor is None:
+        return tier
+    if floor not in ORDER:
+        sys.exit(f"unknown cage floor '{floor}' (selectable: {', '.join(ORDER)})")
+    return tier if ORDER.index(tier) >= ORDER.index(floor) else floor
 
 
 def caged_residual(uncaged_ale, tier):
@@ -114,29 +158,38 @@ def tcor(uncaged_ale, tier):
     }
 
 
-def select_tier(uncaged_ale, tolerance):
-    """The £ picks the tier: loosest cage whose residual fits the appetite band.
+def select_tier(uncaged_ale, tolerance, floor=None):
+    """The £ picks the tier: loosest cage whose residual fits the appetite band,
+    then clamped UP to the adopter's own declared floor.
 
-    Deny is the bottom rung — reached only when even the tightest cage leaves a
-    residual over the band. Deterministic: a pure function of (residual, band).
+    `isolated` is the bottom rung — reached when even quarantine leaves a
+    residual over the band. It is a running, unreachable cage, not a refusal
+    (ADR-0022): nothing is ever denied. Deterministic: a pure function of
+    (residual, band, floor).
     """
     for tier in ORDER:
         if caged_residual(uncaged_ale, tier) <= tolerance:
-            return tier
-    return "deny"
+            break
+    else:
+        tier = ORDER[-1]
+    return clamp_to_floor(tier, floor)
 
 
-def select(scenario, org, tolerance, mode="behind"):
+def select(scenario, org, tolerance, mode="behind", floor=None):
     """Full graded decision for a workload's residual + its TCoR risk line.
 
     `mode` picks which control-state block of the scenario is the UNCAGED
     residual: "behind" (default) for posture-drift scenarios, "warn" for a
     conditional-policy's root branch (the deviation is in place — same
     convention render-exemption.py used to price a ledger entry's residual).
+    `floor` is the adopter's own tighten-only `overlay.floor` (ADR-0022).
+
+    Every outcome is a Cage now: the bottom rung is `isolated`, a running
+    cage with no reach, never a Deny (ADR-0022).
     """
     st = fair.state(scenario, mode)
     uncaged = fair.summarize(fair.simulate(st["lef"], st["lm"]))["ale"]
-    tier = select_tier(uncaged, tolerance)
+    tier = select_tier(uncaged, tolerance, floor)
     out = {
         "version": scenario.get("version"),
         "name": scenario.get("name"),
@@ -144,14 +197,8 @@ def select(scenario, org, tolerance, mode="behind"):
         "uncaged_residual": uncaged,
         "tolerance": tolerance,
         "tier": tier,
+        "floor": floor,
     }
-    if tier == "deny":
-        out["action"] = "Deny"          # bottom rung: the loss path is closed, not caged
-        out["reason"] = (
-            f"even quarantine leaves £{caged_residual(uncaged, 'quarantine'):,.0f} "
-            f"> band £{tolerance:,.0f} -> Deny (bottom rung)"
-        )
-        return out
     out["action"] = "Cage"
     out["dials"] = dials(tier)
     out["tcor"] = tcor(uncaged, tier)
@@ -246,16 +293,26 @@ def cmd_dials(args):
 
 def cmd_select(args):
     sc = fair.load(args.scenario)
-    tol = enforce.tolerance_for(args.org, args.appetite)
-    print(json.dumps(select(sc, args.org, tol), indent=2))
+    tol = enforce.tolerance_for(args.org, args.party_yaml)
+    print(json.dumps(select(sc, args.org, tol, floor=args.floor), indent=2))
 
 
 def cmd_selfcheck(_args):
-    # 1. Tier -> dials is deterministic and total over the catalogue.
-    for t in ORDER:
+    # 1. Tier -> dials is deterministic and total over the WHOLE ladder,
+    #    including the two rungs ticket 26 adds: `isolated` (the bottom rung,
+    #    a running cage) and `infra` (the platform's own substrate rung).
+    assert LADDER == ["baseline", "restricted", "quarantine", "isolated", "infra"], LADDER
+    assert "infra" not in ORDER, "infra is declared by role, never selected by a price"
+    for t in LADDER:
         assert dials(t) == dials(t) == TIERS[t], t
         assert set(dials(t)) >= {"cpu", "mem", "priorityClass", "dropAll",
-                                 "readOnlyRootFs", "waf", "reduce", "cost"}, t
+                                 "readOnlyRootFs", "waf", "reduce", "cost",
+                                 "reach", "evictFirst"}, t
+    # `isolated` IS quarantine's dials plus no reach and first eviction.
+    _shared = lambda t: {k: v for k, v in TIERS[t].items()
+                         if k not in ("reduce", "cost", "priorityClass", "reach", "evictFirst")}
+    assert _shared("quarantine") == _shared("isolated"), (_shared("quarantine"), _shared("isolated"))
+    assert TIERS["isolated"]["reach"] == "none" and TIERS["isolated"]["evictFirst"], TIERS["isolated"]
 
     # 2. Tighter tier => more risk collapsed AND more run-cost (the monotonicity the
     #    £-selection relies on). No tier fully closes the loss path (that is Deny).
@@ -272,7 +329,17 @@ def cmd_selfcheck(_args):
     assert select_tier(r, 40_000) == "baseline",   select_tier(r, 40_000)
     assert select_tier(r, 20_000) == "restricted", select_tier(r, 20_000)
     assert select_tier(r, 5_000) == "quarantine",  select_tier(r, 5_000)
-    assert select_tier(r, 1_000) == "deny",        select_tier(r, 1_000)
+    assert select_tier(r, 1_000) == "isolated",    select_tier(r, 1_000)
+    assert select_tier(r, 1) == "isolated",        select_tier(r, 1)
+    assert "deny" not in TIERS and "deny" not in LADDER, "the deny rung is retired (ADR-0022)"
+
+    # 3b. The adopter's own floor clamps the selection UP and never down: a
+    #     price that would pick baseline is held at the declared floor, and a
+    #     price stricter than the floor is left alone. Tighten-only.
+    assert select_tier(r, 40_000, floor="quarantine") == "quarantine", "floor must clamp up"
+    assert select_tier(r, 1_000, floor="baseline") == "isolated", "floor must never loosen"
+    assert select_tier(r, 40_000, floor=None) == "baseline"
+    assert clamp_to_floor("restricted", "isolated") == "isolated"
 
     # 4. TCoR is booked as residual + cost-of-controls, both positive (priced
     #    partial-reduce on a RETAINED risk), and tightening trades residual for cost.
@@ -316,7 +383,7 @@ def cmd_selfcheck(_args):
         pass
 
     print(
-        "ok  tiers %s | £ picks: band40k->%s band20k->%s band5k->%s band1k->deny | "
+        "ok  tiers %s | £ picks: band40k->%s band20k->%s band5k->%s band1k->isolated | "
         "scenario £%.0f: driftwood->%s (TCoR £%.0f), ludlow->%s (TCoR £%.0f) | "
         "legacy-till (warn) -> %s cage, OSCAL risk open £%s -> observation resolves"
         % (ORDER, "baseline", "restricted", "quarantine",
@@ -336,7 +403,10 @@ def main(argv=None):
     psel = sub.add_parser("select", help="the £ picks the tier + emits the TCoR ledger line")
     psel.add_argument("scenario")
     psel.add_argument("--org", required=True)
-    psel.add_argument("--appetite", default=enforce.DEFAULT_APPETITE)
+    psel.add_argument("--party-yaml", default=enforce.DEFAULT_APPETITE,
+                      help="read the band from THIS party.yaml instead of the party's own")
+    psel.add_argument("--floor", default=None, choices=ORDER,
+                      help="the adopter's own tighten-only cage floor (ADR-0022)")
     psel.set_defaults(func=cmd_select)
 
     pk = sub.add_parser("selfcheck", help="run the graded-envelope assertions")

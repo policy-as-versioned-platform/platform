@@ -44,7 +44,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "risk"))
 sys.path.insert(0, os.path.join(HERE, "..", "feeds"))
 sys.path.insert(0, os.path.join(HERE, "..", "party"))
-import enforce            # noqa: E402  the SAME appetite-band engine the estate uses
+import enforce            # noqa: E402  the SAME appetite-band engine + the ONE appetite helper
 import to_fair_scenario   # noqa: E402  the feed bounds checker
 import party_artefact     # noqa: E402  publish_capability: the one place that says "verifiable"
 
@@ -53,10 +53,12 @@ SELF_SCENARIO = os.path.join(HERE, "scenarios", "platform-self.json")
 
 
 def govern_self():
-    """Score the apparatus with the same engine, and the same shared appetite
-    store (../risk/appetite.json), that scores every institution — platform's
-    strict £10k band lives there now, marked `root_of_trust`, not in a
-    separate file (ticket 16 part 2: no more override-path special case)."""
+    """Score the apparatus with the same engine, and the same one appetite
+    helper (../risk/enforce.py's tolerance_for), that scores every institution
+    — platform's strict £10k band is a SIGNED FACT on platform's own party.yaml
+    now (`appetite.tolerance`, ticket 25/ADR-0021), not a platform-held fixture
+    and not a separate file. The apparatus declares its own band exactly the
+    way it makes every adopter declare theirs."""
     sc = enforce.fair.load(SELF_SCENARIO)
     tol = enforce.tolerance_for("platform")
     d = enforce.decide(sc, "platform", tol)
@@ -135,8 +137,20 @@ def cmd_selfcheck(_a):
     assert d["controls_mandatory"], d
     assert d["residual_within_band"], d              # controls-on residual fits the band
     assert d["passes_own_test"], d
-    # Scored by the identical engine (no bespoke self-scoring path).
+    # Scored by the identical engine (no bespoke self-scoring path), off the
+    # platform's OWN signed party artefact -- the retired risk/appetite.json
+    # fixture must not come back.
     assert enforce.decide.__module__ == "enforce", "must reuse ../risk/enforce.py, not a fork"
+    assert d["tolerance"] == enforce.tolerance_for("platform"), d
+    assert enforce.party_yaml_path("platform").endswith("platform/party.yaml"), \
+        enforce.party_yaml_path("platform")
+    assert not os.path.exists(os.path.join(HERE, "..", "risk", "appetite.json")), \
+        "risk/appetite.json is retired -- appetite is a signed fact on party.yaml"
+    try:
+        enforce.tolerance_for("nobody-at-all")
+        raise AssertionError("a party with no appetite must refuse (ADR-0020)")
+    except enforce.MissingInstrument:
+        pass
 
     # 2. Feed-integrity actually holds: signed + sourced + bounded.
     fi = feed_integrity()
@@ -155,7 +169,8 @@ def cmd_selfcheck(_a):
 
     n_feeds = len(fi["feeds"])
     print(
-        "ok  apparatus scored by its OWN engine: risk_bought £%.0f > £%.0f band -> Deny "
+        "ok  apparatus scored by its OWN engine + its OWN signed party.yaml band: "
+        "risk_bought £%.0f > £%.0f band -> Deny "
         "(controls mandatory), residual-with-controls £%.0f within band -> PASSES OWN TEST "
         "| feeds: %d signed+sourced+bounded | proposer bounded, no merge()"
         % (d["risk_bought"], d["tolerance"], d["residual_deny"], n_feeds)

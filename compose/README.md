@@ -53,8 +53,8 @@ adopter already pins `platform` and calls through that pin.
   `GeneratingPolicy` member. Refused (ADR-0016: no strictness ladder to compare on).
 - **Restatement on a `ValidatingPolicy`** — a stricter action (`Audit`→`Deny`) is accepted and the
   rendered member carries it. A weaker action is never an override, never an exemption: it is a
-  declared inability, priced by the estate's own `graded/cage.py` against that party's own
-  `risk/appetite.json` band. The rendered member keeps the INHERITED action — the composed artefact
+  declared inability, priced by the estate's own `graded/cage.py` against that party's own signed
+  `party.yaml` `appetite.tolerance` band. The rendered member keeps the INHERITED action — the composed artefact
   carries no tier and no tier floor; only the proposer (ADR-0015) ever turns one, later.
 
 ## What ticket 14 adds
@@ -123,10 +123,22 @@ itself needs.
   prior header, or no prior edge of that kind, means nothing to compare a bump against yet: old and
   new both price at this run's own version, an honest "no move". This runs *every* run, not only
   when a version actually moved — whether the two prices differ is the separate `changed` field.
-- **A proposed `deny` is marked `proposed_as: "issue"`, never `"label"`** — ADR-0015: `select_tier`
-  can return `deny`, and the `cage-tier` MutatingPolicy coerces any label value it doesn't recognise
-  to `baseline`, so a merged `tier: deny` label would invert the proposal in silence. This is the
-  mark, not the act — composition itself opens nothing; ticket 17 wires the proposer that reads it.
+- **Every proposed tier travels as `proposed_as: "label"`** — ADR-0022 retired the `deny` rung.
+  `select_tier` now bottoms out at `isolated`, a running, unreachable cage (quarantine's dials plus
+  no ingress, no egress and first eviction), so every value it can return is a real label value and
+  nothing is ever denied. This is the mark, not the act — composition itself opens nothing;
+  ticket 17 wires the proposer that reads it.
+- **Every `prices[]` entry carries `perspective`, `currency`, `source`, `kind`, `amount` and a
+  `per_customer` restatement** (ticket 25; ADR-0020, ADR-0021). No sum crosses a perspective or a
+  currency: the one summing helper is `fair.sum_prices`, and it raises on a mixed list. A regime
+  entry also carries `holes[]` — the regulator's own published control weights, each with its own
+  amount — and a `total` those amounts sum to, which IS the entry amount, because a hole partitions
+  the regime exposure rather than adding to it. An adopter whose own repo publishes a
+  `twin/forward-intel/v<major>/feed.json` gets one further entry, `source: twin`, annualised
+  through `fair.py` and carrying the adopter's selection-policy version, the curve hash and
+  `fair.summarize()`'s own `tail`; no such feed simply means no such entry. A missing instrument —
+  no appetite band, no converter for a declared feed, no FX rate for the date — refuses and names
+  what is missing (ADR-0020).
 - **Pricing touches no rendered file.** Pricing and threat edges carry no rule and are never looped
   into the members/render step, so a price move changes `prices[]` and the header's `parents[]`
   entry for that one edge, and nothing else composition renders — proved byte-for-byte.

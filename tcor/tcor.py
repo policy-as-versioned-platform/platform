@@ -100,10 +100,16 @@ def moves(risk, tolerance):
     out = {}
     # fix — remediate; loss path closed, pay the engineering spend.
     out["fix"] = line(ale_deny, c_fix, 0.0)
-    # cage — the £ picks the tier (../graded/cage.py); Deny-fallthrough => cage unavailable.
+    # cage — the £ picks the tier (../graded/cage.py). ADR-0022 retired the `deny`
+    # rung: the ladder now bottoms out at `isolated`, a RUNNING, unreachable cage,
+    # so select_tier() always returns a tier and never falls through. The four-move
+    # crossover still has to ask the economics question that fallthrough used to
+    # answer for it -- does this cage actually bring the residual inside the band?
+    # A cage that does not is not a move this crossover can choose; the namespace
+    # still runs at `isolated`, it is just not the cheapest way to carry the risk.
     tier = cage.select_tier(ale_behind, tolerance)
-    if tier == "deny":
-        out["cage"] = {**line(INF, 0.0, 0.0), "tier": "deny (no tier fits the band)"}
+    if cage.caged_residual(ale_behind, tier) > tolerance:
+        out["cage"] = {**line(INF, 0.0, 0.0), "tier": f"{tier} (no tier brings it inside the band)"}
     else:
         ct = cage.tcor(ale_behind, tier)
         out["cage"] = {**line(ct["residual"], ct["cost_of_controls"] * cage_discount, 0.0), "tier": tier}

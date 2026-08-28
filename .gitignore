@@ -1,0 +1,4 @@
+# Scratch only. NOTE: platform still carries 12 TRACKED __pycache__/*.pyc from an
+# earlier commit; this rule stops new ones being added, it does not untrack those.
+__pycache__/
+.work/

@@ -28,13 +28,30 @@ on any drift):
 | `baseline` | 500m / 256Mi | — | — | — | −10 | 30% | 500 |
 | `restricted` | 250m / 128Mi | ALL | yes | light (100m) | −100 | 70% | 2,000 |
 | `quarantine` | 100m / 64Mi | ALL | yes | heavy (250m) | −1000 | 92% | 6,000 |
+| `isolated` | 100m / 64Mi | ALL | yes | heavy (250m) | first | 98% | 15,000 |
+| `infra` | — | — | — | — | `system-cluster-critical` | — | — |
+
+`isolated` is quarantine's dials plus **no reach at all** (no ingress, no egress) and
+**first eviction** — a running, unreachable cage, the rung `deny` used to occupy
+(ADR-0022). `infra` is declared by role on a Namespace manifest by a `platform`-role
+party and is never selected by the price, so it is not on the selection ladder.
+The `reduce`/`cost` figures for `isolated` are calibration knobs, marked as such in
+`cage.py`. **Not yet served:** `graded/policies/cage-tier.yaml` still carries only the
+first three rungs and its per-tier reach is still one flat egress lockdown, so
+`verify-graded.sh` step 4 reports the drift; eco-system ticket 26 lands the Kyverno
+half (dial map, `cage-isolated` PriorityClass, per-tier reach, and the unknown-tier
+fallback flipping from `baseline` to `isolated`).
 
 ## The £ picks the tier (and TCoR)
 
 A cage is a **priced partial-reduce on a retained risk**: it collapses part of the
 behind-posture residual (R′ stays > 0) at a booked run-cost (C_cage > 0). The £
-picks the **loosest** cage whose residual still fits the org's appetite band
-(`../risk/appetite.json`) — else **Deny**, the bottom rung.
+picks the **loosest** cage whose residual still fits the org's appetite band (read from
+that org's OWN signed `party.yaml` `appetite.tolerance`; the platform-held
+`../risk/appetite.json` fixture is retired, ADR-0021) — else `isolated`, the bottom
+rung: quarantine's dials plus no reach at all and first eviction, a RUNNING cage,
+never a Deny (ADR-0022). The selection is then clamped UP to the adopter's own
+`overlay.floor`, never down.
 
 ```mermaid
 flowchart TD
@@ -42,7 +59,13 @@ flowchart TD
   S -->|baseline fits| C1[Cage: baseline<br/>TCoR = R′ + £500]
   S -->|needs restricted| C2[Cage: restricted<br/>TCoR = R′ + £2k]
   S -->|needs quarantine| C3[Cage: quarantine<br/>TCoR = R′ + £6k]
-  S -->|even quarantine over-band| D[Deny<br/>bottom rung: loss path closed]
+  S -->|even quarantine over-band| D[Cage: isolated<br/>no reach, evicted first<br/>TCoR = R′ + £15k]
+  C1 --> F{below the adopter's<br/>overlay.floor?}
+  C2 --> F
+  C3 --> F
+  D --> F
+  F -->|yes| G[clamp UP to the floor<br/>tighten-only, never down]
+  F -->|no| H[selected tier]
 ```
 
 Same behind-posture workload, different appetite → different cage. Loose-appetite

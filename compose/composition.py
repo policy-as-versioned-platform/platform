@@ -35,7 +35,7 @@ same compose():
     restated action. A weaker action is never an override and never an
     exemption: it is a DECLARED INABILITY, priced by the estate's own
     `graded/cage.py` against that party's own appetite band
-    (`risk/appetite.json`), reusing the estate's engine exactly as it
+    (its own signed `party.yaml`), reusing the estate's engine exactly as it
     stands. The rendered member keeps the INHERITED action -- the composed
     artefact carries no tier and no tier floor; only the proposer (ADR-0015)
     ever turns a tier, later, in its own PR.
@@ -160,7 +160,7 @@ compose() -- ADR-0006, ADR-0010, ADR-0015:
     `uk-gdpr`/`lower-tier` entry -- spec.md's own acceptance wording), the
     threat feed through `platform/feeds/to_fair_scenario.py`, reusing
     `_threat_scenario` exactly as ticket 13's caging path already calls it.
-    No second risk engine, no second appetite store (`_appetite_tolerance`,
+    No second risk engine, no second appetite store (`_appetite`,
     `_cage_engine`, both already ticket 13's).
   * "Old" is the version the LAST SIGNED composed artefact's own header
     recorded for that (party, kind) -- the same `_previous_header` ticket
@@ -216,6 +216,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -272,6 +273,39 @@ FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "penalty-schema": ("schema", "to_fair_scenario.py"),
 }
 FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version"}
+
+# Eco-system ticket 25 (ADR-0020, ADR-0021): the one prices[] schema.
+# Every entry carries perspective, currency, source, kind, amount and a
+# per-customer restatement. NO SUM CROSSES A PERSPECTIVE OR A CURRENCY.
+#   feed        a subscribed publisher's price (source: the publishing party)
+#   twin        the adopter's own forward-intel scenario (source: twin)
+#   premium     an insurance contract cost (source: insurer) -- RESERVED, schema
+#               support only: no quote feed exists yet, and a declared one with
+#               no converter is a MISSING INSTRUMENT that refuses (ADR-0020),
+#               never an invented amount. Producer: ticket 36 (the insurer).
+#   switching   a portability/lock-in cost (source: twin) -- RESERVED, schema
+#               support only. Producer: ticket 32.
+#   reliability a failed cross-org reach demand, priced under the CALLER's
+#               perspective, never gated (ticket 15 amendment C18) -- RESERVED,
+#               schema support only. Producer: ticket 32.
+# Three of the four items in the spec's one schema pass are therefore reserved,
+# not observed: nothing in this estate constructs an entry of those kinds yet.
+PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability")
+# A party that states no reporting currency reports in USD (spec.md, "The £
+# seam"); the UK parties all declare GBP on their own artefacts.
+DEFAULT_REPORTING_CURRENCY = "USD"
+# The adopter's own twin publishes forward intelligence into the adopter's own
+# repo as an ADR-0019 envelope (ADR-0021). No feed = no twin entry, never a
+# refusal.
+FORWARD_INTEL = "forward-intel"
+FORWARD_INTEL_DIR = ("twin", FORWARD_INTEL)
+# The adopter's own versioned selection-policy package (ADR-0021). The curve
+# never picks; this package does, and the proposal PR names its version.
+SELECTION_POLICY_DIR = "selection-policy"
+# The signed FX feed. An amount in a currency other than the perspective's
+# reporting currency needs a rate for the price's own as-of date; no rate is a
+# MISSING INSTRUMENT and refuses (ADR-0020). Never sum unconverted.
+FX_FEED = "fx"
 
 YAML_KWARGS = dict(sort_keys=False, allow_unicode=True, width=4096)
 
@@ -706,15 +740,167 @@ def check_diamonds(edges: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------
 
 
-def _appetite_tolerance(party: str) -> float | None:
-    """REAL. `risk/appetite.json` lives in this same repo (platform) and is
-    the single source of truth for a party's tolerance in GBP/year -- read
-    directly rather than through `risk/enforce.py`'s `tolerance_for`, which
-    calls `sys.exit` on a missing org; a missing band here is a composition
-    refusal, never a process exit."""
-    data = json.loads((PLATFORM_DIR / "risk" / "appetite.json").read_text())
-    org = data.get("orgs", {}).get(party)
-    return float(org["tolerance"]) if org else None
+def _enforce():
+    """The ONE appetite helper (`risk/enforce.py`), reached through the cage
+    engine that already imports it -- no second appetite store and no second
+    path to a party's band."""
+    return _cage_engine().enforce
+
+
+def _appetite(party: str, adopter_dir: Path | None = None,
+               parent_trees: dict[str, Path] | None = None) -> dict:
+    """`appetite.tolerance` = {amount, currency} off the PARTY'S OWN signed
+    party.yaml (ticket 25, ADR-0021). `risk/appetite.json` is retired: no
+    fixture prices a party any more. A party that declares no appetite is a
+    MISSING INSTRUMENT and refuses (ADR-0020), naming what is missing."""
+    enforce = _enforce()
+    path = str(_party_yaml(party, adopter_dir, parent_trees)) if adopter_dir is not None else None
+    try:
+        return enforce.appetite_money(party, path)
+    except enforce.MissingInstrument as e:
+        raise Refused(f"missing instrument: {e}") from None
+
+
+def _party_yaml(party: str, adopter_dir: Path, parent_trees: dict[str, Path] | None) -> Path:
+    """Where a named party's own signed artefact is, from where this
+    composition is standing: the adopter under composition, one of its pinned
+    parent trees, or the party's sibling checkout."""
+    adopter_dir = Path(adopter_dir)
+    candidate = adopter_dir / "party.yaml"
+    if candidate.exists():
+        doc = yaml.safe_load(candidate.read_text()) or {}
+        if doc.get("party") == party:
+            return candidate
+    tree = (parent_trees or {}).get(party)
+    if tree is not None and (Path(tree) / "party.yaml").exists():
+        return Path(tree) / "party.yaml"
+    return Path(_enforce().party_yaml_path(party))
+
+
+def _party_doc(party: str, adopter_dir: Path,
+                parent_trees: dict[str, Path] | None = None) -> dict:
+    """The named party's own signed artefact, or {} when this composition
+    cannot see one. Never invents a fact about another party."""
+    path = _party_yaml(party, adopter_dir, parent_trees)
+    if not path.exists():
+        return {}
+    doc = yaml.safe_load(path.read_text())
+    return doc if isinstance(doc, dict) else {}
+
+
+def _reporting_currency(doc: dict) -> str:
+    return doc.get("reporting_currency") or DEFAULT_REPORTING_CURRENCY
+
+
+def _fx_rate(frm: str, to: str, as_of: str | None,
+              trees: dict[str, Path] | None) -> tuple[float, dict]:
+    """The signed FX feed's rate for THIS date, and where it was read. ADR-0020:
+    no rate is a missing instrument and refuses -- an unconverted sum was the
+    live bug (GAPS 3.18) and never happens again.
+
+    The rate is read through the FX publisher's OWN converter
+    (`feeds/converters/fx.py`), never re-implemented here: the same rule as every
+    other feed in this module (spec, the £ seam -- "each publisher ships its
+    converter beside its feed; composition calls it"). Which month a rate is in
+    force for, how a cross-rate is taken through the base currency, and what
+    counts as an unpublished date are all the publisher's business, and a second
+    copy of that logic here is exactly how the two halves of an FX seam drift
+    apart without either side going red.
+
+    Only the PINNED parent trees are searched. A converter found in whatever
+    happens to be checked out beside the estate is not a pinned instrument, and
+    a price it produced could not be re-derived from the signed parent set."""
+    if frm == to:
+        return 1.0, {}
+    if not as_of:
+        raise Refused(f"missing instrument: no FX rate {frm}->{to}: the price carries no as_of "
+                      f"date, and a rate is in force for a date or for nothing")
+    where = "no PINNED parent tree ships converters/fx.py"
+    for party, tree in sorted((trees or {}).items()):
+        converter = Path(tree) / "converters" / f"{FX_FEED}.py"
+        if not converter.exists():
+            continue
+        spec = importlib.util.spec_from_file_location(f"_fx_{Path(tree).name}", converter)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        try:
+            rate = float(mod.convert(1.0, frm, to, as_of, root=str(tree)))
+        except getattr(mod, "MissingInstrument", Exception) as exc:
+            # The publisher's OWN refusal: it has no rate for this date. Keep
+            # looking; another pinned parent may publish one.
+            where = f"{converter}: {exc}"
+            continue
+        except Exception as exc:                       # noqa: BLE001
+            # A converter that will not run is BROKEN, not silent about a date.
+            # Reporting it as "no rate published" would hide a defect behind a
+            # missing instrument, which is the one refusal this estate allows.
+            raise Refused(f"{converter} does not run, so no FX rate {frm}->{to} for {as_of} "
+                          f"could be read at all: {exc}") from None
+        return rate, {"fx_publisher": party, "fx_feed_version": _fx_feed_version(tree)}
+    raise Refused(f"missing instrument: no FX rate {frm}->{to} for {as_of} ({where})")
+
+
+def _fx_feed_version(tree: Path) -> str | None:
+    """The version of the signed fx feed the rate was read out of, so a converted
+    price can be re-derived from the pinned parent set and not just believed.
+    ponytail: highest published major in the tree that shipped the converter. The
+    upgrade is an explicit `inherits[]` edge of `{kind: feed, name: fx}` that
+    pins ONE version -- that needs price_parent to price an fx edge, which is a
+    publisher change, not this seam's."""
+    found = sorted(Path(tree).glob(f"{FX_FEED}/v*/feed.json"))
+    if not found:
+        return None
+    try:
+        return json.loads(found[-1].read_text()).get("version")
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _price_entry(source: str, kind: str, perspective: str, currency: str, amount: float,
+                  perspective_doc: dict, **extra) -> dict:
+    """ONE prices[] entry, the one shape every price in this estate has.
+
+    `perspective` is the party whose balance sheet this is; `currency` is the
+    currency the amount is actually in; `per_customer` restates the amount
+    against THAT party's own signed `size.customers`, or is null where the
+    party declares no size (ticket 25 -- a restatement is never invented)."""
+    if kind not in PRICE_KINDS:
+        raise Refused(f"unknown price kind {kind!r} (known: {', '.join(PRICE_KINDS)})")
+    customers = (perspective_doc.get("size") or {}).get("customers")
+    per_customer = ({"amount": amount / customers, "currency": currency}
+                     if isinstance(customers, int) and customers > 0 else None)
+    return {"source": source, "kind": kind, "perspective": perspective,
+            "currency": currency, "amount": amount, "per_customer": per_customer, **extra}
+
+
+def _sum_prices(entries: list[dict], perspective: str, currency: str) -> float:
+    """The ONE summing helper -- `fair.sum_prices`, the estate's own £ engine.
+    It refuses a mixed list by raising: no sum crosses a perspective or a
+    currency, ever (spec.md, "The £ seam")."""
+    # The entry's OWN labels win; the arguments only fill in a breakdown line
+    # (a hole) that carries none. An entry that disagrees is what must refuse.
+    # The entry's OWN labels win; the arguments only fill in a breakdown line
+    # (a hole) that carries none. An entry that disagrees is what must refuse.
+    labelled = [{"perspective": perspective, "currency": currency, **e} for e in entries]
+    try:
+        return _cage_engine().fair.sum_prices(labelled)
+    except ValueError as e:
+        raise Refused(str(e)) from None
+
+
+def _appetite_tolerance(party: str, adopter_dir: Path | None = None,
+                         parent_trees: dict[str, Path] | None = None) -> float | None:
+    """Back-compatible bare band for the caging path below. Kept as a name
+    because ticket 13's restatement caging already calls it; the store moved
+    to the party's own artefact and nowhere else.
+
+    Reads the artefact of the tree UNDER COMPOSITION, not whatever sibling
+    checkout happens to sit beside the estate: composing a copied tree (the
+    e2e harness does exactly that) must price that copy's own signed band."""
+    try:
+        return _appetite(party, adopter_dir, parent_trees)["amount"]
+    except Refused:
+        return None
 
 
 def _load_scenario(rel_path: str) -> dict:
@@ -791,6 +977,19 @@ def _previous_cages(adopter_dir: Path) -> list[dict]:
         return []
 
 
+def _previous_prices(adopter_dir: Path) -> list[dict]:
+    """The last signed composed artefact's own prices[], if one is committed --
+    the comparison point the twin entry's `changed` reads (same shape
+    `_previous_cages` uses for cages)."""
+    prev = Path(adopter_dir) / "composed" / "evidence.json"
+    if not prev.exists():
+        return []
+    try:
+        return json.loads(prev.read_text()).get("prices", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
 def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
                         adopter_dir: Path, parent_trees: dict[str, Path] | None = None
                         ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -845,12 +1044,15 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
         # "Exemption"): a declared inability, priced against THIS party's
         # own appetite band by the estate's own cage engine. merged[key] is
         # left untouched, so the render below still carries inherited_action.
-        band = _appetite_tolerance(adopter_party)
+        band = _appetite_tolerance(adopter_party, adopter_dir, parent_trees)
         if band is None:
             refusals.append({
-                "kind": "no-appetite-band", "subject": adopter_party,
-                "detail": f"{adopter_party} has no declared risk appetite in "
-                          f"risk/appetite.json, so its residual on {rule} cannot be priced",
+                # ADR-0020's one allowed refusal, under the kind the rest of
+                # this module uses. The fixture it used to name is retired:
+                # whose money is at risk is the party's own signed fact.
+                "kind": "missing-instrument", "subject": adopter_party,
+                "detail": f"missing instrument: {adopter_party}/party.yaml declares no "
+                          f"appetite.tolerance, so its residual on {rule} cannot be priced",
                 "needs_composition": True,
             })
             continue
@@ -1096,19 +1298,27 @@ def check_baseline_widening(baseline_ids: set[str], prev_baseline_ids: set[str] 
 ICO_REGIME = "uk-gdpr"
 ICO_VIOLATION_TYPE = "lower-tier"
 
-# select_tier()'s bottom rung. TIERS (graded/cage.py) holds only the three
-# real dial presets, and the cage-tier MutatingPolicy coerces any OTHER
-# label value to "baseline" -- so a merged `tier: deny` label would invert
-# the proposal in silence (ADR-0015). A proposed deny is marked as an issue
-# subject here; every other tier is a real label value.
-DENY_TIER = "deny"
+# ADR-0022 retired the `deny` rung: graded/cage.py's ladder is
+# baseline < restricted < quarantine < isolated (plus platform-only `infra`),
+# and the bottom rung is a RUNNING, unreachable cage. Every selected tier is
+# now a real label value, so every proposal travels as a label and none as an
+# issue. `proposed_as` stays on the entry because wargamer/tier_pr.py reads it.
+PROPOSED_AS_LABEL = "label"
 
 
-def _ico_scenario(ico_root: Path, version: str) -> dict:
+def _ico_scenario(ico_root: Path, version: str, turnover: float | None = None) -> dict:
     """REAL. ico's own converter, `build`, against its own
     <version>/penalty-schema.json -- the same subprocess convention
-    `_threat_scenario` above already uses for the threat parent."""
-    return _run_converter("penalty-schema", version, ico_root, ["build", ICO_REGIME, ICO_VIOLATION_TYPE])
+    `_threat_scenario` above already uses for the threat parent.
+
+    `turnover` is the ADOPTER's own signed turnover, in the regime's currency.
+    The percent-of-turnover formula scales against it, so the price is this
+    party's and no fixture's; without it the publisher prices at its statutory
+    cap (spec, the £ seam)."""
+    args = ["build", ICO_REGIME, ICO_VIOLATION_TYPE]
+    if turnover is not None:
+        args += ["--turnover", f"{turnover:.2f}"]
+    return _run_converter("penalty-schema", version, ico_root, args)
 
 
 def _previous_parent_version(prev_header: dict | None, edge: dict) -> str | None:
@@ -1123,66 +1333,396 @@ def _previous_parent_version(prev_header: dict | None, edge: dict) -> str | None
                  if p["party"] == edge["party"] and _parent_key(p) == _parent_key(edge)), None)
 
 
+def _feed_as_of(path: Path) -> str | None:
+    """The date the publisher stamped on the envelope -- the as-of an FX rate
+    is looked up for. A pre-envelope raw file carries none."""
+    try:
+        doc = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    published = doc.get("published_at")
+    return published[:10] if isinstance(published, str) else None
+
+
+def _feed_currency(name: str, payload: dict) -> str | None:
+    """The currency the PUBLISHER declares for what it prices. ico declares one
+    per regime; every other feed declares one on its payload.
+
+    None where the publisher declares none -- and price_parent REFUSES that as a
+    missing instrument. Defaulting to the reader's reporting currency would
+    relabel the publisher's magnitudes into a currency nobody converted them
+    into: a minted currency, not a converted one, which is exactly the live bug
+    ADR-0020 was written against (GAPS 3.18)."""
+    if name == "penalty-schema":
+        return (payload.get("regimes", {}).get(ICO_REGIME, {}) or {}).get("currency")
+    return payload.get("currency")
+
+
+def _converted(amount: float, frm: str, to: str, as_of: str | None,
+                trees: dict[str, Path] | None) -> tuple[float, dict]:
+    """The amount in the perspective's reporting currency, plus the provenance
+    of the conversion. No rate for the date is a missing instrument (ADR-0020);
+    an unconverted amount is never summed."""
+    if frm == to:
+        return amount, {}
+    rate, provenance = _fx_rate(frm, to, as_of, trees)
+    return amount * rate, {"native_currency": frm, "native_amount": amount,
+                            "fx_rate": rate, "fx_as_of": as_of, **provenance}
+
+
+def _regime_holes(payload: dict, amount: float, perspective: str, currency: str) -> list[dict]:
+    """The per-hole breakdown under a regime entry (ticket 15 item 1, landed in
+    this one schema pass). The regulator publishes control_weights keyed
+    (source, id); a hole PARTITIONS the regime's exposure, it never adds to it,
+    so the weights sum to one and the hole amounts sum to the entry amount.
+    A pinned feed version that publishes no weights has no breakdown -- an
+    empty list, never an invented one.
+
+    Every published weight becomes a hole, whether or not this adopter has that
+    control open: the list is the PARTITION of the exposure, not the adopter's
+    open holes. ponytail ceiling: pricing a hole by its status (so implementing
+    pl-2 actually shrinks the regime entry) needs the adopter's open hole ids,
+    which compose() computes elsewhere -- that is ticket 15's build, not this
+    schema pass."""
+    weights = (payload.get("control_weights", {}).get(ICO_REGIME, {}) or {}
+                ).get(ICO_VIOLATION_TYPE, [])
+    if not weights:
+        return []
+    published = sum(float(w["weight"]) for w in weights)
+    if not math.isclose(published, 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise Refused(
+            f"missing instrument: control_weights for {ICO_REGIME}/{ICO_VIOLATION_TYPE} sum to "
+            f"{published}, not 1.0 -- a partition that does not cover the exposure is not a "
+            f"partition, and the share it leaves out has no published price")
+    return [{"source": w["source"], "id": w["id"], "weight": w["weight"],
+             "amount": amount * float(w["weight"])} for w in weights]
+
+
+# A signed size fact older than this many MONTHS, measured against the date the
+# feed being priced was published, is STALE: the loss triple widens back to the
+# publisher's statutory cap rather than scaling to a number nobody has restated
+# in a year (spec, the £ seam; ADR-0020 -- a missing behaviour is priced, never
+# refused). Months, not days, because this module may not read a clock or import
+# a date library at all (D1, and its own selfcheck enforces it): two YYYY-MM
+# prefixes are all the arithmetic this needs.
+SIZE_STALE_MONTHS = 12
+
+
+def _sized_turnover(perspective_doc: dict, currency: str, as_of: str | None,
+                     trees: dict[str, Path] | None) -> float | None:
+    """The perspective party's OWN signed turnover, stated in the currency the
+    regime prices in -- what a percent-of-turnover formula scales against
+    (spec, the £ seam: "each publisher ships its converter beside its feed;
+    composition calls it with the adopter's size").
+
+    None -- so the publisher prices at its own statutory cap, the widest read --
+    where the party signs no turnover at all, or where the size it signed is
+    stale. Neither refuses: a missing SIZE is a missing behaviour."""
+    size = perspective_doc.get("size") or {}
+    turnover = size.get("turnover")
+    if not isinstance(turnover, dict) or "amount" not in turnover:
+        return None
+    signed = size.get("as_of")
+    if signed and as_of and _months_apart(str(signed), as_of) > SIZE_STALE_MONTHS:
+        return None
+    amount, _ = _converted(float(turnover["amount"]),
+                            str(turnover.get("currency") or currency), currency, as_of, trees)
+    return amount
+
+
+def _months_apart(a: str, b: str) -> int:
+    """Whole months between two YYYY-MM-DD strings, from the strings alone --
+    no clock, no calendar library (D1: this module never reads either)."""
+    try:
+        ay, am = int(a[:4]), int(a[5:7])
+        by, bm = int(b[:4]), int(b[5:7])
+    except ValueError:
+        return 0        # an unreadable date is not evidence of staleness
+    return abs((by * 12 + bm) - (ay * 12 + am))
+
+
 def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | None,
-                  prev_version: str | None) -> dict:
-    """One prices[] entry for one pricing/threat edge: priced at the OLD
-    version (the last signed artefact's recorded pin, or -- with nothing
-    to compare -- this run's own version, which prices as an honest "no
-    move") and at the NEW version (this run's resolved pin), both through
-    the estate's own £ engine and appetite band, never a second one.
-    `ico_root` is unused for a `threat` edge -- `_threat_scenario` always
-    reads the threat feed out of THIS repo (`platform`), because `threat`'s
-    only party in this estate is `platform` itself, exactly as ticket 13's
-    caging path already assumes."""
+                  prev_version: str | None, *, perspective_doc: dict,
+                  reporting_currency: str, band_currency: str | None,
+                  floor: str | None, parent_trees: dict[str, Path] | None = None) -> dict:
+    """One prices[] entry for one feed edge, in the one schema every price in
+    this estate shares: perspective, currency, source, kind, amount and a
+    per-customer restatement (ticket 25). Priced at the OLD version (the last
+    signed artefact's recorded pin, or -- with nothing to compare -- this run's
+    own version, an honest "no move") and at the NEW version, both through the
+    estate's own £ engine and the adopter's own signed appetite band, never a
+    second one. A regime entry also carries its per-hole breakdown and the
+    total those holes sum to; the entry's amount IS that total, so the entry
+    and its own per-customer restatement never disagree. The band converts into
+    the publisher's currency before anything is compared -- it never refuses
+    for want of a conversion nobody asked the fx feed for."""
     party, kind, new_version = edge["party"], edge["kind"], edge["version"]
     old_version = prev_version if prev_version is not None else new_version
     name = _feed_name(edge)
     tree = Path(tree) if tree is not None else PLATFORM_DIR
 
+    if name not in FEED_CONVERTERS:
+        # ADR-0020: a declared feed parent with no converter is a MISSING
+        # INSTRUMENT -- the gate cannot read it, so it must not emit a number.
+        raise Refused(f"missing instrument: feed {name!r} declared by {adopter_party} has no "
+                       f"converter this composition can price through")
+    path = feed_file("", name, new_version, tree)
+    payload, as_of = load_feed_payload(path, name, new_version), _feed_as_of(path)
+
+    # The currency the PUBLISHER prices in. No declaration is a missing
+    # instrument: an amount cannot be relabelled into the reader's reporting
+    # currency without a rate, and a relabelled amount is a minted one.
+    native = _feed_currency(name, payload)
+    if not native:
+        raise Refused(f"missing instrument: feed {name}@{new_version} published by {party} "
+                       f"declares no currency, so the magnitudes it prices cannot be stated "
+                       f"in {adopter_party}'s {reporting_currency}")
+
     if name == "penalty-schema":
-        old_sc, new_sc = _ico_scenario(tree, old_version), _ico_scenario(tree, new_version)
-    elif name == "threat-register":
+        # This party's OWN signed size reaches the publisher's converter, so the
+        # percent-of-turnover formula prices this balance sheet and no fixture's.
+        turnover = _sized_turnover(perspective_doc, native, as_of, parent_trees)
+        old_sc = _ico_scenario(tree, old_version, turnover)
+        new_sc = _ico_scenario(tree, new_version, turnover)
+    else:
         old_sc = _threat_scenario(old_version, adopter_party, tree)
         new_sc = _threat_scenario(new_version, adopter_party, tree)
-    else:
-        # ponytail: only the two migrating feeds price today; a third feed
-        # name gets its converter wired here when a publisher ships one.
-        raise Refused(f"feed {name!r} has no converter this composition can price through")
 
+    # The band and the residual must be one currency before either is compared:
+    # the selection happens in the publisher's currency, so the band converts
+    # into it (or refuses for want of a rate -- never refuses for want of a
+    # conversion nobody asked the fx feed for).
+    band_native, _ = _converted(tolerance, band_currency or reporting_currency, native,
+                                 as_of, parent_trees)
     cage = _cage_engine()
-    old = cage.select(old_sc, adopter_party, tolerance, mode="warn")
-    new = cage.select(new_sc, adopter_party, tolerance, mode="warn")
-    return {
-        "source": party, "kind": kind, **({"name": name} if kind == "feed" else {}),
-        "old_version": old_version, "new_version": new_version,
-        "old_price": old["uncaged_residual"], "new_price": new["uncaged_residual"],
-        "old_tier": old["tier"], "proposed_tier": new["tier"],
-        "changed": old["tier"] != new["tier"],
-        "proposed_as": "issue" if new["tier"] == DENY_TIER else "label",
-    }
+    old = cage.select(old_sc, adopter_party, band_native, mode="warn", floor=floor)
+    new = cage.select(new_sc, adopter_party, band_native, mode="warn", floor=floor)
+    old_price, _ = _converted(old["uncaged_residual"], native, reporting_currency, as_of, parent_trees)
+    new_price, fx = _converted(new["uncaged_residual"], native, reporting_currency, as_of, parent_trees)
+
+    # The holes are computed BEFORE the entry, because the entry's amount IS
+    # their total and its per-customer restatement divides that same amount.
+    # Building the entry first and overwriting `amount` afterwards left the two
+    # disagreeing.
+    holes = _regime_holes(payload, new_price, adopter_party, reporting_currency)
+    total = _sum_prices(holes, adopter_party, reporting_currency) if holes else None
+    amount = total if holes else new_price
+
+    entry = _price_entry(
+        party, kind if kind in PRICE_KINDS else "feed", adopter_party, reporting_currency,
+        amount, perspective_doc,
+        **({"name": name} if name else {}),
+        old_version=old_version, new_version=new_version,
+        old_price=old_price, new_price=amount,
+        old_tier=old["tier"], proposed_tier=new["tier"],
+        changed=old["tier"] != new["tier"],
+        proposed_as=PROPOSED_AS_LABEL,
+        **fx,
+    )
+    entry["holes"] = holes
+    entry["total"] = total
+    return entry
+
+
+# --------------------------------------------------------------------------
+# 8b. the twin edge (ticket 25; ADR-0021)
+# --------------------------------------------------------------------------
+
+
+def _forward_intel(adopter_dir: Path) -> tuple[dict, Path] | None:
+    """The adopter's OWN twin publishes forward intelligence into the adopter's
+    own repo, as an ADR-0019 envelope (ADR-0021). The highest published major
+    wins. No feed at all is simply no twin entry -- never a refusal."""
+    root = Path(adopter_dir).joinpath(*FORWARD_INTEL_DIR)
+    majors = sorted((d for d in root.glob("v*") if (d / "feed.json").exists()),
+                     key=lambda d: int(re.sub(r"\D", "", d.name) or 0)) if root.is_dir() else []
+    if not majors:
+        return None
+    path = majors[-1] / "feed.json"
+    doc = json.loads(path.read_text())
+    _validate_envelope(doc, str(path))
+    if doc["name"] != FORWARD_INTEL:
+        raise Refused(f"{path}: envelope names feed {doc['name']!r}, expected {FORWARD_INTEL!r}")
+    return doc, path
+
+
+def _selection_policy(adopter_dir: Path, adopter_party: str):
+    """The adopter's OWN selection-policy package, imported and CALLED.
+
+    ADR-0021: "a versioned, signed selection policy package, published by the
+    adopter and pinned by Renovate, turns the curve into one tier." Stamping a
+    version read out of a file onto a tier some other engine picked is a
+    provenance claim the £ cannot back, so the package that is named is the
+    package that runs. `graded/cage.py` stays the cross-check: verify/pound-seam
+    runs both over the same residuals and refuses a disagreement.
+
+    No package at all is a MISSING INSTRUMENT: the estate cannot say which
+    versioned rule chose this party's cage (ADR-0020)."""
+    pkg = Path(adopter_dir) / SELECTION_POLICY_DIR / "selection_policy.py"
+    if not pkg.exists():
+        raise Refused(f"missing instrument: {adopter_party} publishes forward intelligence but "
+                       f"ships no {SELECTION_POLICY_DIR}/selection_policy.py, so no versioned "
+                       f"rule can be named as the one that picked its tier (ADR-0021)")
+    spec = importlib.util.spec_from_file_location(f"_selpol_{Path(adopter_dir).name}", pkg)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    pinned = _selection_policy_version(adopter_dir)
+    if pinned is not None and pinned != getattr(mod, "VERSION", None):
+        raise Refused(f"missing instrument: {adopter_party}'s {SELECTION_POLICY_DIR}/PIN.yaml "
+                       f"pins {pinned!r} but the package on disk is "
+                       f"{getattr(mod, 'VERSION', None)!r}; which rule picked is unreadable")
+    return mod
+
+
+def _selection_policy_version(adopter_dir: Path) -> str | None:
+    """The version of the adopter's OWN selection-policy package (ADR-0021:
+    the curve never picks, a pinned package does, and the proposal PR names
+    its version). Read from the package's own `PIN.yaml` -- the party schema
+    forbids unknown keys, so the pin lives beside the rule, not on party.yaml.
+    None where the adopter ships no such package yet."""
+    pin = Path(adopter_dir) / SELECTION_POLICY_DIR / "PIN.yaml"
+    if not pin.exists():
+        return None
+    doc = yaml.safe_load(pin.read_text()) or {}
+    return doc.get("policy_version")
+
+
+def _curve_hash(curve: object) -> str:
+    """A stable digest of the trade-off curve the twin published -- WHICH curve
+    this scenario shipped with, named on the proposal PR beside the policy
+    version (ADR-0021), and what resets the rejection ledger when it moves. It
+    is an identifier, NOT the input to the selection: the rule picks over the
+    priced residuals, which the entry records as `residuals`. Byte-identical to
+    the adopter's own vendorable `selection-policy/selection_policy.py:curve_hash`
+    (named that, not `select.py`, because a `select.py` on sys.path shadows the
+    stdlib `select` module and breaks subprocess), so the estate and the adopter
+    never disagree about which curve was priced. `verify/pound-seam` runs the
+    adopter's own function over its published curve and compares the two."""
+    canonical = json.dumps(curve, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: str | None,
+                parent_trees: dict[str, Path], prev_prices: list[dict],
+                lef_by_feed: dict[str, list], band_currency: str | None = None) -> dict | None:
+    """The `source: twin` pricing parent edge. The twin emits a scenario under a
+    perspective and has no frequency; fair.py annualises it and the ADOPTER'S OWN
+    versioned selection-policy package picks the tier (ADR-0021). One entry,
+    carrying that package's version, the curve hash, the residuals it picked
+    over and fair.py's own tail name."""
+    found = _forward_intel(adopter_dir)
+    if found is None:
+        return None
+    doc, path = found
+    payload = doc["payload"]
+    perspective = payload.get("perspective") or adopter_party
+    if perspective != adopter_party:
+        # Hard rule 7 and ADR-0020: this composition holds ONE party's signed
+        # appetite band and reporting currency. Tiering another balance sheet
+        # against them, and filing the result in this party's prices[], is the
+        # cross-perspective comparison the whole £ seam exists to prevent.
+        raise Refused(f"missing instrument: {path} prices {perspective}'s balance sheet, and "
+                       f"this composition holds only {adopter_party}'s signed appetite; another "
+                       f"party's money is never tiered against this party's band")
+    perspective_doc = _party_doc(perspective, adopter_dir, parent_trees)
+    native = payload.get("currency") or _reporting_currency(perspective_doc)
+    reporting = _reporting_currency(perspective_doc)
+    # A null lef means the SUBSCRIBED pricing feed supplies the frequency
+    # (ticket 08 Answer 2); the payload's own claim_scope names which one.
+    # ponytail ceiling: with exactly one priced feed the borrow is unambiguous
+    # and is RECORDED as `lef_from`, so the ALE can be re-derived from the
+    # entry. Making the payload declare it needs `claim_scope.frequency_from`,
+    # which the published forward-intel payload schema does not carry yet
+    # (it is additionalProperties:false) -- a payload major, not this seam's.
+    lef, lef_from = payload.get("lef"), None
+    if lef is None:
+        wanted = ((payload.get("claim_scope") or {}).get("frequency_from") or {}).get("name")
+        if wanted is None and len(lef_by_feed) == 1:
+            wanted = next(iter(lef_by_feed))
+        lef = lef_by_feed.get(wanted) if wanted else None
+        if lef is None:
+            raise Refused(
+                f"missing instrument: {path} supplies no lef and names no subscribed feed "
+                f"that does (wanted {wanted!r}, priced {sorted(lef_by_feed)})")
+        lef_from = wanted
+    fair = _cage_engine().fair
+    try:
+        summary = fair.summarize(fair.simulate(lef, payload["lm"]))
+    except (KeyError, TypeError, ValueError) as e:
+        raise Refused(f"missing instrument: {path} carries no severity this estate can "
+                       f"annualise ({e})") from None
+    as_of = _feed_as_of(path)
+    amount, fx = _converted(summary["ale"], native, reporting, as_of, parent_trees)
+    cage = _cage_engine()
+    # One currency on both sides before either is compared (hard rule 7).
+    band, _ = _converted(tolerance, band_currency or reporting, reporting, as_of, parent_trees)
+    # The residuals the versioned rule actually picked over, recorded on the
+    # entry so the tier can be re-derived from it rather than believed.
+    residuals = {t: cage.caged_residual(amount, t) for t in cage.ORDER}
+    policy = _selection_policy(adopter_dir, adopter_party)
+    try:
+        picked = policy.select({t: {"amount": r, "currency": reporting}
+                                 for t, r in residuals.items()},
+                                {"amount": band, "currency": reporting}, floor)
+    except Exception as e:                       # noqa: BLE001 -- the package's own refusal
+        raise Refused(f"missing instrument: {adopter_party}'s {SELECTION_POLICY_DIR} package "
+                       f"could not pick from the priced residuals ({e})") from None
+    tier = picked["tier"]
+    prior = next((e for e in prev_prices if e.get("source") == "twin"), None)
+    return _price_entry(
+        "twin", "twin", perspective, reporting, amount, perspective_doc,
+        name=FORWARD_INTEL,
+        feed_version=doc["version"],
+        tail=summary["tail"],
+        policy_version=picked["policy_version"],
+        policy_basis=picked["basis"],
+        residuals=residuals,
+        curve_hash=_curve_hash(payload.get("curve", [])),
+        shock=payload.get("shock"),
+        horizon=payload.get("horizon"),
+        **({"lef_from": lef_from} if lef_from else {}),
+        old_tier=(prior or {}).get("proposed_tier", tier),
+        proposed_tier=tier,
+        changed=prior is not None and prior.get("proposed_tier") != tier,
+        proposed_as=PROPOSED_AS_LABEL,
+        **fx,
+    )
 
 
 def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | None,
-                    parent_trees: dict[str, Path], prev_header: dict | None) -> list[dict]:
-    """prices[] -- one entry per declared pricing/threat edge. Computed
-    EVERY run, not only when a version actually moved: "for each party it
-    prints the old price, the new price, the old tier and the proposed
-    tier" (spec.md) is unconditional, and "a price move that changes no
-    tier prints as no change" is what the `changed` field on each entry
-    says, not a reason to skip printing. `tolerance` is None only when the
-    adopter has no declared appetite band at all -- the same case
-    `apply_restatements` already refuses on when a caging actually needs
-    one; pricing prints nothing for that party rather than raise a second,
-    redundant refusal for the identical missing band."""
+                    parent_trees: dict[str, Path], prev_header: dict | None,
+                    *, adopter_dir: Path, perspective_doc: dict,
+                    band_currency: str | None = None, floor: str | None = None,
+                    prev_prices: list[dict] | None = None) -> list[dict]:
+    """prices[] -- one entry per declared feed edge, plus the twin edge when the
+    adopter's own repo carries forward intelligence. Computed EVERY run, not
+    only when a version actually moved: "for each party it prints the old price,
+    the new price, the old tier and the proposed tier" (spec.md) is
+    unconditional, and "a price move that changes no tier prints as no change"
+    is what the `changed` field says. `tolerance` is None only when the party
+    declares no appetite, which compose() has already refused as a missing
+    instrument (ADR-0020)."""
     if tolerance is None:
         return []
+    reporting = _reporting_currency(perspective_doc)
     prices: list[dict] = []
+    lef_by_feed: dict[str, list] = {}
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
         prev_version = _previous_parent_version(prev_header, edge)
-        prices.append(price_parent(edge, adopter_party, tolerance, parent_trees.get(edge["party"]),
-                                   prev_version))
+        prices.append(price_parent(
+            edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
+            perspective_doc=perspective_doc, reporting_currency=reporting,
+            band_currency=band_currency, floor=floor, parent_trees=parent_trees))
+        if _feed_name(edge) == "threat-register":
+            tree = Path(parent_trees.get(edge["party"], PLATFORM_DIR))
+            lef_by_feed["threat-register"] = \
+                _threat_scenario(edge["version"], adopter_party, tree)["warn"]["lef"]
+    twin = price_twin(adopter_dir, adopter_party, tolerance, floor, parent_trees,
+                       prev_prices or [], lef_by_feed, band_currency)
+    if twin is not None:
+        prices.append(twin)
     return prices
 
 
@@ -1405,14 +1945,23 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     # -----------------------------------------------------------------
     # ticket 16: pricing and threat parents re-price, and never apply
     # -----------------------------------------------------------------
+    # The adopter's own signed facts: its appetite band, its reporting currency
+    # and its tighten-only cage floor. No fixture prices a party (ticket 25).
     try:
-        prices = compute_prices(edges, adopter_party, _appetite_tolerance(adopter_party),
-                                 parent_trees, prev_header)
+        band = _appetite(adopter_party, adopter_dir, parent_trees)
+        prices = compute_prices(
+            edges, adopter_party, band["amount"], parent_trees, prev_header,
+            adopter_dir=adopter_dir, perspective_doc=party_doc,
+            band_currency=band.get("currency"),
+            floor=(party_doc.get("overlay", {}) or {}).get("floor"),
+            prev_prices=_previous_prices(adopter_dir))
     except Refused as e:
-        # a feed file that is not a valid envelope (ticket 21) refuses,
-        # naming the file -- never a crash, never a silently skipped price
+        # ADR-0020: a missing instrument (no appetite band, no price for a
+        # declared regime, no FX rate for the date) refuses and NAMES what is
+        # missing -- never a crash, never a silently skipped price, and never
+        # a number the gate could not actually read.
         prices = []
-        refusals.append({"kind": "invalid-feed", "subject": adopter_party,
+        refusals.append({"kind": "missing-instrument", "subject": adopter_party,
                          "detail": str(e), "needs_composition": True})
 
     members_evidence: list[dict] = []
@@ -1462,6 +2011,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "selected-controls": sorted(selected_set),
         "ungoverned-namespaces": recorded_ungoverned,
     }
+    # Which versioned rule picked the tier (ADR-0021). Recorded only where the
+    # adopter actually ships a selection-policy package -- a null key on an
+    # adopter that ships none would be noise in a rendered, Flux-applied file.
+    selection_policy = _selection_policy_version(adopter_dir)
+    if selection_policy is not None:
+        header["selection-policy"] = selection_policy
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
 
     document = {
@@ -1600,6 +2155,14 @@ def _adopter_copy(name: str, dest: Path) -> Path:
     work.mkdir(parents=True)
     (work / "party.yaml").write_text((src / "party.yaml").read_text())
     shutil.copytree(src / "gitops", work / "gitops")
+    # The release workflow travels too: party_artefact.check() reads it to
+    # decide whether a party that declares publishes[] can actually publish
+    # (ADR-0019 point 5 -- the tag signs). driftwood declares one since its
+    # twin started emitting forward-intel. `twin/` deliberately does NOT
+    # travel: a fixture adopter with no forward-intel feed is exactly how this
+    # selfcheck proves a missing twin feed is silence, not a refusal.
+    if (src / ".github").is_dir():
+        shutil.copytree(src / ".github", work / ".github")
     return work
 
 
@@ -1740,6 +2303,11 @@ def _write_fixture_adopter(work: Path, baseline: str, controls_add: list[str] | 
                             nist_party: str = "fixture-nist", impl_party: str = "fixture-platform") -> None:
     party_doc = {
         "party": "fixture-adopter14", "roles": ["adopter"], "baseline": baseline,
+        # A synthetic party is still a party: it signs its own appetite band
+        # and its own reporting currency, because a party that declares
+        # neither is a missing instrument and refuses (ADR-0020, ticket 25).
+        "reporting_currency": "GBP",
+        "appetite": {"tolerance": {"amount": 40000, "currency": "GBP"}},
         "inherits": [
             {"party": nist_party, "kind": "controls", "version": "1.0.0"},
             {"party": impl_party, "kind": "implementations", "version": "1.0.0"},
@@ -1799,14 +2367,133 @@ def selfcheck() -> None:
 
     # --- prices[] is populated on the real driftwood's first-ever composition
     # too, with nothing to compare a bump against yet (an honest "no move") ---
-    assert len(document["prices"]) == 2, document["prices"]  # pricing + threat, both declared
-    assert {_parent_key(p) for p in document["prices"]} == {"penalty-schema", "threat-register"}
-    for p in document["prices"]:
+    feed_prices = [p for p in document["prices"] if p["kind"] == "feed"]
+    assert len(feed_prices) == 2, feed_prices  # both declared feed parents
+    assert {_parent_key(p) for p in feed_prices} == {"penalty-schema", "threat-register"}
+    for p in feed_prices:
         assert p["old_version"] == p["new_version"], p  # nothing committed yet to bump against
         assert p["changed"] is False, p
     print("OK prices[]: computed on the real driftwood's very first composition too, with no "
           "prior signed artefact to compare a bump against -- old and new both price at this "
           "run's own pin, an honest 'no move'")
+
+    # ======================================================================
+    # ticket 25: THE ONE prices[] SCHEMA (ADR-0020, ADR-0021)
+    # ======================================================================
+
+    # --- every entry, whatever its source, carries the same six fields, and
+    # the per-customer restatement is the entry's own amount over the
+    # PERSPECTIVE party's own signed size.customers (null where it signs none) ---
+    driftwood_doc = yaml.safe_load((driftwood / "party.yaml").read_text())
+    customers = (driftwood_doc.get("size") or {}).get("customers")
+    for entry in document["prices"]:
+        assert set(entry) >= {"source", "kind", "perspective", "currency", "amount",
+                              "per_customer"}, entry
+        assert entry["perspective"] == "driftwood", entry
+        assert entry["currency"] == _reporting_currency(driftwood_doc) == "GBP", entry
+        assert entry["kind"] in PRICE_KINDS, entry
+        if customers:
+            assert entry["per_customer"] == {"amount": entry["amount"] / customers,
+                                              "currency": entry["currency"]}, entry
+        else:
+            assert entry["per_customer"] is None, entry
+    print("OK prices[]: every entry names its perspective, currency, source and kind, and "
+          "restates its own amount per customer against driftwood's OWN signed size "
+          "(%s customers)" % (customers if customers else "unsigned -> null"))
+
+    # --- no sum crosses a perspective or a currency: the one summing helper
+    # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
+    assert _sum_prices([{"amount": 1.0}, {"amount": 2.0}], "driftwood", "GBP") == 3.0
+    for mixed in ([{"amount": 1.0, "perspective": "ludlow"}],
+                   [{"amount": 1.0, "currency": "USD"}]):
+        try:
+            _sum_prices(mixed + [{"amount": 2.0}], "driftwood", "GBP")
+            raise AssertionError(f"a mixed sum must refuse: {mixed}")
+        except Refused:
+            pass
+    print("OK prices[]: the one summing helper refuses a list that crosses a perspective or a "
+          "currency -- no number in this estate is a lie by addition")
+
+    # --- the twin edge (ADR-0021): the adopter's own forward-intel feed
+    # annualises through fair.py into ONE source:twin entry naming its
+    # selection-policy version, its curve hash and fair.py's own tail ---
+    twin_entries = [e for e in document["prices"] if e["source"] == "twin"]
+    if twin_entries:
+        twin = twin_entries[0]
+        assert len(twin_entries) == 1, twin_entries
+        assert twin["kind"] == "twin" and twin["name"] == FORWARD_INTEL, twin
+        assert set(twin) >= {"policy_version", "curve_hash", "tail"}, twin
+        assert twin["tail"], twin
+        assert twin["curve_hash"].startswith("sha256:") and len(twin["curve_hash"]) == 71, twin
+        assert twin["proposed_tier"] in _cage_engine().ORDER, twin
+        print("OK prices[]: driftwood's own forward-intel feed prices as one source:twin entry "
+              "-- perspective %s, %s, tail %s, curve %s, policy version %s"
+              % (twin["perspective"], twin["currency"], twin["tail"],
+                 twin["curve_hash"][:12], twin["policy_version"]))
+    else:
+        print("OK prices[]: driftwood publishes no forward-intel feed yet, so there is no "
+              "source:twin entry -- a missing twin feed is silence, never a refusal")
+
+    # --- a missing forward-intel feed is silence, not a refusal: the fixture
+    # adopter copy carries no twin/ directory at all ---
+    with tempfile.TemporaryDirectory() as td:
+        bare = _adopter_copy("driftwood", Path(td))
+        doc_bare, _ = compose(bare, parent_trees)
+        assert doc_bare["outcome"] == "composed", doc_bare["refusals"]
+        assert not [e for e in doc_bare["prices"] if e["source"] == "twin"], doc_bare["prices"]
+    print("OK prices[]: an adopter with no forward-intel feed simply has no twin entry -- a "
+          "missing twin feed is never a refusal (ticket 25)")
+
+    # --- the regime entry's per-hole breakdown: the regulator's own published
+    # control weights partition the regime exposure, and the entry amount IS
+    # the sum of its holes (ticket 15 item 1, landed in this schema pass) ---
+    with tempfile.TemporaryDirectory() as td:
+        work = _adopter_copy("driftwood", Path(td))
+        _bump_parent_version(work, "ico", "pricing", "v3")
+        doc_v3, _ = compose(work, parent_trees)
+        _assert_only_known_dangling(doc_v3["refusals"], "ico v3 weights")
+        regime = next(e for e in doc_v3["prices"] if _parent_key(e) == "penalty-schema")
+        assert regime["holes"], "ico v3 publishes control_weights; the breakdown must appear"
+        assert all({"source", "id", "weight", "amount"} == set(h) for h in regime["holes"]), regime
+        assert abs(sum(h["weight"] for h in regime["holes"]) - 1.0) < 1e-9, regime["holes"]
+        assert abs(regime["total"] - sum(h["amount"] for h in regime["holes"])) < 1e-6, regime
+        assert regime["amount"] == regime["total"], regime
+        print("OK prices[]: an ico pin at v3 carries the published control weights as a per-hole "
+              "breakdown -- %d holes, weights sum to 1.0, and the entry amount IS the sum of "
+              "the hole amounts (a hole partitions the regime, it never adds to it)"
+              % len(regime["holes"]))
+
+    # --- ADR-0020: a party that declares no appetite is a MISSING INSTRUMENT.
+    # It refuses, naming what is missing, and emits no price at all ---
+    with tempfile.TemporaryDirectory() as td:
+        work = _adopter_copy("driftwood", Path(td))
+        doc_yaml = yaml.safe_load((work / "party.yaml").read_text())
+        doc_yaml.pop("appetite", None)
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_yaml, sort_keys=False))
+        doc_no_band, _ = compose(work, parent_trees)
+        assert doc_no_band["prices"] == [], doc_no_band["prices"]
+        missing = [r for r in doc_no_band["refusals"] if r["kind"] == "missing-instrument"]
+        assert missing, doc_no_band["refusals"]
+        assert "appetite" in missing[0]["detail"], missing
+    print("OK prices[]: an adopter with no signed appetite refuses as a missing instrument "
+          "(ADR-0020), naming the artefact that declares none -- and prices nothing")
+
+    # --- the adopter's own tighten-only floor clamps the selection UP
+    # (ADR-0022): the threat-register price picks baseline on driftwood's real
+    # band, and a declared quarantine floor holds it at quarantine ---
+    with tempfile.TemporaryDirectory() as td:
+        work = _adopter_copy("driftwood", Path(td))
+        doc_yaml = yaml.safe_load((work / "party.yaml").read_text())
+        doc_yaml["overlay"]["floor"] = "quarantine"
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_yaml, sort_keys=False))
+        doc_floor, _ = compose(work, parent_trees)
+        _assert_only_known_dangling(doc_floor["refusals"], "declared floor")
+        threat = next(e for e in doc_floor["prices"] if _parent_key(e) == "threat-register")
+        assert threat["proposed_tier"] == "quarantine", threat
+        assert threat["proposed_as"] == "label", threat
+    print("OK prices[]: driftwood's own overlay.floor clamps the selection UP -- the "
+          "threat-register price that picks baseline unclamped is held at the declared "
+          "quarantine floor, tighten-only (ADR-0022)")
 
     # --- ticket 13: the two-publisher limit prints OPEN at one publisher ---
     limit = next(l for l in document["limits"] if l["name"] == "two-publisher-conflict")
@@ -1962,10 +2649,7 @@ def selfcheck() -> None:
     # two formerly-dangling claims are fixed, so the real driftwood's first
     # pull request composes and writes for real ---
     with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "cli-out"
-        out.mkdir()
-        (out / "party.yaml").write_text((driftwood / "party.yaml").read_text())
-        shutil.copytree(driftwood / "gitops", out / "gitops")
+        out = _adopter_copy("driftwood", Path(td))
         rc = cmd_compose(out, DEFAULT_ESTATE_CLONE, out)
         assert rc == 0
         assert (out / "composed" / "HEADER.yaml").exists()
@@ -2004,14 +2688,18 @@ def selfcheck() -> None:
         # NOTES it), so a second declared version here can't also trip the
         # unrelated tag-mismatch refusal -- this is the diamond, isolated.
         ico_edge = next(e for e in doc["inherits"] if _parent_key(e) == "penalty-schema")
-        doc["inherits"].append(dict(ico_edge, version="v2"))
+        # A SECOND version, whichever one this party is not already pinned to,
+        # so the plant survives a pin bump instead of hard-coding today's.
+        other = "v1" if ico_edge["version"] != "v1" else "v2"
+        doc["inherits"].append(dict(ico_edge, version=other))
         (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
         document, files = compose(work, parent_trees)
         assert document["outcome"] == "refused", document
         diamond = [r for r in document["refusals"] if r["kind"] == "split-diamond"]
         assert len(diamond) == 1, document["refusals"]
         assert diamond[0]["subject"] == "ico/penalty-schema", diamond[0]
-        assert "v1" in diamond[0]["detail"] and "v2" in diamond[0]["detail"], diamond[0]
+        assert ico_edge["version"] in diamond[0]["detail"], diamond[0]
+        assert other in diamond[0]["detail"], diamond[0]
         assert diamond[0]["needs_composition"] is True
     print("OK check_diamonds: two edges to ico/penalty-schema at two versions refuse, naming both")
 
@@ -2428,6 +3116,10 @@ def selfcheck() -> None:
     # prints no change; no rendered file changes on the price move ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
+        # Start the copy at v1 whatever the real party is pinned to today: this
+        # case is about a v1 -> v2 MOVE, not about which version driftwood
+        # happens to carry (it pins v3, the first with control_weights).
+        _bump_parent_version(work, "ico", "pricing", "v1")
         doc0, rendered0 = compose(work, parent_trees)
         _assert_only_known_dangling(doc0["refusals"], "ico bump, before")
         _commit_header(work, rendered0)
@@ -2438,9 +3130,11 @@ def selfcheck() -> None:
         assert price["source"] == "ico", price
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
         assert price["old_price"] != price["new_price"], price
-        assert price["old_tier"] == price["proposed_tier"] == "deny", price
+        assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
-        assert price["proposed_as"] == "issue", price  # deny: an issue subject, never a label
+        # ADR-0022: isolated is a REAL label value -- a running, unreachable
+        # cage -- so this travels as a label, never as an issue.
+        assert price["proposed_as"] == "label", price
         for path, content in rendered0.items():
             if path == "composed/HEADER.yaml":
                 continue
@@ -2448,8 +3142,8 @@ def selfcheck() -> None:
         assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
     print("OK prices[]: an ico penalty-schema bump (v1 -> v2) moves the uncaged uk-gdpr/lower-"
           "tier exposure through ico's own converter; on driftwood's real band both versions "
-          "land on deny, so the document prints no tier change, marked as an issue subject "
-          "never a label; no rendered file changes -- a byte comparison proves it")
+          "land on isolated, the bottom rung, so the document prints no tier change and it "
+          "travels as a label; no rendered file changes -- a byte comparison proves it")
 
     # --- a threat-register bump (v1 -> v2) moves tuppence's exposure
     # through the feeds module; same real-band 'no change' shape ---
@@ -2465,14 +3159,14 @@ def selfcheck() -> None:
         assert price["source"] in ("platform", "feeds"), price
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
         assert price["old_price"] != price["new_price"], price  # v2 raises tuppence's LEF
-        assert price["old_tier"] == price["proposed_tier"] == "deny", price
+        assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
         for path, content in rendered0.items():
             if path == "composed/HEADER.yaml":
                 continue
             assert files1[path] == content, path
     print("OK prices[]: a threat-register bump (v1 -> v2) moves tuppence's exposure through the "
-          "feeds module; on the real band both versions land on deny, no tier change; no "
+          "feeds module; on the real band both versions land on isolated, no tier change; no "
           "rendered file changes")
 
     # --- a fixture band that a bump crosses prints a proposed tier, and
@@ -2489,6 +3183,7 @@ def selfcheck() -> None:
         fixture_ico = Path(td) / "fixture-ico"
         _write_fixture_ico(fixture_ico, parent_trees["ico"])
         crossing_parents = dict(parent_trees, ico=fixture_ico)
+        _bump_parent_version(work, "ico", "pricing", "v1")   # the fixture publishes v1 and v2
 
         doc0, rendered0 = compose(work, crossing_parents)
         _assert_only_known_dangling(doc0["refusals"], "crossing fixture, before")
@@ -2498,7 +3193,7 @@ def selfcheck() -> None:
         _assert_only_known_dangling(doc1["refusals"], "crossing fixture, after")
         price = next(p for p in doc1["prices"] if _parent_key(p) == "penalty-schema")
         assert price["old_version"] == "v1" and price["new_version"] == "v2", price
-        assert price["old_tier"] == "deny", price
+        assert price["old_tier"] == "isolated", price
         assert price["proposed_tier"] == "quarantine", price
         assert price["changed"] is True, price
         assert price["proposed_as"] == "label", price  # quarantine is a real label value
@@ -2508,7 +3203,7 @@ def selfcheck() -> None:
             assert files1[path] == content, path
         assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
     print("OK prices[]: a fixture ico band (v1->v2) that crosses driftwood's real GBP40,000 "
-          "tolerance prints a proposed tier through compose() (deny -> quarantine, "
+          "tolerance prints a proposed tier through compose() (isolated -> quarantine, "
           "changed=True), marked as a label; no rendered file changes")
 
     # --- no scheduler, no wall-clock read anywhere in composition.py
@@ -2560,10 +3255,20 @@ def selfcheck() -> None:
         "by anything composition renders. TICKET 16: an ico penalty-schema bump and a threat-"
         "register bump each move the priced exposure through the estate's own converters, "
         "printing old/new price and old/proposed tier every run; on the real bands neither "
-        "changes a tier; a fixture band that a bump crosses prints a proposed tier; a proposed "
-        "deny is marked as an issue subject and never a label value; no rendered file ever "
+        "changes a tier; a fixture band that a bump crosses prints a proposed tier; every "
+        "selected tier is a real label value now that ADR-0022 retired the deny rung and made "
+        "the bottom rung a running, unreachable `isolated` cage; no rendered file ever "
         "changes on a price move; and composition itself reads no wall clock and calls no "
-        "scheduler."
+        "scheduler. TICKET 25 (the £ seam, ADR-0020/ADR-0021): every prices[] entry names its "
+        "perspective, currency, source and kind and restates its own amount per customer "
+        "against the perspective party's OWN signed size; the one summing helper "
+        "(fair.sum_prices) refuses any list crossing a perspective or a currency; a regime "
+        "entry pinned at an ico version that publishes control weights carries a per-hole "
+        "breakdown whose amounts sum to the entry amount; the adopter's own forward-intel "
+        "feed prices as ONE source:twin entry naming its selection-policy version, curve hash "
+        "and fair.py's tail, and a missing forward-intel feed is silence, not a refusal; an "
+        "adopter with no signed appetite refuses as a missing instrument and prices nothing; "
+        "and the adopter's own overlay.floor clamps the selection UP and never down."
     )
 
 
