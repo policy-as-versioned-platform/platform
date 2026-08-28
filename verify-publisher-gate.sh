@@ -212,17 +212,18 @@ tree_sha=$(git rev-parse HEAD)
 python3 - "$tree_sha" <<'PY'
 import sys
 sha = sys.argv[1]
+import re
 p = "distribution/versions.yaml"
 text = open(p).read()
-old = '''    - versions:
-        - { version: "2.0.0", tag: "policy/v2.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
-        - { version: "3.0.0", tag: "policy/v3.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
-'''
-new = f'''    - versions:
-        - {{ version: "9.0.0", tag: "policy/v9.0.0", commit: "{sha}" }}
-'''
-assert old in text, "versions.yaml array block not found verbatim -- has the real array's shape changed?"
-open(p, "w").write(text.replace(old, new))
+# Locate the array block by shape (the `- versions:` key and its run of
+# `- { version: ... }` elements), never by its verbatim content: the real
+# array grows with every release and the template around it changes too.
+block = re.compile(r'^(?P<indent>[ ]+)- versions:\n(?P<elems>(?:(?P=indent)    - \{ version:.*\n)+)', re.M)
+matches = block.findall(text)
+assert len(matches) == 1, f"expected exactly one versions.yaml array block, found {len(matches)}"
+m = block.search(text)
+new = f'{m.group("indent")}- versions:\n{m.group("indent")}    - {{ version: "9.0.0", tag: "policy/v9.0.0", commit: "{sha}" }}\n'
+open(p, "w").write(text[:m.start()] + new + text[m.end():])
 PY
 git add distribution/versions.yaml
 git commit -q -m "scratch: array now [9.0.0] only -- an empty predecessor window for this candidate"
