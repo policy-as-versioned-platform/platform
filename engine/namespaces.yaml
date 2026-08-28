@@ -1,8 +1,44 @@
 # Namespace for the admission engine. flux-operator installs into the
 # already-existing flux-system namespace (it manages Flux itself); only
 # Kyverno needs a new one.
+#
+# All three Namespaces below carry `posture.acme.io/tier: infra` (ticket 26,
+# ADR-0022): the substrate rung, entitled ONLY to a party whose `roles[]`
+# includes `platform` (platform/party.yaml declares it: "roles: [publisher,
+# platform]" -- confirmed by this file's own sibling, party.yaml, and by
+# `verify-infra-declaration.sh` which reads both and ties them together). A
+# declaration from any other party renders to `isolated`, never `infra` --
+# there is no allowlist, only this role check. `infra` is NOT selected by
+# the price (it is absent from cage.py's ORDER) and NOT a governed
+# Namespace: none of these three carry `policy-as-versioned.dev/governed`.
+# This is the ordering-critical declaration: it must land, and the truth
+# surface must assert it, before any served policy body's unlabelled-
+# governed-Namespace default flips from `baseline` to `isolated` -- or
+# CoreDNS (kube-system) and Flux itself (flux-system) go dark the moment
+# that default tightens (spec.md story 35).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: kyverno
-  labels: { platform.acme.io/plane: engine }
+  labels: { platform.acme.io/plane: engine, posture.acme.io/tier: infra }
+---
+# flux-operator installs its CRDs into the cluster's existing flux-system
+# namespace (created by the original Flux bootstrap, not by this repo) --
+# this manifest does not create it, it declares its tier.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+  labels: { platform.acme.io/plane: engine, posture.acme.io/tier: infra }
+---
+# kube-system is Kubernetes' own built-in namespace (CoreDNS, kube-proxy,
+# the control plane's own pods) -- this manifest does not create it either,
+# it declares its tier. It has no natural home among access/engine/identity;
+# it lands here because engine is the plane that already owns the cluster's
+# own fleet machinery (flux-operator, Kyverno) and up.sh's `KAPPLY
+# namespaces.yaml` step already applies this file each run.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  labels: { platform.acme.io/plane: engine, posture.acme.io/tier: infra }

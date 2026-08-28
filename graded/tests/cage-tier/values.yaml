@@ -1,0 +1,57 @@
+# The NAMESPACE is the tier declaration (ADR-0022). `namespaceObject` is only
+# populated offline through a CLI values file's `namespaces:` list — putting a
+# `kind: Namespace` in --resource does NOT reach the MutatingPolicy engine
+# (kyverno 1.18 reads it from Variables.Namespace(); proven 2026-08-28, see
+# .scratch/ecosystem/research/kyverno-1.18-cage-facts.md §2). So this file IS
+# the fixture that makes the Namespace-to-pod render testable offline.
+#
+# Five governed namespaces: one per selectable rung, plus one that is governed
+# and declares NO tier at all — the fail-closed case, which must render
+# `isolated` and never `baseline`. Plus one namespace that is NOT governed at
+# all: it renders `baseline` by ADR-0022's ordering rule (the unlabelled default
+# must not flip to `isolated` before the platform's infra declaration lands, or
+# CoreDNS stops), and that is a DECISION, not a fall-through — so it has a
+# fixture rather than only a comment (review of 2026-08-28).
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+namespaces:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-baseline
+      labels:
+        policy-as-versioned.dev/governed: "true"
+        posture.acme.io/tier: baseline
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-restricted
+      labels:
+        policy-as-versioned.dev/governed: "true"
+        posture.acme.io/tier: restricted
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-quarantine
+      labels:
+        policy-as-versioned.dev/governed: "true"
+        posture.acme.io/tier: quarantine
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-isolated
+      labels:
+        policy-as-versioned.dev/governed: "true"
+        posture.acme.io/tier: isolated
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-untiered
+      labels:
+        policy-as-versioned.dev/governed: "true"
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: cage-ungoverned
+      labels:
+        kubernetes.io/metadata.name: cage-ungoverned

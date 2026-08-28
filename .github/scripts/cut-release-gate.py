@@ -176,10 +176,21 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         subject_tree_for=lambda v: DISTRIBUTION / "policies" / f"v{v}",
         backport=is_backport,
     )
-    prior_versions = {e["version"]: e["tag"] for e in array if e["version"] in old_window}
+    # release_integrity's four rules are about RELEASED versions: rule 1 reads a
+    # prior version's frozen tree from its git TAG, and rule 4 refuses a released
+    # element whose `commit` is empty. An array element for a version that has
+    # never been tagged is not a released version -- it is a version DECLARED and
+    # not yet cut (the ResourceSet template makes `commit` optional for exactly
+    # that state, and cut-release fills it when it cuts the tag). Reading a tag
+    # that does not exist yet, or demanding a commit for a release that has not
+    # happened, is a refusal about the future, not about the shipped estate. So
+    # the release-integrity subject is the array filtered to `legal_history` --
+    # this module's own "every version this repo has EVER really tagged".
+    released = [e for e in array if e["version"] in legal_history]
+    prior_versions = {e["version"]: e["tag"] for e in released if e["version"] in old_window}
     release = release_integrity.ReleaseIntegrity(
         git_repo=REPO, policies_dir=DISTRIBUTION / "policies",
-        prior_versions=prior_versions, version_array=array,
+        prior_versions=prior_versions, version_array=released,
     )
     repo_state = gate.RepoState(subject_dir=subject_dir, corpus_dir=corpus_dir, window=window, release=release)
     doc = gate.run_gate(repo_state, version)

@@ -30,28 +30,45 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 python3 "$HERE/render-version-tree.py" 8.8.8 --out "$WORK/v8.8.8" >/dev/null
 python3 "$HERE/render-version-tree.py" 9.9.9 --out "$WORK/v9.9.9" >/dev/null
 
+# The tier is declared on the NAMESPACE and read through namespaceObject
+# (ADR-0022), so the offline run has to supply the Namespace through a values
+# file -- a `kind: Namespace` in --resource never reaches the mpol engine
+# (kyverno 1.18; see graded/tests/cage-tier/values.yaml).
+cat > "$WORK/values.yaml" <<'YAML'
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+namespaces:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: caged
+      labels:
+        policy-as-versioned.dev/governed: "true"
+        posture.acme.io/tier: restricted
+YAML
+
 cat > "$WORK/pods.yaml" <<'YAML'
 apiVersion: v1
 kind: Pod
 metadata:
   name: claims-8-8-8
-  namespace: default
-  labels: { "policy-as-versioned.dev/policy-version": "8.8.8", "posture.acme.io/tier": "restricted" }
+  namespace: caged
+  labels: { "policy-as-versioned.dev/policy-version": "8.8.8" }
 spec: { containers: [{ name: app, image: nginx }] }
 ---
 apiVersion: v1
 kind: Pod
 metadata:
   name: claims-9-9-9
-  namespace: default
-  labels: { "policy-as-versioned.dev/policy-version": "9.9.9", "posture.acme.io/tier": "restricted" }
+  namespace: caged
+  labels: { "policy-as-versioned.dev/policy-version": "9.9.9" }
 spec: { containers: [{ name: app, image: nginx }] }
 YAML
 
-out="$(kyverno apply "$WORK/v8.8.8/cage-tier.yaml" --resource "$WORK/pods.yaml" 2>&1)"
-echo "$out" | awk '/default\/Pod\/claims-8-8-8/{f=1} f&&/^---/{exit} f' | grep -q 'priorityClassName: cage-restricted-8-8-8' \
+out="$(kyverno apply "$WORK/v8.8.8/cage-tier.yaml" --resource "$WORK/pods.yaml" -f "$WORK/values.yaml" 2>&1)"
+echo "$out" | awk '/caged\/Pod\/claims-8-8-8/{f=1} f&&/^---/{exit} f' | grep -q 'priorityClassName: cage-restricted-8-8-8' \
   || fail "8.8.8's cage-tier did not cage the pod claiming 8.8.8"
-echo "$out" | awk '/default\/Pod\/claims-9-9-9/{f=1} f&&/^---/{exit} f' | grep -q 'priorityClassName' \
+echo "$out" | awk '/caged\/Pod\/claims-9-9-9/{f=1} f&&/^---/{exit} f' | grep -q 'priorityClassName' \
   && fail "8.8.8's cage-tier mutated a pod claiming 9.9.9 -- self-scope leaked across versions"
 
 echo "PASS: every mandatory member renders with a versioned name, the policy-version label, a"

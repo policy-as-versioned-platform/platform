@@ -106,7 +106,14 @@ def selfcheck() -> None:
     # itself is built from -- one parse point, not two.
     els = elements(HERE / "versions.yaml")
     assert [e["version"] for e in els] == vs, els
-    assert all("commit" in e for e in els), els
+    # Every element but possibly the newest carries a pinned `commit`. The
+    # newest may be UNCUT: its element is added when the policy body changes,
+    # and cut-release.yml fills the commit in when it cuts the signed tag
+    # (the ResourceSet template already makes `commit` optional, and
+    # computed-semver/release_integrity.py's empty-commit rule refuses a
+    # RELEASE whose array still has a hole). An older element without one
+    # would be a real hole, so only the last is allowed to be uncut.
+    assert all("commit" in e for e in els[:-1]), els
     # allow-list is exactly the array — no drift
     og = orphan_guard(vs)
     assert og["spec"]["variables"][0]["expression"] == _allow_expr(vs)

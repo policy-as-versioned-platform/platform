@@ -31,6 +31,15 @@ spec:
         - { version: "2.0.0", tag: "policy/v2.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
         - { version: "2.0.1", tag: "policy/v2.0.1", commit: "a1072d9e183ca06a9aaf626d25869996e6179695" }
         - { version: "3.0.0", tag: "policy/v3.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
+        # 4.0.0 -- the cage release (ticket 26, ADR-0022): the tier moves to the
+        # governed Namespace and is read through namespaceObject, the pod label
+        # becomes an output, the cage is tighten-only, the `isolated` rung and
+        # its PriorityClass land, reach is generated per tier, and the mutation
+        # writes the priority PAIR (priorityClassName + the class's own integer)
+        # without which the API server's Priority admission plugin refuses the
+        # pod. `commit` is deliberately absent: the ResourceSet template makes it
+        # optional, and it is filled in when cut-release.yml cuts the signed tag.
+        - { version: "4.0.0", tag: "policy/v4.0.0" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
@@ -100,16 +109,17 @@ spec:
     # so it needs no `range`. Offline twin: render-governed-namespace-guard.py
     # (same split, same reason: verify-*.sh and shift-left run without
     # flux-operator in the loop). CREATE only -- UPDATE stays out of scope so
-    # the currency-controller's de-posture patch keeps working. Starts Audit;
-    # promotes by editorial PR once every governed namespace is labelled
-    # (ADR-0014 consequences), same convention the orphan-guard's own entry
-    # already uses.
+    # the currency-controller's de-posture patch keeps working. PROMOTED to Deny
+    # on 2026-08-28 -- the editorial promotion ADR-0014's consequences describe,
+    # taken because Audit left a claim-less pod admitted completely uncaged in a
+    # governed `isolated` namespace, reaching the API server and the internet
+    # (observed live). See render-governed-namespace-guard.py's docstring.
     apiVersion: policies.kyverno.io/v1alpha1
     kind: ValidatingPolicy
     metadata:
       name: governed-namespace-requires-claim    # cluster-scoped, namespaceSelector-bounded
     spec:
-      validationActions: [Audit]
+      validationActions: [Deny]
       matchConstraints:
         resourceRules:
           - apiGroups: [""]

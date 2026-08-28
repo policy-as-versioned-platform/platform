@@ -1,11 +1,55 @@
-# A caged pod (the mutate already stamped posture.acme.io/caged) and a healthy pod.
+# Four already-caged pods, one per rung, plus a healthy one. The tier label here
+# is cage-tier's OUTPUT (it clobbered it from the Namespace), so this file is the
+# reach half of the ladder on its own: baseline reaches normally and generates
+# nothing; restricted and quarantine get same-namespace ingress + DNS-only
+# egress; isolated gets a deny-all in both directions.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: caged
+  name: caged-baseline
   namespace: default
   labels:
     posture.acme.io/caged: "true"
+    posture.acme.io/tier: baseline
+spec:
+  containers:
+    - name: app
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: caged-restricted
+  namespace: default
+  labels:
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: restricted
+spec:
+  containers:
+    - name: app
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: caged-quarantine
+  namespace: default
+  labels:
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: quarantine
+spec:
+  containers:
+    - name: app
+      image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: caged-isolated
+  namespace: default
+  labels:
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: isolated
 spec:
   containers:
     - name: app

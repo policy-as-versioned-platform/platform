@@ -595,7 +595,22 @@ def selfcheck() -> None:
     real_result = evaluate(real_subject, real_corpus)
     assert real_result.applicable, "the committed generated-corpus/ manifest must be a real spine"
     assert real_result.cells is not None and real_result.pairs is not None
-    assert real_result.pairs == 100, real_result.pairs  # committed manifest's own union count
+    # The committed manifest's OWN union count, read from the file -- never a
+    # literal. The spine grows whenever a real release adds a predicate or a
+    # tier (ticket 26 added the `isolated` rung and took it from 100 to 105),
+    # and this selfcheck must not need editing on every one, exactly as
+    # `live_version` above is derived rather than hardcoded.
+    committed = yaml.safe_load(
+        (real_corpus / "manifest.yaml").read_text()
+    )["populations"]["generated-spine"]
+    # Compare against the ENTRIES, not against `counts.union` -- evaluate() reads
+    # `counts.union` itself (see `pairs = ...` above), so asserting on the same
+    # key compared the manifest's declared count with itself and would have
+    # accepted `union: 4242` (review, 2026-08-28). The entry list is the
+    # independent fact, and it still needs no editing on a real release.
+    assert real_result.pairs == len(committed["entries"]), (
+        real_result.pairs, len(committed["entries"]),
+        "counts.union disagrees with the number of entries the manifest lists")
     assert real_result.build_failures == [], real_result.build_failures
     # not_looked_at may legitimately be non-empty only from the baseline
     # file's own committed content (empty today) -- no live gap exists.

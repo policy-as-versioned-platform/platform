@@ -7,9 +7,24 @@ created inside a namespace labelled `policy-as-versioned.dev/governed: "true"`
 must carry a `policy-as-versioned.dev/policy-version` claim. `CREATE` only --
 `UPDATE` is excluded on purpose, so the currency-controller's de-posture patch
 (an `UPDATE` that strips the claim to cage a retired workload) keeps working.
-Starts in `Audit`: ADR-0014's own consequence is that a brownfield estate
-promotes by editorial PR, exactly like the orphan guard's own entry already
-allows.
+PROMOTED TO `Deny` on 2026-08-28 -- the editorial promotion ADR-0014's own
+consequence describes ("a brownfield estate promotes by editorial PR, exactly
+like the orphan guard's own entry already allows"), taken because the review of
+that day observed what `Audit` actually buys: a pod created in a governed
+namespace with NO claim was admitted completely uncaged -- no tier, no
+PriorityClass, no limits, no hardening, no NetworkPolicy -- inside a namespace
+whose declared tier was `isolated`, and it reached the API server and the
+internet. So `posture.acme.io/tier` fell closed on the Namespace while the pod
+fell open, and omitting one label was the exemption this project bans.
+Precondition checked before promoting: every governed namespace on the three
+KinD clusters (driftwood, tuppence, ludlow) was already claim-clean.
+
+This is the ONE refusal the doctrine allows, and it is a missing INSTRUMENT,
+not a posture judgement (ADR-0020): the claim is what selects which served
+policy version cages the pod, so without it there is no cage to put the
+workload in and nothing to price. A pod that CLAIMS gets caged and priced, and
+is never refused; `UPDATE` stays out of scope, so nothing already running is
+ever evicted by this policy.
 
 This is platform machinery (cs-22's identity), not a per-release policy -- it
 does not evolve with `require-nonroot` and friends, so it is not versioned
@@ -57,7 +72,7 @@ def governed_namespace_guard() -> dict:
             "labels": {IDENTITY_LABEL: IDENTITY},
         },
         "spec": {
-            "validationActions": ["Audit"],
+            "validationActions": ["Deny"],   # promoted 2026-08-28, see the module docstring
             "matchConstraints": {
                 "resourceRules": [{
                     "apiGroups": [""], "apiVersions": ["v1"],
@@ -81,7 +96,7 @@ def selfcheck() -> None:
     doc = governed_namespace_guard()
     assert doc["metadata"]["name"] == NAME, doc["metadata"]
     assert doc["metadata"]["labels"][IDENTITY_LABEL] == IDENTITY, doc["metadata"]
-    assert doc["spec"]["validationActions"] == ["Audit"], doc["spec"]
+    assert doc["spec"]["validationActions"] == ["Deny"], doc["spec"]
     rule = doc["spec"]["matchConstraints"]["resourceRules"][0]
     assert rule["operations"] == ["CREATE"], rule  # UPDATE excluded -- de-posture stays legal
     assert rule["resources"] == ["pods"], rule
@@ -89,7 +104,7 @@ def selfcheck() -> None:
     assert ns_sel == {GOVERNED_LABEL: "true"}, ns_sel
     expr = doc["spec"]["validations"][0]["expression"]
     assert CLAIM_LABEL in expr and "!= ''" in expr, expr
-    print("selfcheck ok: governed-namespace-requires-claim is platform-machinery, Audit, "
+    print("selfcheck ok: governed-namespace-requires-claim is platform-machinery, Deny, "
           "CREATE-only, scoped to governed:true namespaces, denies an unclaimed pod")
 
 

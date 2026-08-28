@@ -6,10 +6,12 @@ One authoring copy of each claim-wide policy stays under `graded/policies/`
 and `posture/policies/`. This renderer emits the PER-VERSION copies that
 `distribution/policies/v<version>/` actually ships -- the same pattern
 `require-nonroot-1-0-0` already establishes by hand. A human must not be able
-to omit one, so a renderer writes all seven every time:
+to omit one, so a renderer writes all eight every time:
 
     cage-tier, cage-netpol, stamp-posture, posture-trust-boundary,
-    cage-baseline, cage-restricted, cage-quarantine  (the three PriorityClasses)
+    cage-baseline, cage-restricted, cage-quarantine, cage-isolated
+    (the four PriorityClasses -- `cage-isolated` is the bottom rung ticket 26
+    added, ADR-0022)
 
 A version is four coordinated edits, not a directory: the directory, the
 versioned `metadata.name`, the `policy-version` label, and a `matchConditions`
@@ -185,9 +187,9 @@ def selfcheck() -> None:
         "stamp-posture.yaml", "posture-trust-boundary.yaml",
     }, sorted(tree_a)
 
-    # all seven mandatory members present (4 single-doc files + 3 PriorityClasses)
+    # all eight mandatory members present (4 single-doc files + 4 PriorityClasses)
     doc_count = sum(len(_load_all_text(t)) for t in tree_a.values())
-    assert doc_count == 7, f"expected 7 mandatory members, rendered {doc_count}"
+    assert doc_count == 8, f"expected 8 mandatory members, rendered {doc_count}"
 
     admission_files = ["cage-tier.yaml", "cage-netpol.yaml", "stamp-posture.yaml", "posture-trust-boundary.yaml"]
     for fname in admission_files:
@@ -203,9 +205,10 @@ def selfcheck() -> None:
         assert tree_a[fname].startswith(OBJECTSELECTOR_BAN), f"{fname}: missing the objectSelector-ban comment"
 
     pcs = _load_all_text(tree_a["priorityclasses.yaml"])
-    assert len(pcs) == 3
+    assert len(pcs) == 4
     pc_names = {p["metadata"]["name"] for p in pcs}
-    assert pc_names == {f"cage-baseline-{sv}", f"cage-restricted-{sv}", f"cage-quarantine-{sv}"}, pc_names
+    assert pc_names == {f"cage-baseline-{sv}", f"cage-restricted-{sv}",
+                        f"cage-quarantine-{sv}", f"cage-isolated-{sv}"}, pc_names
 
     # cage-tier names its own (versioned) PriorityClasses, and no unversioned
     # base name leaks through
@@ -213,7 +216,7 @@ def selfcheck() -> None:
     dial_expr = next(v_ for v_ in cage_tier["spec"]["variables"] if v_["name"] == "dial")["expression"]
     for name in pc_names:
         assert name in dial_expr, f"cage-tier's dial table does not name its own PriorityClass {name}"
-    for base_name in ("cage-baseline", "cage-restricted", "cage-quarantine"):
+    for base_name in ("cage-baseline", "cage-restricted", "cage-quarantine", "cage-isolated"):
         assert f"'pc':'{base_name}'" not in dial_expr, f"un-rewritten base PriorityClass name {base_name} leaked into cage-tier"
 
     # live path vs offline twin: actually write to disk, read back, and they
@@ -249,7 +252,7 @@ def selfcheck() -> None:
         "authoring copy of cage-tier.yaml must stay unversioned (verify-graded.sh reads it)"
 
     print(
-        "selfcheck ok: 7 mandatory members rendered for a named version; "
+        "selfcheck ok: 8 mandatory members rendered for a named version; "
         "versioned names/labels/self-scope; cage-tier names its own "
         "PriorityClasses; live path == offline twin; re-rendering an identical "
         "tree is a no-op; re-rendering over a DIFFERING released file refused; "
@@ -275,7 +278,7 @@ def main(argv: list[str]) -> int:
         out = Path(args[2])
     target = out or (HERE / "policies" / f"v{version}")
     write_tree(version, target)
-    print(f"rendered 7 mandatory members for {version} into {target}")
+    print(f"rendered 8 mandatory members for {version} into {target}")
     return 0
 
 

@@ -136,7 +136,11 @@ REPO = HERE.parent
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
-TIER_ORDER = ["baseline", "restricted", "quarantine"]  # loosest -> tightest
+# Loosest -> tightest. `isolated` is the bottom rung ticket 26/ADR-0022 added:
+# quarantine's dials plus no reach and first eviction. Mirrors graded/cage.py's
+# own ORDER; `infra` is deliberately absent there and here, being a role
+# declaration rather than a priced cage.
+TIER_ORDER = ["baseline", "restricted", "quarantine", "isolated"]
 
 # rederive_bumps.RANK has no entry for "removed" (no PAIRS case ever drops a
 # policy) -- removing a validating gate can only ever admit MORE than before
@@ -286,8 +290,17 @@ def claims_version(pod: dict) -> bool:
 
 
 def effective_tier(pod: dict) -> str:
-    """Mirrors cage-tier.yaml's own CEL: an absent or unrecognized tier
-    label defaults to 'baseline', the loosest tier -- never a no-op skip."""
+    """The tier a corpus pod's own label names; an absent or unrecognized
+    value defaults to 'baseline', never a no-op skip.
+
+    KNOWN GAP (ticket 26): since ADR-0022 the live cage takes the tier from
+    the pod's NAMESPACE through `namespaceObject` and CLOBBERS the pod label,
+    and a governed Namespace with no tier falls closed to `isolated`. A
+    corpus pod carries no Namespace, so this engine still reads the label. It
+    therefore models the dial TABLE faithfully and the tier SOURCE not at
+    all -- which is why the ticket-26 cage release computes `none` here.
+    Closing it needs the corpus to carry Namespaces; that is a separate
+    ticket, not something to fake from the pod."""
     raw = (pod.get("metadata") or {}).get("labels", {}).get(TIER_LABEL, "baseline")
     return raw if raw in TIER_ORDER else "baseline"
 
@@ -438,7 +451,7 @@ def classify_cage_tier(name: str, old_file: Path | None, new_file: Path | None,
 def classify_pair(name: str, old_file: Path | None, new_file: Path | None,
                    pods: list[Path]) -> Movement | None:
     sample = old_file or new_file
-    # A multi-document file (e.g. priorityclasses.yaml, three PriorityClass
+    # A multi-document file (e.g. priorityclasses.yaml, four PriorityClass
     # docs in one file) is never a policy this engine models -- peek at the
     # first document's `kind` only, rather than choking on the stream shape.
     body = next(yaml.safe_load_all(sample.read_text()), {}) or {}
@@ -555,7 +568,7 @@ def selfcheck() -> None:
     repo = Path(__file__).resolve().parent.parent
     real_body = yaml.safe_load((repo / "graded" / "policies" / "cage-tier.yaml").read_text())
     real_table, real_expr = dial_table(real_body)
-    assert set(real_table) == {"baseline", "restricted", "quarantine"}, real_table
+    assert set(real_table) == set(TIER_ORDER), real_table
     assert real_table["baseline"].cpu == 500 and real_table["quarantine"].cpu == 100, real_table
     assert real_table["baseline"].drop_all is False and real_table["quarantine"].drop_all is True
     assert "variables.tier" in real_expr
@@ -563,7 +576,7 @@ def selfcheck() -> None:
     # 2. the permissiveness lattice: UNCAGED is at least as permissive as
     #    every real tier, and no real tier is at least as permissive as
     #    UNCAGED (going from unrestricted to any real cage always narrows).
-    for t in ("baseline", "restricted", "quarantine"):
+    for t in TIER_ORDER:
         ok, regressed, _ = at_least_as_permissive(UNCAGED, real_table[t])
         assert not ok and regressed, (t, regressed)
         ok2, _, _ = at_least_as_permissive(real_table[t], UNCAGED)
@@ -571,8 +584,8 @@ def selfcheck() -> None:
 
     # 3. tighter tiers are strictly less permissive than looser ones, on
     #    every field the ticket names.
-    b, r, q = real_table["baseline"], real_table["restricted"], real_table["quarantine"]
-    for tighter, looser in ((r, b), (q, r), (q, b)):
+    b, r, q, i = (real_table[t] for t in TIER_ORDER)
+    for tighter, looser in ((r, b), (q, r), (q, b), (i, q), (i, b)):
         ok, regressed, _ = at_least_as_permissive(looser, tighter)
         assert not ok and regressed, (looser, tighter, regressed)
 

@@ -29,6 +29,16 @@ so the proof below is of the tree the ResourceSet would deliver once cs-15
 lands -- and the printed status says exactly that, rather than claiming
 today's committed Kustomization already delivers it.
 
+A RELEASED tree is FROZEN. Only the NEWEST declared version renders from
+today's `graded/policies/` + `posture/policies/` authoring copies -- every
+older tree is a snapshot of the authoring copies as they stood when that
+version was cut, and it MUST differ from the current ones the moment the
+authoring copy moves forward (ticket 26 moved it: a changed policy body is a
+new version, never an edit to a released one). So the renderer only runs
+against the newest version's tree; an older version is proven from the bytes
+actually committed under distribution/policies/v<version>/, which is what
+Flux would deliver anyway.
+
 versions() comes from render-orphan-guard.py -- the one array, reused (see
 that module's docstring: "There is exactly one array... neither
 hand-maintains an allow-list, so the runnable-version set cannot drift").
@@ -69,6 +79,9 @@ def render_and_prove(repo: Path, work: Path) -> list[str]:
     rvt = _load(repo, "render_version_tree", "render-version-tree.py")
 
     declared = rog.versions(repo / "distribution" / "versions.yaml")
+    # The newest declared version is the one the authoring copies render to.
+    # Older trees are frozen releases -- see the module docstring.
+    head = declared[-1]
 
     for v in declared:
         real = repo / "distribution" / "policies" / f"v{v}"
@@ -82,8 +95,13 @@ def render_and_prove(repo: Path, work: Path) -> list[str]:
 
         # write_tree() refuses to overwrite a file already present, so this
         # can never silently paper over the renderer disagreeing with
-        # something already committed.
-        rvt.write_tree(v, target)
+        # something already committed. Only the head version is rendered: an
+        # older released tree is frozen and is proven from its committed bytes.
+        if v == head or not committed:
+            rvt.write_tree(v, target)
+        else:
+            print(f"  note v{v}: FROZEN released tree -- not re-rendered; the current "
+                  f"authoring copies belong to v{head}. Proven from its committed bytes.")
 
         rendered = sorted(
             p.name for p in target.glob("*.yaml")
@@ -100,9 +118,11 @@ def render_and_prove(repo: Path, work: Path) -> list[str]:
             sys.exit(f"v{v}: kubectl kustomize -- the SAME builder flux-operator's Kustomization "
                       f"controller runs -- refused the rendered tree:\n{built.stderr}")
         built_names = {d["metadata"]["name"] for d in yaml.safe_load_all(built.stdout) if d}
+        # Expect what is ACTUALLY in the tree about to be delivered -- the
+        # render for the head version, the committed bytes for a frozen one.
         expect = {d["metadata"]["name"]
-                  for text in rvt.render_tree(v).values()
-                  for d in yaml.safe_load_all(text) if d}
+                  for f in target.glob("*.yaml") if f.name != "kustomization.yaml"
+                  for d in yaml.safe_load_all(f.read_text()) if d}
         missing = expect - built_names
         if missing:
             sys.exit(f"v{v}: kubectl kustomize's real build is missing mandatory members {missing}")

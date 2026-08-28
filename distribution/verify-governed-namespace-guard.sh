@@ -10,7 +10,7 @@
 # a real API server resolves both correctly. It is this offline CLI only.
 #
 #   1. STRUCTURAL: render-governed-namespace-guard.py --selfcheck asserts the
-#      manifest shape directly (Audit, CREATE-only, the namespaceSelector's
+#      manifest shape directly (Deny, CREATE-only, the namespaceSelector's
 #      match label) -- no kyverno CLI involved, so the CLI's gap cannot hide
 #      a shape regression.
 #   2. FUNCTIONAL: the validations EXPRESSION -- "must carry a policy-version
@@ -29,7 +29,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-say "1. render-governed-namespace-guard.py --selfcheck (structural: shape, Audit, CREATE-only, namespaceSelector)"
+say "1. render-governed-namespace-guard.py --selfcheck (structural: shape, Deny, CREATE-only, namespaceSelector)"
 python3 "$HERE/render-governed-namespace-guard.py" --selfcheck
 
 say "2. the validations expression itself, functionally, namespaceSelector stripped (kyverno CLI cannot evaluate it offline -- see this script's docstring)"

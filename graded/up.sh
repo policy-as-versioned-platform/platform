@@ -28,6 +28,21 @@ python3 "$REPO/distribution/render-and-prove.py" "$REPO" "$WORK"
 kubectl --context "$CTX" version >/dev/null 2>&1 || {
   echo "driftwood cluster not reachable ($CTX); run estate/driftwood/scripts/up.sh first" >&2; exit 1; }
 
+# The WAF sidecar image. cage-tier injects `ghcr.io/acme/coraza-waf:cage` at
+# every hardened rung; that repository does not exist, so without this the
+# sidecar sits in ErrImagePull and the caged workload never runs -- a cage that
+# is a refusal. Build the placeholder stand-in and load it into the node.
+# See waf-placeholder/Dockerfile. ponytail: skipped, loudly, when docker/kind
+# are absent -- the cage still applies, its hardened rungs just cannot run.
+WAF_IMAGE="ghcr.io/acme/coraza-waf:cage"
+if command -v docker >/dev/null && command -v kind >/dev/null; then
+  say "building and loading the placeholder WAF sidecar image ($WAF_IMAGE)"
+  docker build -q -t "$WAF_IMAGE" "$HERE/waf-placeholder" >/dev/null
+  kind load docker-image "$WAF_IMAGE" --name "${CTX#kind-}"
+else
+  echo "  (docker/kind absent: $WAF_IMAGE not loaded — pods at restricted/quarantine/isolated will not start)" >&2
+fi
+
 while IFS= read -r v; do
   say "v$v: eviction PriorityClasses (cage-baseline / cage-restricted / cage-quarantine, versioned)"
   kubectl --context "$CTX" apply -f "$WORK/v$v/priorityclasses.yaml"
@@ -40,5 +55,18 @@ while IFS= read -r v; do
   kubectl --context "$CTX" apply -f "$WORK/v$v/cage-netpol.yaml" \
     || echo "  (Kyverno GeneratingPolicy CRD not ready — install Kyverno, then re-run up.sh)"
 done < "$WORK/versions.txt"
+
+# The two CLUSTER-WIDE guards. Both are rendered by flux-operator's ResourceSet in
+# distribution/versions.yaml, which is NOT in the loop on this demo path -- so
+# until now a cluster that had the cage did not have its guards, and the review of
+# 2026-08-28 found both holes live: a pod claiming an UNDECLARED version
+# (`9.9.9`) and a pod claiming NOTHING were each admitted completely uncaged
+# inside a governed `isolated` namespace, and each reached the API server and the
+# internet. An offline-only proof of an admission control is not a proof.
+say "cluster-wide guards: the orphan guard (an undeclared version is not runnable) and the governed-namespace claim guard"
+python3 "$REPO/distribution/render-orphan-guard.py" | kubectl --context "$CTX" apply -f - \
+  || echo "  (Kyverno ValidatingPolicy CRD not ready -- install Kyverno, then re-run up.sh)"
+python3 "$REPO/distribution/render-governed-namespace-guard.py" | kubectl --context "$CTX" apply -f - \
+  || echo "  (Kyverno ValidatingPolicy CRD not ready -- install Kyverno, then re-run up.sh)"
 
 say "done. verify with estate/platform/graded/verify-graded.sh"

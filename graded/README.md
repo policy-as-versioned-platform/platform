@@ -12,7 +12,7 @@ even the tightest cage leaves a residual over the org's appetite band.
 |---|---|---|
 | The £ engine | `cage.py` | Named tiers → dials (deterministic); the £ picks the tier; emits the TCoR ledger line (residual + cost-of-controls). Reuses `../fair/fair.py` and `../risk/enforce.py`. |
 | Cage (mutate) | `policies/cage-tier.yaml` | `MutatingPolicy`: every pod that claims a policy version is mutated into a cage — cpu/mem limits, eviction PriorityClass, and (restricted+) drop-ALL caps, read-only-fs, a WAF sidecar. A pod carrying `posture.acme.io/tier` gets that tier; one with no (or an unrecognized) tier defaults to `baseline`, the loosest tier — no uncaged state within that population. A pod claiming no policy version at all (system/COTS) is out of scope, unmatched. Never denies. |
-| Egress lockdown (generate) | `policies/cage-netpol.yaml` | `GeneratingPolicy`: a caged pod triggers a namespace `NetworkPolicy` that allows egress DNS only — the "reach" cut of the same decision. |
+| Per-tier reach (generate) | `policies/cage-netpol.yaml` | `GeneratingPolicy`: a caged non-baseline pod triggers ALL THREE restricting rungs' `NetworkPolicy` objects in its namespace at once, each selecting its own tier — so a tier move is a label change with nothing created or deleted in its path, and `synchronize` is off. Repaired 2026-08-28: with one policy per trigger and synchronize on, Kyverno's watcher deleted every `cage-reach-*` in every OTHER namespace whenever one caged pod was created anywhere. |
 | Eviction priority | `policies/priorityclasses.yaml` | Three `PriorityClass`es below the default; tighter tier = evicted sooner under pressure. |
 | Tests | `tests/` | `kyverno test` matrices: the cage is a **mutation** (cage present), not a deny; the generate emits the lockdown netpol. |
 | Bring-up / verify | `up.sh`, `verify-graded.sh` | idempotent apply (no waits); offline proofs + bounded live tail. |
@@ -137,6 +137,19 @@ policy's reach — they are unmatched, not caged. Whether that permanently
 unversioned population should also default to `baseline` is a real question,
 genuinely left open and spun out to its own effort (ticket 02 answer #5), not
 a decision this policy body has already made.
+
+**Inside a GOVERNED Namespace that question is closed, and the answer is not
+"uncaged".** Left open there it meant one omitted label bought a workload out of
+the cage entirely: observed live on 2026-08-28, a claim-less pod ran in a
+governed Namespace whose declared tier was `isolated` with no tier label, no
+PriorityClass, no limits, no hardening and no reach cage, and it reached the API
+server and the internet. `governed-namespace-requires-claim` was promoted from
+`Audit` to `Deny` that day (`../distribution/render-governed-namespace-guard.py`,
+ADR-0022, ADR-0014's own promotion path), and `graded/up.sh` now installs it and
+the orphan guard on the cluster, because an offline-only proof of an admission
+control is not a proof. That refusal is a missing INSTRUMENT (ADR-0020): the
+claim is what selects which served version cages the pod. A pod that claims is
+caged and priced, never refused.
 
 ## Calibration knobs
 
