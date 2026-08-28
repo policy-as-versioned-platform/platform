@@ -31,7 +31,7 @@ for the PR body).
 Usage:
     tier_pr.py run --adopter-dir <path> --evidence <evidence.json> \\
         --workload <workload.yaml> --org <party> [--base main] \\
-        [--rejections <rejections.json>] [--dry-run]
+        [--rejections <derived-ledger.json>] [--dry-run]
     tier_pr.py selfcheck
 """
 from __future__ import annotations
@@ -49,6 +49,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "honesty"))
 import wargamer          # noqa: E402  propose() shapes what gets landed
 import proposer_bounds   # noqa: E402  decides WHETHER to land it
+import rejection_ledger  # noqa: E402  derives the ledger those bounds read
 
 # The exact matchCondition ../graded/policies/cage-tier.yaml itself gates
 # on -- only a labels block that already claims a policy version is this
@@ -141,11 +142,19 @@ def _open_or_update_pr(p: dict, base: str, repo: str | None) -> dict:
 def _pr_body(p: dict) -> str:
     c = p["change"]
     return (
+        f"{p.get('ledger_marker', '')}\n\n"
         f"Proposed by the war-gamer's cage-tier drift (ADR-0015). "
         f"`{c['label']}`: `{c['from']}` -> `{c['to']}`.\n\n"
         f"Evidence: {json.dumps(p['from_evidence'], sort_keys=True)}\n\n"
+        f"{p.get('as_of_note', '')}\n\n"
+        f"Closing this PR without merging is the rejection: the ledger is DERIVED "
+        f"from closed-unmerged PRs on this branch, so no file records your no "
+        f"(ADR-0024). The marker at the top carries the curve hash and the "
+        f"selection-policy version this proposal was priced under -- a later "
+        f"proposal priced under a different one is a NEW question and will be "
+        f"raised again.\n\n"
         f"Never merged by this proposer -- opened for human review only."
-    )
+    ).strip()
 
 
 def _existing_issue_number(marker: str, repo: str | None) -> str:
@@ -156,7 +165,7 @@ def _existing_issue_number(marker: str, repo: str | None) -> str:
 
 def _issue_body(p: dict, marker: str) -> str:
     return (
-        f"{marker}\n\n"
+        f"{marker}\n{p.get('ledger_marker', '')}\n\n"
         f"The war-gamer's cage-tier drift (ADR-0015) proposes `deny` for "
         f"{p['from_evidence']['source']}/{p['from_evidence']['kind']}. "
         f"`TIERS` holds only `baseline`/`restricted`/`quarantine`, and the "
@@ -229,7 +238,7 @@ def _land(p: dict, adopter_dir: Path, workload_path: Path, base: str, dry_run: b
 
 def run(adopter_dir: Path, evidence_path: Path, workload_path: Path, org: str,
         rejections_path: Path | None, base: str = "main", dry_run: bool = False,
-        repo: str | None = None) -> list[dict]:
+        repo: str | None = None, as_of: str | None = None) -> list[dict]:
     """The whole beat: load ticket 16's prices[] from the adopter's own
     committed evidence.json, bound them (proposer_bounds.py, unchanged),
     and land whatever survives -- a PR or an issue, never both, per
@@ -251,20 +260,43 @@ def run(adopter_dir: Path, evidence_path: Path, workload_path: Path, org: str,
         # there is nothing yet for this proposer to read. Not an error --
         # the same "nothing to propose" shape propose-policy-pr.sh already
         # prints when a run finds no drift.
-        print(f"note: {evidence_path} not found -- nothing composed yet, nothing to propose")
+        print(f"note: {evidence_path} not found -- nothing composed yet, nothing to propose",
+              file=sys.stderr)
         return []
     evidence = json.loads(evidence_path.read_text())
     prices = evidence.get("prices", [])
-    rejections = (json.loads(rejections_path.read_text()) if rejections_path
-                  else proposer_bounds._load_rejections(proposer_bounds.DEFAULT_REJECTIONS))
     repo = repo or os.environ.get("GITHUB_REPOSITORY")
     rows = wargamer.wargame_cage_tier(prices, org) if prices else []
+
+    # The ledger is DERIVED from closed-unmerged PRs on this repo's own dedupe
+    # branches (ADR-0024). Offline it comes back empty AND SAYS SO on STDERR.
+    # stdout is the proposal-document stream `--dry-run` writes and readers
+    # json.loads, so a human note there breaks the contract (caught live by
+    # verify/e2e/step3, 2026-08-28). --
+    # a proposer that cannot see the rejections must not silently suppress and
+    # must not silently propose. `--rejections` stays as an override for a
+    # ledger derived once and reused (the workflow derives it inline instead).
+    shape = rejection_ledger.fingerprint(prices)
+    today = {proposer_bounds._key(row): shape for row in rows}
+    if rejections_path:
+        rejections = json.loads(rejections_path.read_text())
+        print(f"note: rejection ledger read from {rejections_path}", file=sys.stderr)
+    else:
+        rejections, ledger_note = rejection_ledger.derive(repo, today)
+        print(f"note: {ledger_note}", file=sys.stderr)
+
     disp = proposer_bounds.bound(rows, rejections)
     landed = []
     for d in disp:
         p = d["proposal"]
         if not p:
             continue
+        p["ledger_marker"] = rejection_ledger.marker(d["key"], shape["curve_hash"],
+                                                     shape["policy_version"])
+        if as_of:
+            p["as_of_note"] = (f"Re-composed and priced at **{as_of}** by the daily clock "
+                               f"(ADR-0024): a date-driven band crossing with no new tag is "
+                               f"a proposal trigger, and the clock committed nothing.")
         landed.append(_land(p, adopter_dir, workload_path, base, dry_run, repo))
     return landed
 
@@ -301,7 +333,7 @@ def selfcheck() -> None:
 
         gh_log = tmp / "gh.log"
         gh_state = tmp / "gh_state.json"
-        gh_state.write_text(json.dumps({"pr": None, "issue": None}))
+        gh_state.write_text(json.dumps({"pr": None, "issue": None, "closed": []}))
         stub_dir = tmp / "bin"
         stub_dir.mkdir()
         _write_gh_stub(stub_dir / "gh", gh_log, gh_state)
@@ -377,7 +409,47 @@ def selfcheck() -> None:
         assert not any(c[:2] == ["pr", "create"] for c in calls3), \
             ("a deny proposal must never open a pull request", calls3)
 
-        # --- 4. structural safety: this module has no way to merge/dispose ---
+        # --- 4. the DERIVED rejection ledger (ADR-0024): a PR a human closed
+        #     without merging suppresses the same question, and only that
+        #     question. Nothing is committed anywhere that records the no ---
+        import datetime as _dt
+        ledger_key = "driftwood/cage-tier/ico-pricing"
+        shape = rejection_ledger.fingerprint(label_proposal_prices)
+        closed_yesterday = (_dt.datetime.now(_dt.timezone.utc)
+                            - _dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+
+        def _closed(curve, policy):
+            return [{"number": 7, "headRefName": "wargamer/retune-tier-driftwood-cage-tier-ico-pricing",
+                      "mergedAt": None, "closedAt": closed_yesterday,
+                      "body": rejection_ledger.marker(ledger_key, curve, policy)}]
+
+        state = json.loads(gh_state.read_text())
+        state["closed"] = _closed(shape["curve_hash"], shape["policy_version"])
+        state["pr"] = None
+        gh_state.write_text(json.dumps(state))
+        gh_log.write_text("")
+        evidence.write_text(json.dumps({"prices": label_proposal_prices}))
+        suppressed = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                    workload_path=workload, org="driftwood",
+                                    rejections_path=None, base="main", dry_run=False)
+        assert suppressed == [], ("yesterday's rejection must suppress today's "
+                                   "identical proposal", suppressed)
+        assert not _read_log(gh_log) or not any(
+            c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+
+        # ...and a rejection priced under a DIFFERENT curve does not count: a
+        # new GBP is a new question (ticket 10 Q5).
+        state["closed"] = _closed("sha256:a-different-curve", shape["policy_version"])
+        gh_state.write_text(json.dumps(state))
+        gh_log.write_text("")
+        reraised = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  workload_path=workload, org="driftwood",
+                                  rejections_path=None, base="main", dry_run=False)
+        assert len(reraised) == 1, ("a rejection under another curve must not "
+                                     "silence this one", reraised)
+        assert any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+
+        # --- 5. structural safety: this module has no way to merge/dispose ---
         me = sys.modules[__name__]
         for banned in ("merge", "approve", "dispose", "auto_merge"):
             assert not callable(getattr(me, banned, None)), \
@@ -388,7 +460,9 @@ def selfcheck() -> None:
         "manifest line (main untouched, everything else byte-identical); a second run "
         "force-pushes the SAME branch (1 fresh commit, not 2) and UPDATES the open PR, "
         "never opens a second one; a proposed deny opens an issue and never a PR; "
-        "no merge()/approve()/dispose() anywhere in this module."
+        "yesterday's closed-unmerged PR SUPPRESSES the identical proposal while one "
+        "priced under another curve does not (the ledger is derived, nothing records "
+        "the no); no merge()/approve()/dispose() anywhere in this module."
     )
 
 
@@ -424,7 +498,9 @@ with open(log_path, "a") as fh:
     fh.write(json.dumps(argv) + "\\n")
 state = json.load(open(state_path))
 kind = argv[0] if argv else ""
-if kind == "pr" and argv[1] == "list":
+if kind == "pr" and argv[1] == "list" and "closed" in argv:
+    print(json.dumps(state.get("closed", [])))
+elif kind == "pr" and argv[1] == "list":
     print(state["pr"] or "")
 elif kind == "pr" and argv[1] == "create":
     state["pr"] = "1"
@@ -460,7 +536,10 @@ def main(argv: list[str]) -> int:
     r.add_argument("--workload", type=Path, required=True)
     r.add_argument("--org", required=True)
     r.add_argument("--base", default="main")
-    r.add_argument("--rejections", type=Path, default=None)
+    r.add_argument("--rejections", type=Path, default=None,
+                   help="a pre-derived ledger; omit to derive it from closed PRs")
+    r.add_argument("--as-of", default=None,
+                   help="the date this run re-composed at, recorded in the PR body")
     r.add_argument("--dry-run", action="store_true")
     r.add_argument("--repo", default=None, help="owner/repo; defaults to $GITHUB_REPOSITORY")
     sub.add_parser("selfcheck")
@@ -470,7 +549,8 @@ def main(argv: list[str]) -> int:
         selfcheck()
         return 0
     landed = run(args.adopter_dir, args.evidence, args.workload, args.org,
-                 args.rejections, base=args.base, dry_run=args.dry_run, repo=args.repo)
+                 args.rejections, base=args.base, dry_run=args.dry_run, repo=args.repo,
+                 as_of=args.as_of)
     print(json.dumps(landed, indent=2))
     return 0
 

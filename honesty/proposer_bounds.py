@@ -11,10 +11,15 @@ flood reviewers or wear them down. This wraps `wargamer.proposals()` with three
                  CONFIDENCE_MIN it is HELD for human triage, not auto-opened.
   rate-limit   — at most RATE_LIMIT PRs auto-opened per run; the rest DEFER to the
                  next run. One skimmer feed can't open twenty PRs at once.
-  learn-from-  — the rejection ledger (rejections.json). A proposal a human has
-  rejections     declined >= reject_suppress times is SUPPRESSED (stop re-proposing
-                 what keeps getting a no); fewer rejections still propose but carry
-                 the history so the reviewer isn't asked cold.
+  learn-from-  — the rejection ledger, DERIVED (ADR-0024, ticket 28 item 5). A key
+  rejections     whose closed-unmerged proposal PRs still sum to >= reject_suppress
+                 under `sum(0.5 ** (age_days / h))` is SUPPRESSED (stop re-proposing
+                 what keeps getting a no); a lighter history still proposes but
+                 carries it so the reviewer isn't asked cold. The ledger is built by
+                 ../wargamer/rejection_ledger.py and PASSED IN. There is no default
+                 and no fallback file: the old committed `rejections.json` fixture is
+                 deleted, because every adopter read platform's copy as its own and
+                 would have been suppressed by a rejection it never made.
 
 The hard backstop is NOT any of these. It is the PR gate + human review that every
 surviving proposal STILL rides: the bounds only decide what reaches a reviewer,
@@ -30,8 +35,8 @@ carry the TCoR delta (chosen vs deployed move) on the scenario row and compute i
 materiality the same way. Not worth the re-plumb until a scenario drift is marginal.
 
 Usage:
-    proposer_bounds.py bounded    [--rejections rejections.json]   # proposals after bounds
-    proposer_bounds.py dispositions                                # one line per drift + why
+    proposer_bounds.py bounded    --rejections <ledger.json>   # proposals after bounds
+    proposer_bounds.py dispositions --rejections <ledger.json>  # one line per drift + why
     proposer_bounds.py selfcheck
 """
 from __future__ import annotations
@@ -48,7 +53,8 @@ import wargamer  # noqa: E402  the proposer we are bounding
 CONFIDENCE_MIN = 0.05      # below this a verdict flip is band-edge noise -> hold
 RATE_LIMIT = 3             # max PRs auto-opened per run; rest defer
 STRUCTURAL_CONFIDENCE = 0.5  # a clean TCoR move-change (no £-margin on the row)
-DEFAULT_REJECTIONS = os.path.join(HERE, "rejections.json")
+# There is deliberately no DEFAULT_REJECTIONS. A caller supplies the derived
+# ledger, or supplies an empty one and says so (ADR-0024).
 
 
 def confidence(row):
@@ -62,7 +68,10 @@ def confidence(row):
 
 
 def _key(row):
-    return f"{row['org']}/{row['control']}"
+    """`<org>/<kind>/<slug>` (ADR-0024, D5) -- so a cage-tier proposal and a
+    retirement proposal about the same subject are different questions, and one
+    org's rejection is never another org's ledger."""
+    return f"{row['org']}/{row['kind']}/{row['control']}"
 
 
 def bound(rows, rejections):
@@ -84,7 +93,8 @@ def bound(rows, rejections):
 
         if rej_count >= suppress_at:
             d["disposition"] = "suppress-learned-rejection"
-            d["why"] = f"human rejected this {rej_count}x (>= {suppress_at}) — the loop learned, stop re-proposing"
+            d["why"] = (f"closed-unmerged proposals still weigh {rej_count} (>= {suppress_at}) "
+                        f"— the loop learned, stop re-proposing until the curve decays")
             d["proposal"] = None
         elif conf < CONFIDENCE_MIN:
             d["disposition"] = "hold-low-confidence"
@@ -102,7 +112,8 @@ def bound(rows, rejections):
             assert p["required_gate"], p
             if rej_count:
                 p["prior_rejections"] = rej_count
-                p["note"] = f"previously rejected {rej_count}x (< {suppress_at}); re-proposed with history for the reviewer"
+                p["note"] = (f"prior rejections weigh {rej_count} (< {suppress_at}); "
+                             f"re-proposed with the history for the reviewer")
             d["disposition"] = "propose"
             d["why"] = f"confidence {conf:.3f} >= {CONFIDENCE_MIN}, not over-rejected, within rate limit — opened (gated, unmerged)"
             d["proposal"] = p
@@ -115,12 +126,11 @@ def _load_rejections(path):
         return json.load(fh)
 
 
-def dispositions(rejections=None):
-    rej = rejections if rejections is not None else _load_rejections(DEFAULT_REJECTIONS)
-    return bound(wargamer.wargame(), rej)
+def dispositions(rejections):
+    return bound(wargamer.wargame(), rejections)
 
 
-def bounded_proposals(rejections=None):
+def bounded_proposals(rejections):
     return [d["proposal"] for d in dispositions(rejections) if d["proposal"]]
 
 
@@ -136,7 +146,15 @@ def cmd_dispositions(args):
 
 
 def cmd_selfcheck(_args):
-    rej = _load_rejections(DEFAULT_REJECTIONS)
+    # The ledger is derived, so the selfcheck supplies one directly rather than
+    # reading a fixture that no longer exists: `<org>/<kind>/<slug>` keys with
+    # decayed weights, exactly what rejection_ledger.derive() returns.
+    rej = {"reject_suppress": 0.5,
+           "rejections": {"tuppence/scenario/insider-abuse": {"count": 0.93,
+                              "reasons": ["#12 closed unmerged 2026-08-01, weight 0.55",
+                                          "#31 closed unmerged 2026-08-20, weight 0.38"]},
+                          "tuppence/scenario/pq-harvest-now-decrypt-later": {"count": 0.21,
+                              "reasons": ["#14 closed unmerged 2026-06-02, weight 0.21"]}}}
     disp = bound(wargamer.wargame(), rej)
     by = {d["key"]: d for d in disp}
 
@@ -144,14 +162,16 @@ def cmd_selfcheck(_args):
     assert disp, "war-gamer produced no drift — nothing to bound"
 
     # 1. learn-from-rejections: the twice-rejected proposal is suppressed.
-    assert by["tuppence/insider-abuse"]["disposition"] == "suppress-learned-rejection", by["tuppence/insider-abuse"]
-    # ...and a once-rejected one still proposes, but carries its history.
-    pq = by["tuppence/pq-harvest-now-decrypt-later"]
+    assert by["tuppence/scenario/insider-abuse"]["disposition"] == "suppress-learned-rejection", \
+        by["tuppence/scenario/insider-abuse"]
+    # ...and a key whose history has decayed below the threshold still proposes,
+    # carrying that history so the reviewer is not asked cold.
+    pq = by["tuppence/scenario/pq-harvest-now-decrypt-later"]
     assert pq["disposition"] == "propose", pq
-    assert pq["proposal"]["prior_rejections"] == 1, pq
+    assert pq["proposal"]["prior_rejections"] == 0.21, pq
 
     # 2. confidence: driftwood's 2.7%-over-band verdict flip is HELD, not auto-opened.
-    dw = by["driftwood/require-nonroot@2.0.0"]
+    dw = by["driftwood/enforcement/require-nonroot@2.0.0"]
     assert dw["disposition"] == "hold-low-confidence", dw
     assert dw["confidence"] < CONFIDENCE_MIN, dw
 
@@ -162,7 +182,7 @@ def cmd_selfcheck(_args):
               "deployed": "Audit", "implied": "Deny", "evidence": {},
               "risk_bought_current": 90000.0, "tolerance": 40000.0}
              for i in range(RATE_LIMIT + 2)]
-    bd = bound(batch, {"reject_suppress": 2, "rejections": {}})
+    bd = bound(batch, {"reject_suppress": 0.5, "rejections": {}})
     opened = [d for d in bd if d["disposition"] == "propose"]
     deferred = [d for d in bd if d["disposition"] == "defer-rate-limit"]
     assert len(opened) == RATE_LIMIT, bd
@@ -198,7 +218,9 @@ def main(argv=None):
         ("dispositions", cmd_dispositions, "one line per drift: disposition + why"),
     ):
         sp = sub.add_parser(name, help=helptext)
-        sp.add_argument("--rejections", default=DEFAULT_REJECTIONS)
+        sp.add_argument("--rejections", required=True,
+                        help="the DERIVED ledger (wargamer/rejection_ledger.py derive); "
+                             "there is no default and no fallback fixture (ADR-0024)")
         sp.set_defaults(func=fn)
     sub.add_parser("selfcheck", help="run the proposer-bound assertions").set_defaults(func=cmd_selfcheck)
     args = p.parse_args(argv)

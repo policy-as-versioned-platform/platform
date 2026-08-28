@@ -42,10 +42,17 @@ fi
 echo "ok  live feed signature verifies; a forged feed is rejected"
 # sourced + bounded are asserted inside reflexive.feed_integrity (step 4).
 
-say "3. proposer-bounds — confidence + rate-limit + learn-from-rejections; gate is the backstop"
+say "3. proposer-bounds — confidence + rate-limit + a DERIVED rejection ledger; gate is the backstop"
 python3 "$here/proposer_bounds.py" selfcheck || fail "proposer-bounds selfcheck failed"
-echo "-- live dispositions --"
-python3 "$here/proposer_bounds.py" dispositions
+python3 "$platform/wargamer/rejection_ledger.py" selfcheck || fail "rejection-ledger selfcheck failed"
+# ADR-0024: the ledger is derived from closed-unmerged proposal PRs, never a
+# committed fixture. Offline it comes back EMPTY with the reason on stderr --
+# which is exactly the behaviour this step is here to observe.
+ledger="$(mktemp)"; trap 'rm -f "$tmp" "$ledger"' EXIT
+python3 "$platform/wargamer/rejection_ledger.py" derive > "$ledger" \
+  || fail "rejection-ledger derive did not run"
+echo "-- live dispositions (against the derived ledger above) --"
+python3 "$here/proposer_bounds.py" dispositions --rejections "$ledger"
 
 say "4. reflexive — the apparatus governs itself under the same engine, and passes"
 python3 "$here/reflexive.py" selfcheck || fail "reflexive selfcheck failed"
