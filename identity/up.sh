@@ -3,6 +3,15 @@
 # the EXISTING driftwood KinD cluster, delivered as inherited platform machinery
 # via Flux HelmReleases. Re-runnable at a venue. Never creates/deletes a cluster.
 #
+# DEMO PATH, not delivery (ticket 32). Since this directory became a
+# self-versioned implementations package, the delivery path is `flux-pin.yaml`:
+# an org pins `identity-substrate/vX.Y.Z` and Flux reconciles ./identity,
+# ./posture/spire and ./access/pomerium from the signed tag. This script stays
+# as the venue path — it brings the substrate up on an existing KinD cluster
+# without waiting on a tag — and as the thing that re-runs the jwt-setup Job
+# when SPIRE's CA has rotated out from under it. Every kubectl apply below is
+# a member of the package's kustomization.yaml, so the two cannot drift.
+#
 # Drives everything through Flux's helm-controller (installed by driftwood/up.sh),
 # so the HelmRelease YAML is the single source of truth — no duplicated helm flags.
 # Every reconcile is `timeout`-bounded: nothing hangs; a slow image pull just
@@ -61,7 +70,20 @@ RECON openbao openbao
 say "identity config: base ClusterSPIFFEID, STRICT mTLS, OpenBao jwt seam"
 KAPPLY "$HERE/spire/clusterspiffeid-mesh.yaml" || echo "  (ClusterSPIFFEID CRD not ready — re-run up.sh)"
 KAPPLY "$HERE/istio/peerauthentication-strict.yaml" || echo "  (Istio CRDs not ready — re-run up.sh)"
+
+# The jwt-setup Job is RECREATED, never re-applied. Two reasons, both real:
+#   * a Job's pod template is immutable, so `apply` over a changed spec fails;
+#   * the Job pins the SPIRE trust bundle as it stands when it runs
+#     (oidc_discovery_ca_pem — see openbao/jwt-auth.yaml), and SPIRE rotates
+#     its X.509 CA about daily, so a stale run is worse than no run.
+# It also moved namespace (openbao -> spire-system, where the bundle
+# ConfigMap lives), so the old object is cleaned up here too.
+say "OpenBao jwt seam (recreated so it re-pins the current SPIRE trust bundle)"
+kubectl --context "$CTX" -n openbao delete job openbao-jwt-setup --ignore-not-found >/dev/null 2>&1 || true
+kubectl --context "$CTX" -n spire-system delete job openbao-jwt-setup --ignore-not-found --wait=true >/dev/null 2>&1 || true
 KAPPLY "$HERE/openbao/jwt-auth.yaml"
+timeout 120 kubectl --context "$CTX" -n spire-system wait --for=condition=complete job/openbao-jwt-setup --timeout=110s \
+  || echo "  (openbao-jwt-setup not complete yet — safe to re-run up.sh; verify-identity.sh reads the live truth)"
 
 say "mTLS proof workloads (ping -> pong, SPIFFE AuthorizationPolicy)"
 KAPPLY "$HERE/demo-mtls/workloads.yaml"

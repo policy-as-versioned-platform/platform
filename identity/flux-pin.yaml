@@ -1,0 +1,86 @@
+# How an org ADOPTS the identity substrate: it copies this file into its own
+# `gitops/` tree, bumps the tag with Renovate, and Flux reconciles the package.
+# This is the answer to H8-14 — "a layer delivered by kubectl is a build
+# defect" — for the five HelmReleases and, more to the point, for the two
+# ClusterSPIFFEIDs that identity/up.sh and posture/up.sh have been applying by
+# hand since 2026-07-31.
+#
+# THREE Kustomizations, not one, because kustomize refuses a resource above
+# its root: `./identity` carries its own kustomization.yaml (the package
+# membership); `./posture/spire` and `./access/pomerium` have none, so
+# kustomize-controller generates one from the YAML it finds there. All three
+# ride the SAME GitRepository at the SAME tag, so the package versions as one
+# thing (VERSION beside this file) and cannot half-adopt.
+#
+# `federation/<org>.yaml` is NOT reconciled here. Each org applies exactly one
+# of the four (its own), so the path is the org's choice, not the package's:
+# add a fourth Kustomization with `path: ./identity/federation` and a
+# kustomization.yaml in your own overlay selecting your file. Until a peer
+# SPIRE serves a bundle endpoint, applying any of them reconciles nothing —
+# see federation/ and verify-federation.sh.
+#
+# The tag is `identity-substrate/vX.Y.Z`, cut by the platform's own
+# .github/workflows/cut-release.yml with gitsign. One signature, the tag
+# (ADR-0012, ADR-0023 D3) — no cosign bundle, no second key. A consumer
+# verifies it against the pinned identity regexp in release.yml, exactly as it
+# verifies the `policy/vX.Y.Z` implementations line.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: identity-substrate
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/policy-as-versioned-platform/platform
+  ref:
+    tag: "identity-substrate/v1.0.0"    # Renovate bumps this; a human merges
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-substrate
+  namespace: flux-system
+spec:
+  interval: 5m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef: { kind: GitRepository, name: identity-substrate }
+  path: ./identity
+  prune: true
+  wait: true
+---
+# The posture SVID template. Separate path, same tag — see the note above.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-substrate-posture
+  namespace: flux-system
+spec:
+  interval: 5m
+  retryInterval: 1m
+  timeout: 3m
+  dependsOn:
+    - { name: identity-substrate }      # the SPIRE CRDs must exist first
+  sourceRef: { kind: GitRepository, name: identity-substrate }
+  path: ./posture/spire
+  prune: true
+  wait: true
+---
+# The human front door. platform/access owns the contents; the package
+# delivers it so that Pomerium versions with the substrate it authenticates
+# into, rather than drifting on its own kubectl path.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-substrate-access
+  namespace: flux-system
+spec:
+  interval: 5m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - { name: identity-substrate }
+  sourceRef: { kind: GitRepository, name: identity-substrate }
+  path: ./access/pomerium
+  prune: true
+  wait: true

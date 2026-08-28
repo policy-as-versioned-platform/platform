@@ -1,31 +1,82 @@
 # Substrate seam: enable OpenBao's jwt auth method and point it at SPIRE's OIDC
 # Discovery Provider JWKS, so a SPIRE JWT-SVID can be exchanged for OpenBao
 # access. This is the *plumbing* only — the posture-bound ROLE (bound_claims
-# glob on spiffe://.../posture/vN/*) that actually gates issuance is ticket 17.
+# glob on spiffe://.../posture/vN/cage/<tier>/*) that actually gates issuance
+# lives in the consuming org (tuppence/reset/openbao-role.yaml).
 #
-# Runs as a post-install Job against dev-mode OpenBao (root token). Idempotent:
-# `bao auth enable` is a no-op if already enabled (|| true), config is upserted.
+# TICKET 32 REPAIR — this Job had been Failed for 27 days and OpenBao's `jwt`
+# auth method was NOT enabled, while verify-identity.sh's PASS line claimed
+# "OpenBao trusts SPIRE JWKS". Three separate faults, all found live on
+# driftwood 2026-08-28 and all fixed here:
+#
+#   1. WRONG SCHEME AND PORT. The URL was
+#      `http://spire-spiffe-oidc-discovery-provider.spire-system.svc`. That
+#      Service publishes port 443/https only (the provider serves TLS on :8443
+#      from an X509-SVID that spiffe-helper writes to /certs) — there is no
+#      HTTP listener to reach, so `bao write auth/jwt/config` could never
+#      complete and the Job burned its backoffLimit.
+#   2. WRONG HOST. The provider 400s any request whose Host is not in its
+#      `domains` list, and that list is
+#      {short, short.spire-system, short.spire-system.svc.cluster.local,
+#       oidc-discovery.acme.internal} — `…svc` is NOT in it. The cert's DNS
+#      SANs are {oidc-discovery.acme.internal, short, short.spire-system,
+#      short.spire-system.svc} — `…svc.cluster.local` is NOT in those. The one
+#      host that is in BOTH sets is `spire-spiffe-oidc-discovery-provider.spire-system`,
+#      so that is the only name on which TLS verification and the provider's
+#      own Host check can both succeed. (Verified live, 2026-08-28.)
+#   3. NO TLS TRUST. The provider's serving cert is signed by the SPIRE CA,
+#      which no public root chains to, so OpenBao needs the SPIRE trust bundle
+#      explicitly. It lives in the `spire-bundle` ConfigMap — in spire-system,
+#      not openbao — which is why this Job now runs in spire-system and dials
+#      OpenBao across the namespace boundary rather than the other way round.
+#
+# ponytail: `oidc_discovery_ca_pem` PINS the bundle as it stood when this Job
+# ran. SPIRE rotates its X.509 CA on a ~24h TTL (three certs in the bundle at
+# any moment, ~12h overlap), so the pin goes stale within about a day and the
+# JWKS fetch then fails until the Job runs again. identity/up.sh re-creates
+# this Job on every bring-up, which is the whole refresh story today. The
+# upgrade path is a controller that re-writes auth/jwt/config whenever
+# spire-bundle changes (a ConfigMap watch), or terminating TLS at the mesh
+# (label spire-system for Istio injection and set the chart's
+# `spiffe-oidc-discovery-provider.tls.spire.enabled: false`) so no CA is
+# pinned at all. Neither is worth building before a second consumer exists.
+#
+# Idempotent: `bao auth enable` is a no-op if already enabled (|| true), the
+# config is upserted. NB OpenBao runs in dev mode with in-memory storage, so
+# every OpenBao pod restart wipes both the method and the config — re-run
+# identity/up.sh after one. verify-identity.sh observes the live truth rather
+# than trusting this file.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: openbao-jwt-setup
-  namespace: openbao
+  namespace: spire-system      # where the SPIRE trust bundle ConfigMap lives
 spec:
   backoffLimit: 6
   template:
     spec:
       restartPolicy: OnFailure
+      volumes:
+        - name: spire-bundle
+          configMap: { name: spire-bundle }
       containers:
         - name: setup
           image: openbao/openbao:latest   # tunable knob — pin the tour version
           env:
             - { name: BAO_ADDR,  value: "http://openbao.openbao.svc:8200" }
             - { name: BAO_TOKEN, value: "root" }
+          volumeMounts:
+            - { name: spire-bundle, mountPath: /spire-bundle, readOnly: true }
           command: ["/bin/sh", "-ec"]
           args:
             - |
               bao auth enable jwt || true
               bao write auth/jwt/config \
-                oidc_discovery_url="http://spire-spiffe-oidc-discovery-provider.spire-system.svc" \
+                oidc_discovery_url="https://spire-spiffe-oidc-discovery-provider.spire-system" \
+                oidc_discovery_ca_pem=@/spire-bundle/bundle.crt \
                 default_role="posture"
-              echo "jwt auth wired to SPIRE OIDC JWKS; ticket 17 adds the posture role"
+              # Read it back: `status valid` here means OpenBao actually
+              # fetched and parsed SPIRE's discovery document over TLS. If the
+              # write above had merely been accepted, this Job would still be
+              # lying about the seam.
+              bao read auth/jwt/config

@@ -1,0 +1,33 @@
+# The identity substrate, as ONE self-versioned implementations package
+# (ticket 32; ticket 12 answer 5). Its version is the sibling VERSION file, its
+# control claims are the sibling component-definition.json, and versions.yaml
+# is the pin-and-reconcile shape an org uses to adopt it.
+#
+# WHY THIS FILE EXISTS AT ALL. Without it, Flux's kustomize-controller
+# generates a kustomization from every YAML under the path, which would sweep
+# in demo-mtls/ (the ping->pong mTLS PROOF, not substrate) and every
+# federation/<org>.yaml (each org applies exactly one of the four, never all).
+# The explicit list is the package's membership.
+#
+# WHAT IS NOT LISTED HERE, and why. kustomize refuses any resource above the
+# kustomization root ("file is not in or below" — verified, not assumed), so
+# two members of this package are delivered by their own path in versions.yaml
+# instead of by this file:
+#   * ../posture/spire/clusterspiffeid-posture.yaml — the posture SVID
+#     template. It stays where posture/up.sh and posture/verify-posture-
+#     projection.sh already load it from; moving it is a follow-up, not a
+#     silent break of two files this ticket does not own.
+#   * ../access/pomerium/ — the human front door. platform/access owns it,
+#     including the wrong chart pin this ticket reports and does not fix.
+# Both are named in component-definition.json, so the package's claims cover
+# what the package delivers, not just what this one file lists.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - spire/helmrelease.yaml
+  - spire/clusterspiffeid-mesh.yaml
+  - istio/helmrelease.yaml
+  - istio/peerauthentication-strict.yaml
+  - openbao/helmrelease.yaml
+  - openbao/jwt-auth.yaml

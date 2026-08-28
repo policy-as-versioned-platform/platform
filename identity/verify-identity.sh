@@ -113,6 +113,66 @@ check(bool(job), "OpenBao jwt-auth setup Job present")
 args = "".join(job[0]["spec"]["template"]["spec"]["containers"][0].get("args", [])) if job else ""
 check("oidc_discovery_url" in args and "spire-spiffe-oidc-discovery-provider" in args,
       "OpenBao jwt auth points at SPIRE's OIDC Discovery Provider JWKS")
+# ticket 32, live-discovered: this Job had been Failed for 27 days because the
+# URL was http:// against a Service that publishes 443 only, so OpenBao's jwt
+# method was never enabled while this script's PASS line claimed it was. The
+# three facts that make it reachable, asserted so it cannot silently rot back:
+check("https://" in args,
+      "the discovery URL is https (the provider serves TLS on :8443; the Service publishes 443 only)")
+check("spire-spiffe-oidc-discovery-provider.spire-system\"" in args
+      or "spire-spiffe-oidc-discovery-provider.spire-system " in args,
+      "the discovery host is <svc>.spire-system -- the ONLY name in both the provider's "
+      "`domains` list and its serving cert's DNS SANs")
+check("oidc_discovery_ca_pem" in args,
+      "the SPIRE trust bundle is pinned as the CA (its cert chains to no public root)")
+check(any(v.get("configMap", {}).get("name") == "spire-bundle"
+          for v in (job[0]["spec"]["template"]["spec"].get("volumes") or [])) if job else False,
+      "the Job mounts the spire-bundle ConfigMap (which is why it runs in spire-system)")
+
+# The package: one directory, one version, one set of claims (ticket 32).
+import json
+pkg = os.path.join(root)
+ver_file = os.path.join(pkg, "VERSION")
+check(os.path.exists(ver_file), "the package carries its own VERSION")
+version = open(ver_file).read().strip() if os.path.exists(ver_file) else ""
+cdpath = os.path.join(pkg, "component-definition.json")
+check(os.path.exists(cdpath), "the package carries OSCAL control claims (component-definition.json)")
+if os.path.exists(cdpath) and version:
+    cd = json.load(open(cdpath))["component-definition"]
+    check(cd["metadata"]["version"] == version,
+          f"claims and bits carry the SAME version ({version!r}) -- a package that versions "
+          f"its claims separately is two packages wearing one name")
+kpath = os.path.join(pkg, "kustomization.yaml")
+check(os.path.exists(kpath), "the package declares its membership (kustomization.yaml)")
+if os.path.exists(kpath):
+    members = yaml.safe_load(open(kpath)).get("resources", [])
+    for m in ["namespaces.yaml", "spire/helmrelease.yaml", "spire/clusterspiffeid-mesh.yaml",
+              "istio/helmrelease.yaml", "openbao/helmrelease.yaml", "openbao/jwt-auth.yaml"]:
+        check(m in members, f"package membership includes {m}")
+    check(not any(m.startswith("demo-mtls") for m in members),
+          "the ping->pong mTLS PROOF is not shipped as substrate")
+    check(not any(m.startswith("federation") for m in members),
+          "federation/ is not shipped wholesale -- each org applies its own file, not all four")
+
+# The SVID path carries the cage tier (ticket 32 / ticket 12 answer 2). The
+# posture ClusterSPIFFEID lives under ../posture/spire because posture/up.sh
+# and posture/verify-posture-projection.sh load it from there; it is still a
+# member of this package (see flux-pin.yaml) so its shape is asserted here.
+ppath = os.path.normpath(os.path.join(root, "../posture/spire/clusterspiffeid-posture.yaml"))
+if os.path.exists(ppath):
+    with open(ppath) as fh:
+        tmpl = next(d for d in yaml.safe_load_all(fh) if d)["spec"]["spiffeIDTemplate"]
+    check("/cage/" in tmpl and tmpl.index("/posture/") < tmpl.index("/cage/") < tmpl.index("/ns/"),
+          "SVID path is /posture/<version>/cage/<tier>/ns/<ns>/sa/<sa>")
+    check('posture.acme.io/tier' in tmpl,
+          "the tier segment reads the label cage-tier renders from the governed Namespace "
+          "(one render, no second policy)")
+    check('"isolated"' in tmpl,
+          "a pod with no tier label falls closed to `isolated`, never to an empty segment "
+          "and never to baseline")
+else:
+    fails.append("posture ClusterSPIFFEID not found at ../posture/spire/")
+    print("  FAIL posture ClusterSPIFFEID not found at ../posture/spire/")
 
 if fails:
     sys.exit(f"\n{len(fails)} invariant(s) broken")
@@ -172,6 +232,60 @@ else
   OUT=$(timeout 20 kubectl --context "$CTX" -n openbao get pods 2>/dev/null)
   echo "$OUT" | grep -q openbao && echo "  ok   OpenBao present" || fail "OpenBao not present"
 
+  # "present" is not "wired". For 27 days this script's PASS line said "OpenBao
+  # trusts SPIRE JWKS" while the jwt-setup Job was Failed and `bao auth list`
+  # showed nothing but token/ — the offline check above only ever proved the
+  # Job's ARGS mentioned the right words. Observe the auth method itself.
+  AUTHS=$(timeout 20 kubectl --context "$CTX" -n openbao exec openbao-0 -c openbao -- \
+    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao auth list' 2>/dev/null)
+  echo "$AUTHS" | grep -q '^jwt/' \
+    && echo "  ok   OpenBao's jwt auth method is ENABLED (bao auth list)" \
+    || fail "OpenBao has no jwt auth method enabled — run identity/up.sh (dev-mode OpenBao is in-memory: a pod restart wipes it)"
+
+  # ...and that it points at SPIRE, not at some other issuer. `status valid`
+  # is OpenBao's own word for "I fetched and parsed that discovery document",
+  # so this is the JWKS trust observed rather than asserted.
+  JWTCFG=$(timeout 20 kubectl --context "$CTX" -n openbao exec openbao-0 -c openbao -- \
+    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao read auth/jwt/config' 2>/dev/null)
+  echo "$JWTCFG" | grep -q 'oidc_discovery_url .*https://spire-spiffe-oidc-discovery-provider' \
+    || fail "OpenBao's jwt auth is not configured against SPIRE's OIDC Discovery Provider: $(echo "$JWTCFG" | tr '\n' ' ')"
+  # `status valid` is OpenBao's own word for "I fetched and parsed that discovery
+  # document". Until 2026-08-28 this line PRINTED "(status valid)" while only the
+  # configured URL string had been grepped -- the phrase was never read out of
+  # the command's output at all. Read it.
+  echo "$JWTCFG" | grep -qE '^status[[:space:]]+valid' \
+    || fail "OpenBao's jwt auth points at SPIRE but its discovery status is not valid: $(echo "$JWTCFG" | grep -E '^status' || echo 'no status line at all')"
+  echo "  ok   OpenBao's jwt auth resolves SPIRE's OIDC discovery document over TLS (bao itself reports status valid)"
+
+  # A configured default_role that does not exist means nothing can ever log in.
+  # Found live 2026-08-28: default_role was `posture`, the role was absent (the
+  # Job that creates it had been Failed for hours), and this script was green.
+  ROLE=$(echo "$JWTCFG" | awk '$1 == "default_role" { print $2 }')
+  [ -n "$ROLE" ] && [ "$ROLE" != "n/a" ] \
+    || fail "OpenBao's jwt auth declares no default_role, so no JWT-SVID can be exchanged for a token"
+  timeout 20 kubectl --context "$CTX" -n openbao exec openbao-0 -c openbao -- \
+    sh -c "BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao read auth/jwt/role/$ROLE" >/dev/null 2>&1 \
+    || fail "OpenBao's jwt auth names default_role '$ROLE' and that role DOES NOT EXIST — the trust is configured but nothing can authenticate through it"
+  echo "  ok   its default_role '$ROLE' really exists, so the trust is usable and not just configured"
+
+  # A Failed setup Job must not sit under a green, even when its effect happens
+  # to be present from an earlier run.
+  JOBSTATE=$(timeout 20 kubectl --context "$CTX" -n openbao get job openbao-reset-role \
+    -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
+  [ "$JOBSTATE" != "True" ] \
+    || fail "the openbao-reset-role Job is Failed on $CTX — the role above is a leftover, not a reconciled fact"
+
+  # The cage tier is really in the SVID path on this cluster, not just in the
+  # file. A ClusterSPIFFEID the controller-manager never reconciled would leave
+  # the old template live and nothing would say so (ticket 11's lesson).
+  LIVETMPL=$(timeout 20 kubectl --context "$CTX" get clusterspiffeid posture \
+    -o jsonpath='{.spec.spiffeIDTemplate}' 2>/dev/null)
+  case "$LIVETMPL" in
+    *"/cage/"*) echo "  ok   live posture ClusterSPIFFEID carries the /cage/<tier> segment" ;;
+    "")         fail "no posture ClusterSPIFFEID on $CTX (run posture/up.sh)" ;;
+    *)          fail "live posture ClusterSPIFFEID still has the pre-ticket-32 path: $LIVETMPL" ;;
+  esac
+
   # a meshed pod schedules with a real SPIFFE SVID: the webhook must actually
   # have injected istio-proxy (2/2, not admission-only), and that proxy's own
   # workload cert must carry a spiffe://acme.internal/... SAN.
@@ -190,7 +304,15 @@ else
     CODE=$(timeout 20 kubectl --context "$CTX" -n mesh-demo exec "$P" -c ping -- curl -sS -o /dev/null -w '%{http_code}' pong.mesh-demo/ 2>/dev/null)
     echo "$CODE" | grep -q 200 && echo "  ok   ping -> pong over SPIFFE mTLS (200)" || fail "ping -> pong over SPIFFE mTLS did not return 200"
   else
-    echo "  SKIP (live tail): no app=ping pod in mesh-demo on $CTX, the SVID + mTLS reach was not observed"
+    # live_tail_skip, not a bare echo: a bare echo left LIVE_TAIL_SKIPPED empty,
+    # so pass_line still printed PASS claiming "mTLS STRICT, authz by SPIFFE
+    # principal" when ping->pong had never been run (review, 2026-08-28).
+    live_tail_skip "no app=ping pod in mesh-demo on $CTX: the SVID + mTLS reach was not observed"
   fi
 fi
-pass_line "SPIRE is Istio's CA, mTLS STRICT, authz by SPIFFE principal, OpenBao trusts SPIRE JWKS"
+# The claim names only what was observed. "OpenBao trusts SPIRE JWKS" used to
+# be asserted from the Job's argument strings while the Job itself had been
+# Failed for 27 days; it is now `bao auth list` plus `bao read auth/jwt/config`
+# read off the running OpenBao. Federation is NOT in this line — no peer trust
+# domain serves a bundle endpoint, and verify-federation.sh exits 3 saying so.
+pass_line "SPIRE is Istio's CA, mTLS STRICT, authz by SPIFFE principal, the SVID path carries posture/<version>/cage/<tier>, and OpenBao's jwt auth is enabled against SPIRE's OIDC discovery over TLS"

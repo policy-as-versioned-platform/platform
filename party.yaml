@@ -41,6 +41,27 @@ publishes:
     name: policy
     path: distribution/policies
     revoked: []
+  # The identity substrate (eco-system ticket 32; ticket 12 answer 5). A
+  # SECOND implementations line, not a second kind: SPIRE, Istio, OpenBao,
+  # Pomerium and the two ClusterSPIFFEIDs are policy bodies' peers -- runnable
+  # machinery with control claims -- so they wear the kind the parent enum
+  # already has (ADR-0019 keeps the kind closed; the NAME underneath is free).
+  #
+  # It versions on its own tag, `identity-substrate/vX.Y.Z`, because a SPIRE
+  # chart bump has nothing to do with a Kyverno policy change and the two must
+  # not drag each other's version. `identity/VERSION` is the number; an org
+  # pins the tag with the shape in `identity/flux-pin.yaml` and Renovate bumps
+  # it. Before this line, the substrate arrived by `kubectl apply` from
+  # identity/up.sh and posture/up.sh, which is the build defect H8-14 names:
+  # Flux is the distribution arm, and a layer delivered by kubectl is outside
+  # it.
+  #
+  # No `payload_schema`: like the policy line, this is a directory of
+  # manifests, not a feed envelope. `revoked` empty: nothing withdrawn.
+  - kind: implementations
+    name: identity-substrate
+    path: identity
+    revoked: []
 
 # The platform band, moved here from risk/appetite.json's `platform` entry
 # (tolerance 10000, root_of_trust) so the tier selection reads a signed fact

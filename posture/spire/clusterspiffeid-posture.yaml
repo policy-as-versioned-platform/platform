@@ -4,7 +4,30 @@
 # and bakes  posture/<vN>  as a LEADING path segment of the SPIFFE URI.
 #
 #   base :  spiffe://acme.internal/ns/<ns>/sa/<sa>
-#   this :  spiffe://acme.internal/posture/<vN>/ns/<ns>/sa/<sa>
+#   this :  spiffe://acme.internal/posture/<vN>/cage/<tier>/ns/<ns>/sa/<sa>
+#
+# TICKET 32 / ticket 12 answer 2: the CAGE TIER now rides in the path too. The
+# SVID is the only signed carrier that crosses a trust-domain boundary, and
+# under "no gate, just cages" the tier is the one fact a counterparty would
+# price — so a segment absent from the path is invisible to a peer. The tier
+# is read from `posture.acme.io/tier`, THE SAME label ticket 26's `cage-tier`
+# MutatingPolicy renders onto the pod from its governed Namespace. There is no
+# second render and no second policy: the pod label is an output of cage-tier,
+# this template is a reader of that output (ticket 12 cross-note C7).
+#
+# `or (index …) "isolated"` is the fail-closed default the ladder requires
+# (ADR-0022): a pod with no tier label — because it is outside a governed
+# Namespace, or because cage-tier has not run — is named `isolated`, the
+# strictest running cage, never an empty segment and never `baseline`. Silence
+# is not an exemption.
+#
+# Cost, named: a tier move re-issues the SVID. spire-controller-manager
+# re-renders on Pod change and on its ~10s gcInterval, so the old identity is
+# gone within ~10s plus one TTL (`jwtTtl: 5m` below). Consumers that glob the
+# path — tuppence/reset/openbao-role.yaml's `bound_claims`, the Istio
+# AuthorizationPolicy principals — keep matching because they glob everything
+# after the version segment; a consumer that wants to demand a MINIMUM tier
+# globs `/cage/{baseline,restricted,…}` explicitly.
 #
 # Posture leads the path so Istio AuthorizationPolicy (ticket 17) matches it with
 # ONE prefix wildcard — `principals: ["spiffe://acme.internal/posture/2.0.0/*"]`
@@ -54,7 +77,7 @@ metadata:
     policy-as-versioned.dev/policy: posture
 spec:
   className: spire-system-spire
-  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/posture/{{ index .PodMeta.Labels \"posture.acme.io/version\" }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/posture/{{ index .PodMeta.Labels \"posture.acme.io/version\" }}/cage/{{ or (index .PodMeta.Labels \"posture.acme.io/tier\") \"isolated\" }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
   # Meshed pods that carry a posture (stamped by Kyverno). A pod with no posture
   # label matches only mesh-base and keeps its plain, un-postured SVID.
   podSelector:
