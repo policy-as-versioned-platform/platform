@@ -13,7 +13,8 @@
 #   live_tail_skip <reason>        print the tail's SKIP line, record it so the
 #                                  final PASS line names the unobserved tail.
 # Offline-proof scripts gate only their live tail: `if substrate_ok x; then
-# ... else live_tail_skip "$SUBSTRATE_REASON"; fi`, then `pass_line "<claim>"`.
+# ... else live_tail_skip "$SUBSTRATE_REASON"; fi`, then `pass_line "<claim>"`,
+# which exits 3 (SKIP) if any tail was skipped, 0 only when every tail was observed.
 skip() { echo "SKIP: $*"; exit 3; }
 
 substrate_ok() {
@@ -37,8 +38,9 @@ require_substrate() { substrate_ok "$1" || skip "$SUBSTRATE_REASON"; }
 LIVE_TAIL_SKIPPED=""
 live_tail_skip() { echo "SKIP (live tail): $*"; LIVE_TAIL_SKIPPED="$*"; }
 
-# pass_line <claim>: the final line. Names the live tail as unobserved when it was.
+# pass_line <claim>: the final line. Exit 0 only when every tail was observed;
+# a skipped tail makes the script's outcome SKIP (exit 3), never PASS.
 pass_line() {
-  if [ -n "$LIVE_TAIL_SKIPPED" ]; then echo "PASS (offline proof only; live tail SKIP: $LIVE_TAIL_SKIPPED): $*"
-  else echo "PASS: $*"; fi
+  if [ -n "$LIVE_TAIL_SKIPPED" ]; then echo "SKIP: offline proof holds; live tail could not look: $LIVE_TAIL_SKIPPED — $*"; exit 3; fi
+  echo "PASS: $*"
 }
