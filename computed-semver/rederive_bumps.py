@@ -29,9 +29,11 @@ computed here, not read off kyverno's exit code directly.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -106,9 +108,21 @@ def classify_policy(
     action_old, action_new = action_of(old_file), action_of(new_file)
     narrowed = widened = False
     moves = []
-    for fx in fixtures:
-        adm_old = admitted(action_old, cel_pass(old_file, fx))
-        adm_new = admitted(action_new, cel_pass(new_file, fx))
+    # One `kyverno apply` per (side, fixture) is one process, and the generated
+    # corpus is now 164 pods -- serial, that is six minutes and the gate's
+    # 300s timeout reads a slow check as a failed one. The calls are
+    # independent subprocesses, `pool.map` keeps them in fixture order, and any
+    # RuntimeError still surfaces on the first result read, so the verdict and
+    # its `moves` sentence are byte-identical to the serial loop.
+    # ponytail: threads because the work is all subprocess wait; if kyverno
+    # ever grows a batch mode, one call per side beats any pool.
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 2))) as pool:
+        olds = pool.map(lambda fx: cel_pass(old_file, fx), fixtures)
+        news = pool.map(lambda fx: cel_pass(new_file, fx), fixtures)
+        pairs = list(zip(fixtures, list(olds), list(news)))
+    for fx, passed_old, passed_new in pairs:
+        adm_old = admitted(action_old, passed_old)
+        adm_new = admitted(action_new, passed_new)
         if adm_old and not adm_new:
             narrowed = True
             moves.append(f"{fx.stem}: admitted -> REFUSED")

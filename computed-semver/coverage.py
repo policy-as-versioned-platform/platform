@@ -116,8 +116,14 @@ def cells_count(predicate_count: int) -> int:
 def pairwise_gap_sentence() -> str:
     return (
         "axes were combined pairwise (predicate-expression x version-pin, "
-        "predicate-expression x tier-label, version-pin x tier-label), so no "
-        "three-way interaction was built"
+        "predicate-expression x tier-label, and every pair among version-pin, "
+        "tier-label, namespace and workload-declares), so no three-way "
+        "interaction was built; predicate-expression x namespace was not built "
+        "because no subject predicate reads a Namespace (corpus_generator fails "
+        "generation the day one does), and predicate-expression x "
+        "workload-declares was not built because the declared-hardening axis "
+        "writes the same container securityContext fields the expression axis's "
+        "own probes already write"
     )
 
 

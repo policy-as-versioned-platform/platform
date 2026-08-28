@@ -63,17 +63,55 @@ DISTRIBUTION = REPO / "distribution"
 
 # Bumped by hand when this module's own logic changes. Not part of the
 # subject, so it cannot itself bump a policy version (spec.md, "The corpus").
-GENERATOR_VERSION = "0.1.3"
+GENERATOR_VERSION = "0.2.0"
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
-TIER_VALUES = ["absent", "baseline", "restricted", "quarantine"]
+GOVERNED_LABEL = "policy-as-versioned.dev/governed"
+# `isolated` is ADR-0022's bottom rung. It is a real label value a pod can
+# carry, and (since 4.0.0 reads the tier from the Namespace and clobbers the
+# label) a real value the two served bodies disagree about, so it is a real
+# corpus case rather than a rung nobody can be in.
+TIER_VALUES = ["absent", "baseline", "restricted", "quarantine", "isolated"]
 OUTSIDE_PIN = "0.0.0-outside-array"  # never a real platform version
+
+# The Namespace a pod lands in. ADR-0022 moved the tier's SOURCE here: 4.0.0
+# reads `namespaceObject` and overwrites the pod's own label, 3.0.0 read the
+# label. Crossed with the tier axis this generates the three cases that
+# disagreement needs -- a pod in no modelled Namespace at all (CEL's
+# `namespaceObject == null`), a pod in a governed Namespace carrying NO tier
+# (which 4.0.0 fails closed to `isolated`), and a pod whose own label is a
+# DIFFERENT tier from its Namespace's (a forged tier, honoured by 3.0.0 and
+# clobbered by 4.0.0).
+NS_VALUES = ["none", "governed-no-tier", "governed-quarantine"]
+
+# What the WORKLOAD declares for itself. The cage is tighten-only from 4.0.0
+# (ADR-0022), so "the workload declared readOnlyRootFilesystem/runAsNonRoot
+# true at a rung whose dial writes false" is the case that separates the two
+# bodies, and it cannot be reached by varying the policy alone.
+DECLARES_VALUES = ["nothing", "hardened"]
 
 # The baseline value each axis holds at when it is NOT the one of the pair
 # being varied -- what makes "combine pairwise, not fully" concrete.
 BASELINE_TIER = "baseline"
 BASELINE_PIN_CHOICE = "inside"
+BASELINE_NS = "none"
+BASELINE_DECLARES = "nothing"
+
+
+def namespace_object(ns_choice: str) -> dict | None:
+    """The Namespace object for one value of the namespace axis. None is a
+    real case, not a missing one: the pod is in no Namespace this corpus
+    models, which is exactly CEL's `namespaceObject == null`."""
+    if ns_choice == "none":
+        return None
+    labels = {GOVERNED_LABEL: "true"}
+    if ns_choice == "governed-quarantine":
+        labels[TIER_LABEL] = "quarantine"
+    return {
+        "apiVersion": "v1", "kind": "Namespace",
+        "metadata": {"name": f"corpus-{ns_choice}", "labels": labels},
+    }
 
 
 def _import_by_path(name: str, path: Path):
@@ -412,8 +450,9 @@ class Entry:
     filename: str
     pod: dict
     source: str   # "old" | "new" | "both" (set on union)
-    pair: str     # "expr-pin" | "expr-tier" | "pin-tier"
+    pair: str     # which two axes this cell varies
     axis_detail: str
+    ns: dict | None = None  # the Namespace object this pod lands in, if any
 
 
 def _base_pod() -> dict:
@@ -433,50 +472,125 @@ def generate_spine(subject_dir: Path, inside_pin: str, source_tag: str) -> list[
     if not preds:
         raise ValueError(f"{subject_dir}: no predicate expressions found -- nothing to generate against")
 
-    def build(expr_choice, pin_choice: str, tier_choice: str) -> dict:
+    def build(expr_choice, pin_choice: str, tier_choice: str,
+               ns_choice: str = BASELINE_NS, declares: str = BASELINE_DECLARES) -> tuple[dict, dict | None]:
         pod = _base_pod()
+        ns = namespace_object(ns_choice)
+        if ns is not None:
+            pod["metadata"]["namespace"] = ns["metadata"]["name"]
         _set_label(pod, PIN_LABEL, inside_pin if pin_choice == "inside" else OUTSIDE_PIN)
         if tier_choice != "absent":
             _set_label(pod, TIER_LABEL, tier_choice)
+        if declares == "hardened":
+            # Written BEFORE the expression probe on purpose: a probe that
+            # also writes these fields is the axis that owns that cell and
+            # must win -- the declared-hardening axis must never silently
+            # change what a predicate's satisfied/violated state means.
+            _set_container_sc(pod, "readOnlyRootFilesystem", True)
+            _set_container_sc(pod, "runAsNonRoot", True)
         if expr_choice is not None:
             pred, state = expr_choice
             getattr(probe_for(pred), state)(pod)
-        return pod
+        return pod, ns
 
     entries: list[Entry] = []
     seen: set[str] = set()
 
-    def add(pod: dict, pair: str, detail: str) -> None:
+    def add(pod: dict, ns: dict | None, pair: str, detail: str) -> None:
+        # The digest covers the Namespace as well as the pod: two cells that
+        # differ ONLY in the Namespace are two genuinely different inputs to
+        # the cage (that is the whole point of the namespace axis), so
+        # hashing the pod alone would collapse them into one file and lose
+        # the case.
         text = yaml.safe_dump(pod, sort_keys=True)
+        if ns is not None:
+            text += "---\n" + yaml.safe_dump(ns, sort_keys=True)
         digest = hashlib.sha256(text.encode()).hexdigest()[:16]
         fname = f"{pair}-{digest}.yaml"
         if fname in seen:
             return
         seen.add(fname)
-        entries.append(Entry(fname, pod, source_tag, pair, detail))
+        entries.append(Entry(fname, pod, source_tag, pair, detail, ns=ns))
 
     expr_states = [(p, s) for p in preds for s in ("satisfied", "violated", "absent")]
     pins = ["inside", "outside"]
 
-    # expr x pin, tier held at its baseline
+    # expr x pin, every other axis at its baseline
     for pred, state in expr_states:
         for pin_choice in pins:
-            pod = build((pred, state), pin_choice, BASELINE_TIER)
-            add(pod, "expr-pin", f"{pred.policy}:{pred.name}@{state} pin={pin_choice}")
+            pod, ns = build((pred, state), pin_choice, BASELINE_TIER)
+            add(pod, ns, "expr-pin", f"{pred.policy}:{pred.name}@{state} pin={pin_choice}")
 
-    # expr x tier, pin held at its baseline
+    # expr x tier
     for pred, state in expr_states:
         for tier_choice in TIER_VALUES:
-            pod = build((pred, state), BASELINE_PIN_CHOICE, tier_choice)
-            add(pod, "expr-tier", f"{pred.policy}:{pred.name}@{state} tier={tier_choice}")
+            pod, ns = build((pred, state), BASELINE_PIN_CHOICE, tier_choice)
+            add(pod, ns, "expr-tier", f"{pred.policy}:{pred.name}@{state} tier={tier_choice}")
 
-    # pin x tier, expression held at its baseline (no override at all)
+    # expr x namespace and expr x declares are NOT built, and that omission
+    # is published (see `coverage.pairwise_gap_sentence`) rather than left
+    # for a reader to notice from entry names.
+    #
+    #   expr x namespace: no predicate can read a Namespace. Every
+    #   matchConditions/validations expression in every subject is written
+    #   against `object`; `namespaceObject` appears only in cage-tier's
+    #   `variables`, which are not predicates. The assertion below is the
+    #   check, not the claim: the day a subject adds a namespace-reading
+    #   predicate, generation fails loud instead of silently under-covering.
+    #
+    #   expr x declares: the declared-hardening axis writes exactly the
+    #   container securityContext fields `probe_for`'s own container/spec
+    #   boolean probes write, so for every predicate that READS them the
+    #   expression axis already builds both values, and for every predicate
+    #   that does not, the cell is a pod no predicate can tell apart from
+    #   the one expr-pin already builds.
+    #
+    # Both axes exist for the CAGE comparison (cage_engine's Track 2, pure
+    # python over every entry), which sees them through the pairs below.
+    namespace_readers = [p for p in preds if "namespaceObject" in p.expression]
+    if namespace_readers:
+        raise ValueError(
+            "a subject predicate now reads namespaceObject "
+            f"({[f'{p.policy}:{p.name}' for p in namespace_readers]}) -- the expression x "
+            "namespace pair is no longer unobservable and must be generated"
+        )
+
+    # every pair among the four non-expression axes, expression held at its
+    # baseline (no override at all)
     for pin_choice in pins:
         for tier_choice in TIER_VALUES:
-            pod = build(None, pin_choice, tier_choice)
-            add(pod, "pin-tier", f"pin={pin_choice} tier={tier_choice}")
+            pod, ns = build(None, pin_choice, tier_choice)
+            add(pod, ns, "pin-tier", f"pin={pin_choice} tier={tier_choice}")
+    for pin_choice in pins:
+        for ns_choice in NS_VALUES:
+            pod, ns = build(None, pin_choice, BASELINE_TIER, ns_choice=ns_choice)
+            add(pod, ns, "pin-ns", f"pin={pin_choice} ns={ns_choice}")
+    for pin_choice in pins:
+        for declares in DECLARES_VALUES:
+            pod, ns = build(None, pin_choice, BASELINE_TIER, declares=declares)
+            add(pod, ns, "pin-declares", f"pin={pin_choice} declares={declares}")
+    for tier_choice in TIER_VALUES:
+        for ns_choice in NS_VALUES:
+            pod, ns = build(None, BASELINE_PIN_CHOICE, tier_choice, ns_choice=ns_choice)
+            add(pod, ns, "tier-ns", f"tier={tier_choice} ns={ns_choice}")
+    for tier_choice in TIER_VALUES:
+        for declares in DECLARES_VALUES:
+            pod, ns = build(None, BASELINE_PIN_CHOICE, tier_choice, declares=declares)
+            add(pod, ns, "tier-declares", f"tier={tier_choice} declares={declares}")
+    for ns_choice in NS_VALUES:
+        for declares in DECLARES_VALUES:
+            pod, ns = build(None, BASELINE_PIN_CHOICE, BASELINE_TIER,
+                             ns_choice=ns_choice, declares=declares)
+            add(pod, ns, "ns-declares", f"ns={ns_choice} declares={declares}")
 
     return entries
+
+
+def _ns_filename(pod_filename: str) -> str:
+    """cage_engine.namespace_for's own convention: `<entry>.ns.yaml` beside
+    `<entry>.yaml`. Kept in one place so the reader and the writer cannot
+    drift apart."""
+    return pod_filename[:-len(".yaml")] + ".ns.yaml"
 
 
 def union_spines(old_entries: list[Entry], new_entries: list[Entry]) -> list[Entry]:
@@ -511,9 +625,20 @@ def build_manifest(old_subject_dir: Path, new_subject_dir: Path, inside_pin: str
     spine_dir.mkdir(parents=True, exist_ok=True)
     for e in union_entries:
         (spine_dir / e.filename).write_text(yaml.safe_dump(e.pod, sort_keys=True))
+        # The Namespace goes in a SIBLING file, never as a second document
+        # in the pod file: every consumer of a spine entry (coverage.py,
+        # witness_set.py, rederive_bumps' kyverno pass) reads it as one Pod,
+        # and a two-document stream would break all three. cage_engine's
+        # `namespace_for` reads the sibling by the same convention.
+        if e.ns is not None:
+            (spine_dir / _ns_filename(e.filename)).write_text(yaml.safe_dump(e.ns, sort_keys=True))
 
     checksum = hashlib.sha256(
-        "".join(f"{e.filename}\n{yaml.safe_dump(e.pod, sort_keys=True)}" for e in union_entries).encode()
+        "".join(
+            f"{e.filename}\n{yaml.safe_dump(e.pod, sort_keys=True)}"
+            + ("" if e.ns is None else yaml.safe_dump(e.ns, sort_keys=True))
+            for e in union_entries
+        ).encode()
     ).hexdigest()
 
     manifest = {
@@ -530,10 +655,14 @@ def build_manifest(old_subject_dir: Path, new_subject_dir: Path, inside_pin: str
                     "new": len(new_entries),
                     "union": len(union_entries),
                 },
-                "axes": ["predicate-expression", "version-pin", "tier-label"],
+                "axes": ["predicate-expression", "version-pin", "tier-label",
+                          "namespace", "workload-declares"],
                 "combination": "pairwise",
                 "entries": [
-                    {"file": f"spine/{e.filename}", "source": e.source, "pair": e.pair}
+                    dict(
+                        {"file": f"spine/{e.filename}", "source": e.source, "pair": e.pair},
+                        **({} if e.ns is None else {"namespace": f"spine/{_ns_filename(e.filename)}"}),
+                    )
                     for e in union_entries
                 ],
             },
@@ -645,23 +774,60 @@ def selfcheck() -> None:
     # 2. axes combine pairwise, never fully -- structurally: whichever axis
     # is not part of the pair being varied stays pinned at its baseline for
     # every entry in that group.
+    BUILT_PAIRS = {"expr-pin", "expr-tier", "pin-tier", "pin-ns", "pin-declares",
+                    "tier-ns", "tier-declares", "ns-declares"}
     for e in old_entries:
-        tier = e.pod["metadata"]["labels"].get(TIER_LABEL, "<absent>")
-        pin = e.pod["metadata"]["labels"].get(PIN_LABEL)
-        if e.pair == "expr-pin":
+        labels = e.pod["metadata"]["labels"]
+        tier = labels.get(TIER_LABEL, "<absent>")
+        pin = labels.get(PIN_LABEL)
+        hardened = bool((e.pod["spec"]["containers"][0].get("securityContext") or {}))
+        assert e.pair in BUILT_PAIRS, e.pair
+        # whichever axis is NOT in this cell's pair sits at its baseline
+        if "tier" not in e.pair:
             assert tier == BASELINE_TIER, (e.filename, tier)
-        elif e.pair == "expr-tier":
+        if "pin" not in e.pair:
             assert pin == "1.0.0", (e.filename, pin)
-        elif e.pair != "pin-tier":
-            raise AssertionError(e.pair)
+        if "ns" not in e.pair:
+            assert e.ns is None, (e.filename, e.ns)
+        if "declares" not in e.pair and not e.pair.startswith("expr"):
+            # an expression probe may legitimately write securityContext
+            # itself; a non-expression cell may not, unless it is the
+            # declared-hardening axis's own cell.
+            assert not hardened, (e.filename, e.pod["spec"]["containers"][0])
 
     # 3. version-pin axis covers inside AND outside the array
     pins_seen = {e.pod["metadata"]["labels"].get(PIN_LABEL) for e in old_entries}
     assert {"1.0.0", OUTSIDE_PIN} <= pins_seen, pins_seen
 
-    # 4. tier axis covers all four states, including truly absent (no label)
+    # 4. tier axis covers every rung, including ADR-0022's `isolated` bottom
+    # rung and a truly absent label
     tiers_seen = {e.pod["metadata"]["labels"].get(TIER_LABEL, "<absent>") for e in old_entries}
-    assert tiers_seen == {"<absent>", "baseline", "restricted", "quarantine"}, tiers_seen
+    assert tiers_seen == {"<absent>", "baseline", "restricted", "quarantine", "isolated"}, tiers_seen
+
+    # 4b. the cage-ladder cases ticket 09 item 2 / ADR-0022 need, each read
+    # back off the real generated entries rather than asserted in the
+    # abstract: a pod labelled `isolated`; a pod in a GOVERNED Namespace
+    # carrying no tier at all (which 4.0.0 fails closed to `isolated`); a
+    # pod whose own label names a DIFFERENT tier from its Namespace's (a
+    # forged tier, honoured by 3.0.0 and clobbered by 4.0.0); and a pod that
+    # declares readOnlyRootFilesystem/runAsNonRoot true while sitting at
+    # `baseline`, the rung whose dial writes false.
+    def _ns_labels(e):
+        return {} if e.ns is None else (e.ns["metadata"].get("labels") or {})
+
+    assert any(e.pod["metadata"]["labels"].get(TIER_LABEL) == "isolated" for e in old_entries)
+    assert any(_ns_labels(e).get(GOVERNED_LABEL) == "true" and TIER_LABEL not in _ns_labels(e)
+                for e in old_entries), "no governed Namespace with no tier"
+    assert any(
+        _ns_labels(e).get(TIER_LABEL) not in (None, e.pod["metadata"]["labels"].get(TIER_LABEL))
+        for e in old_entries
+    ), "no pod whose own tier label disagrees with its Namespace's"
+    assert any(
+        e.pod["metadata"]["labels"].get(TIER_LABEL) == "baseline"
+        and (e.pod["spec"]["containers"][0].get("securityContext") or {}).get("readOnlyRootFilesystem") is True
+        and (e.pod["spec"]["containers"][0].get("securityContext") or {}).get("runAsNonRoot") is True
+        for e in old_entries
+    ), "no pod declaring readOnlyRootFilesystem/runAsNonRoot true at baseline"
 
     # 5. no band, no residual, anywhere, ever
     for e in old_entries + new_entries:
@@ -705,7 +871,8 @@ def selfcheck() -> None:
 
         # claim source lives in the manifest, never on the entry
         for rec in spine["entries"]:
-            assert set(rec) == {"file", "source", "pair"}, rec
+            assert set(rec) <= {"file", "source", "pair", "namespace"}, rec
+            assert {"file", "source", "pair"} <= set(rec), rec
             pod_text = (out_dir / rec["file"]).read_text()
             assert "source" not in pod_text and "pair" not in pod_text
             assert "band" not in pod_text and "residual" not in pod_text
@@ -772,10 +939,16 @@ def selfcheck() -> None:
 
     print(
         "selfcheck ok: predicate expressions extracted from matchConditions and "
-        "validations; each gets satisfied/violated/absent; axes combine pairwise "
-        "(expr x pin, expr x tier, pin x tier -- never a full 3-way cross); "
-        "pin covers inside/outside the array; tier covers "
-        "absent/baseline/restricted/quarantine; a rule only the retired policy "
+        "validations; each gets satisfied/violated/absent; five axes combine "
+        "pairwise (expr x pin, expr x tier, and every pair among pin, tier, "
+        "namespace and workload-declares -- never a full cross), with expr x "
+        "namespace built only when a predicate can read one, generation failing "
+        "loud the day it can; pin covers inside/outside the array; tier covers "
+        "absent/baseline/restricted/quarantine/isolated; the cage-ladder cases "
+        "ADR-0022 needs are all really generated (a pod labelled isolated, a pod "
+        "in a governed Namespace with no tier, a pod whose label disagrees with "
+        "its Namespace, a pod declaring readOnlyRootFilesystem and runAsNonRoot "
+        "true at baseline); a rule only the retired policy "
         "can distinguish survives the union; generation is deterministic; the "
         "manifest carries checksum/counts/generator_version/wall_clock/"
         "per-population provenance; no band or residual anywhere; claim source "

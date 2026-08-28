@@ -1,16 +1,18 @@
-generator_version: 0.1.3
-wall_clock: 0.1547276247292757
+generator_version: 0.2.0
+wall_clock: 0.2401422499679029
 populations:
   generated-spine:
-    checksum: sha256:7a3053654b55ed3f3c8e536f78762dce25cab82f50a0eaaeaa6a533e3c7bb709
+    checksum: sha256:884de5520ea289f9bee88fad0ba2b50680866956574886d7f37021c24300ca41
     counts:
-      old: 83
-      new: 95
-      union: 105
+      old: 139
+      new: 152
+      union: 164
     axes:
     - predicate-expression
     - version-pin
     - tier-label
+    - namespace
+    - workload-declares
     combination: pairwise
     entries:
     - file: spine/expr-pin-0422c0e0f9fd4cc2.yaml
@@ -136,8 +138,14 @@ populations:
     - file: spine/expr-tier-18c6b4506c6b9bb4.yaml
       source: new
       pair: expr-tier
+    - file: spine/expr-tier-1bb8354e230e176b.yaml
+      source: old
+      pair: expr-tier
     - file: spine/expr-tier-1ed04ab680b2aaed.yaml
       source: old
+      pair: expr-tier
+    - file: spine/expr-tier-2050be08b1db7a09.yaml
+      source: both
       pair: expr-tier
     - file: spine/expr-tier-22bc9ac31183b31e.yaml
       source: both
@@ -172,19 +180,34 @@ populations:
     - file: spine/expr-tier-376f0f6a74bb1d2c.yaml
       source: both
       pair: expr-tier
+    - file: spine/expr-tier-37ab5935da7a4dfd.yaml
+      source: new
+      pair: expr-tier
     - file: spine/expr-tier-38d4d17e942d021a.yaml
       source: new
       pair: expr-tier
     - file: spine/expr-tier-3e9bec88fc3c2582.yaml
       source: both
       pair: expr-tier
+    - file: spine/expr-tier-42ea4b79f2f37962.yaml
+      source: new
+      pair: expr-tier
     - file: spine/expr-tier-46007c07a1005f0c.yaml
       source: old
+      pair: expr-tier
+    - file: spine/expr-tier-4895a97546cb97ca.yaml
+      source: both
       pair: expr-tier
     - file: spine/expr-tier-52a6f394bc8b4d88.yaml
       source: new
       pair: expr-tier
     - file: spine/expr-tier-54e828ecc6cd09e4.yaml
+      source: both
+      pair: expr-tier
+    - file: spine/expr-tier-55379d6fe78a4f1e.yaml
+      source: both
+      pair: expr-tier
+    - file: spine/expr-tier-5b627eaf16ee8fa7.yaml
       source: both
       pair: expr-tier
     - file: spine/expr-tier-5f6dcb7eb0222341.yaml
@@ -201,6 +224,9 @@ populations:
       pair: expr-tier
     - file: spine/expr-tier-6c88b7f659bb7a4c.yaml
       source: both
+      pair: expr-tier
+    - file: spine/expr-tier-6f39ba6c2925dd2c.yaml
+      source: old
       pair: expr-tier
     - file: spine/expr-tier-7353148d3b56dfd8.yaml
       source: old
@@ -220,7 +246,16 @@ populations:
     - file: spine/expr-tier-82c544d4d83cd6f0.yaml
       source: both
       pair: expr-tier
+    - file: spine/expr-tier-83006c177b2e8e17.yaml
+      source: both
+      pair: expr-tier
     - file: spine/expr-tier-862e9a593d53f479.yaml
+      source: both
+      pair: expr-tier
+    - file: spine/expr-tier-890394fc4232f648.yaml
+      source: new
+      pair: expr-tier
+    - file: spine/expr-tier-894a1cb168eb063d.yaml
       source: both
       pair: expr-tier
     - file: spine/expr-tier-8ce07a469c36377f.yaml
@@ -244,6 +279,9 @@ populations:
     - file: spine/expr-tier-acb85d0cd0308f23.yaml
       source: both
       pair: expr-tier
+    - file: spine/expr-tier-ad30bed020b927cf.yaml
+      source: both
+      pair: expr-tier
     - file: spine/expr-tier-b0ab449e67c5eb42.yaml
       source: both
       pair: expr-tier
@@ -253,8 +291,14 @@ populations:
     - file: spine/expr-tier-b60cb6a803aea8ca.yaml
       source: both
       pair: expr-tier
+    - file: spine/expr-tier-b6c8587a0dd80d1b.yaml
+      source: both
+      pair: expr-tier
     - file: spine/expr-tier-bddee3cfcddf9aa2.yaml
       source: new
+      pair: expr-tier
+    - file: spine/expr-tier-cce3d6a0b98de276.yaml
+      source: both
       pair: expr-tier
     - file: spine/expr-tier-d5ae4235772c05ac.yaml
       source: new
@@ -269,6 +313,9 @@ populations:
       source: new
       pair: expr-tier
     - file: spine/expr-tier-dfcb707ba890b024.yaml
+      source: both
+      pair: expr-tier
+    - file: spine/expr-tier-e26beac95d8725ee.yaml
       source: both
       pair: expr-tier
     - file: spine/expr-tier-e9279e7fa24a2687.yaml
@@ -295,6 +342,9 @@ populations:
     - file: spine/expr-tier-f556cef5e8efbf54.yaml
       source: old
       pair: expr-tier
+    - file: spine/expr-tier-f60c5a6f99e5572e.yaml
+      source: both
+      pair: expr-tier
     - file: spine/expr-tier-f7280ab150f49d5c.yaml
       source: both
       pair: expr-tier
@@ -304,6 +354,62 @@ populations:
     - file: spine/expr-tier-fbb8a8abd3782804.yaml
       source: new
       pair: expr-tier
+    - file: spine/ns-declares-130c51f5a416583f.yaml
+      source: both
+      pair: ns-declares
+    - file: spine/ns-declares-1db5bcc1e654287e.yaml
+      source: both
+      pair: ns-declares
+      namespace: spine/ns-declares-1db5bcc1e654287e.ns.yaml
+    - file: spine/ns-declares-1e95b53f4c52995a.yaml
+      source: both
+      pair: ns-declares
+      namespace: spine/ns-declares-1e95b53f4c52995a.ns.yaml
+    - file: spine/ns-declares-26c5bbf7c8dec9a8.yaml
+      source: both
+      pair: ns-declares
+    - file: spine/ns-declares-8f9050cb63e886ee.yaml
+      source: both
+      pair: ns-declares
+      namespace: spine/ns-declares-8f9050cb63e886ee.ns.yaml
+    - file: spine/ns-declares-964191f9e705b5d9.yaml
+      source: both
+      pair: ns-declares
+      namespace: spine/ns-declares-964191f9e705b5d9.ns.yaml
+    - file: spine/pin-declares-130c51f5a416583f.yaml
+      source: both
+      pair: pin-declares
+    - file: spine/pin-declares-26c5bbf7c8dec9a8.yaml
+      source: both
+      pair: pin-declares
+    - file: spine/pin-declares-41c910233cb036c8.yaml
+      source: both
+      pair: pin-declares
+    - file: spine/pin-declares-9166c945d8ea3be5.yaml
+      source: both
+      pair: pin-declares
+    - file: spine/pin-ns-1db5bcc1e654287e.yaml
+      source: both
+      pair: pin-ns
+      namespace: spine/pin-ns-1db5bcc1e654287e.ns.yaml
+    - file: spine/pin-ns-1e95b53f4c52995a.yaml
+      source: both
+      pair: pin-ns
+      namespace: spine/pin-ns-1e95b53f4c52995a.ns.yaml
+    - file: spine/pin-ns-26c5bbf7c8dec9a8.yaml
+      source: both
+      pair: pin-ns
+    - file: spine/pin-ns-79aa1292efa90bce.yaml
+      source: both
+      pair: pin-ns
+      namespace: spine/pin-ns-79aa1292efa90bce.ns.yaml
+    - file: spine/pin-ns-9166c945d8ea3be5.yaml
+      source: both
+      pair: pin-ns
+    - file: spine/pin-ns-dda0208d2fbdc19d.yaml
+      source: both
+      pair: pin-ns
+      namespace: spine/pin-ns-dda0208d2fbdc19d.ns.yaml
     - file: spine/pin-tier-13b49256c5405f0b.yaml
       source: both
       pair: pin-tier
@@ -328,3 +434,94 @@ populations:
     - file: spine/pin-tier-dfcb707ba890b024.yaml
       source: both
       pair: pin-tier
+    - file: spine/pin-tier-f60c5a6f99e5572e.yaml
+      source: both
+      pair: pin-tier
+    - file: spine/pin-tier-fb2074f3d3df5444.yaml
+      source: both
+      pair: pin-tier
+    - file: spine/tier-declares-04446dcef10c368c.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-130c51f5a416583f.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-13b49256c5405f0b.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-26c5bbf7c8dec9a8.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-5f6dcb7eb0222341.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-6a1883daf1cc7b09.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-7749c3036c6b1807.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-dfcb707ba890b024.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-f60c5a6f99e5572e.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-declares-fd4c890c03e649c1.yaml
+      source: both
+      pair: tier-declares
+    - file: spine/tier-ns-0358b1af5edaf5ab.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-0358b1af5edaf5ab.ns.yaml
+    - file: spine/tier-ns-13b49256c5405f0b.yaml
+      source: both
+      pair: tier-ns
+    - file: spine/tier-ns-1db5bcc1e654287e.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-1db5bcc1e654287e.ns.yaml
+    - file: spine/tier-ns-1e95b53f4c52995a.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-1e95b53f4c52995a.ns.yaml
+    - file: spine/tier-ns-26c5bbf7c8dec9a8.yaml
+      source: both
+      pair: tier-ns
+    - file: spine/tier-ns-3ebc3707d0128df9.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-3ebc3707d0128df9.ns.yaml
+    - file: spine/tier-ns-5f6dcb7eb0222341.yaml
+      source: both
+      pair: tier-ns
+    - file: spine/tier-ns-7d217dad3fed0eeb.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-7d217dad3fed0eeb.ns.yaml
+    - file: spine/tier-ns-8c2001d9c3399825.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-8c2001d9c3399825.ns.yaml
+    - file: spine/tier-ns-9a4b92b228c90764.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-9a4b92b228c90764.ns.yaml
+    - file: spine/tier-ns-d7180b78e37bef53.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-d7180b78e37bef53.ns.yaml
+    - file: spine/tier-ns-dfcb707ba890b024.yaml
+      source: both
+      pair: tier-ns
+    - file: spine/tier-ns-e891a60413d1e233.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-e891a60413d1e233.ns.yaml
+    - file: spine/tier-ns-e9c7cf7b9ce97ba2.yaml
+      source: both
+      pair: tier-ns
+      namespace: spine/tier-ns-e9c7cf7b9ce97ba2.ns.yaml
+    - file: spine/tier-ns-f60c5a6f99e5572e.yaml
+      source: both
+      pair: tier-ns

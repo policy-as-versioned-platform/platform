@@ -232,15 +232,33 @@ sha = sys.argv[1]
 import re
 p = "distribution/versions.yaml"
 text = open(p).read()
-# Locate the array block by shape (the `- versions:` key and its run of
-# `- { version: ... }` elements), never by its verbatim content: the real
-# array grows with every release and the template around it changes too.
-block = re.compile(r'^(?P<indent>[ ]+)- versions:\n(?P<elems>(?:(?P=indent)    - \{ version:.*\n)+)', re.M)
+# Locate the array block by shape (the `- versions:` key and the run of
+# element AND COMMENT lines under it), never by its verbatim content: the
+# real array grows with every release and the template around it changes too.
+#
+# The comment alternative is load-bearing, not decoration. Ticket 26 added
+# the 4.0.0 element behind an eight-line comment block; an elements-only run
+# stopped at that comment and left 4.0.0 sitting in the array AFTER the
+# rewrite, so this case -- which exists to prove an EMPTY predecessor window
+# -- was silently gating 9.0.0 against a real predecessor. The claim is
+# unchanged and now actually held: the assertion below re-reads the file and
+# demands the array really is [9.0.0] before the gate is asked anything.
+block = re.compile(
+    r'^(?P<indent>[ ]+)- versions:\n'
+    r'(?P<elems>(?:(?P=indent)    (?:- \{ version:|#).*\n)+)', re.M)
 matches = block.findall(text)
 assert len(matches) == 1, f"expected exactly one versions.yaml array block, found {len(matches)}"
 m = block.search(text)
 new = f'{m.group("indent")}- versions:\n{m.group("indent")}    - {{ version: "9.0.0", tag: "policy/v9.0.0", commit: "{sha}" }}\n'
 open(p, "w").write(text[:m.start()] + new + text[m.end():])
+
+import yaml
+elements = yaml.safe_load(open(p).read())["spec"]["inputs"][0]["versions"]
+assert [e["version"] for e in elements] == ["9.0.0"], (
+    f"the array rewrite left {[e['version'] for e in elements]} -- B3 needs a genuinely "
+    f"EMPTY predecessor window, and a leftover element makes its 'no predecessor' "
+    f"assertion untestable"
+)
 PY
 git add distribution/versions.yaml
 git commit -q -m "scratch: array now [9.0.0] only -- an empty predecessor window for this candidate"
