@@ -2,11 +2,11 @@
   "component-definition": {
     "uuid": "b0c2f0d0-0000-4000-8000-6964656e7469",
     "metadata": {
-      "title": "identity-substrate — SPIRE, Istio, OpenBao, Pomerium and the two ClusterSPIFFEIDs",
+      "title": "identity-substrate \u2014 SPIRE, Istio, OpenBao, Pomerium and the two ClusterSPIFFEIDs",
       "last-modified": "2026-08-28T00:00:00Z",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "oscal-version": "1.1.2",
-      "remarks": "The control claims of ONE self-versioned implementations package (ticket 32; ticket 12 answer 5). ADR-0017: a control claim belongs to whoever ships the implementation, so the platform claims these here rather than every adopter re-claiming them per repo. `version` MUST equal the sibling VERSION file — verify-identity.sh asserts it, because a package whose claims and whose bits version separately is two packages wearing one name. Each implemented-requirement names the manifest that implements it in `remarks`; where a Kyverno policy backs the claim, the `Check_Id` prop carries the policy name in the estate's usual form so result2oscal.py can string-match a PolicyReport result to it. Claims that are NOT yet true are absent, not weakened: there is no ia-3 device claim here because no device has ever attested, and no cross-domain federation claim because no peer trust domain serves a bundle endpoint (see federation/ and verify-federation.sh)."
+      "remarks": "The control claims of ONE self-versioned implementations package (ticket 32; ticket 12 answer 5). ADR-0017: a control claim belongs to whoever ships the implementation, so the platform claims these here rather than every adopter re-claiming them per repo. `version` MUST equal the sibling VERSION file \u2014 verify-identity.sh asserts it, because a package whose claims and whose bits version separately is two packages wearing one name. Each implemented-requirement names the manifest that implements it in `remarks`; where a Kyverno policy backs the claim, the `Check_Id` prop carries the policy name in the estate's usual form so result2oscal.py can string-match a PolicyReport result to it. Claims that are NOT yet true are absent, not weakened: there is no ia-3 device claim here because no device has ever attested, and no cross-domain federation claim because no peer trust domain serves a bundle endpoint (see federation/ and verify-federation.sh)."
     },
     "components": [
       {
@@ -23,19 +23,19 @@
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7401",
                 "control-id": "ia-9",
-                "description": "Service Identification and Authentication — every meshed workload is issued an X.509-SVID by the SPIRE CA, keyed on k8s_psat node attestation plus pod selectors, never on network position.",
+                "description": "Service Identification and Authentication \u2014 every meshed workload is issued an X.509-SVID by the SPIRE CA, keyed on k8s_psat node attestation plus pod selectors, never on network position.",
                 "remarks": "spire/helmrelease.yaml; spire/clusterspiffeid-mesh.yaml"
               },
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7402",
                 "control-id": "ia-5",
-                "description": "Authenticator Management — SVIDs are short-lived and rotated by SPIRE without operator action: X.509 ttl 1h, JWT jwtTtl 5m, and the CA itself rotates on a ~24h TTL.",
+                "description": "Authenticator Management \u2014 SVIDs are short-lived and rotated by SPIRE without operator action: X.509 ttl 1h, JWT jwtTtl 5m, and the CA itself rotates on a ~24h TTL.",
                 "remarks": "spire/clusterspiffeid-mesh.yaml and ../posture/spire/clusterspiffeid-posture.yaml (ttl, jwtTtl)"
               },
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7403",
                 "control-id": "sc-12",
-                "description": "Cryptographic Key Establishment and Management — one attestation root per trust domain; keys are minted and rotated by the SPIRE CA and never distributed as static secrets.",
+                "description": "Cryptographic Key Establishment and Management \u2014 one attestation root per trust domain; keys are minted and rotated by the SPIRE CA and never distributed as static secrets.",
                 "remarks": "spire/helmrelease.yaml (global.spire.trustDomain, caSubject)"
               }
             ]
@@ -56,7 +56,7 @@
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7404",
                 "control-id": "cm-6",
-                "description": "Configuration Settings — a workload's pinned policy version and its cage tier are carried in the URI SAN the SPIRE CA signs, so a counterparty reads them from the certificate rather than trusting a label. A pod with no tier is named `isolated`, the strictest running cage: silence is not an exemption.",
+                "description": "Configuration Settings \u2014 a workload's pinned policy version and its cage tier are carried in the URI SAN the SPIRE CA signs, so a counterparty reads them from the certificate rather than trusting a label. A pod with no tier is named `isolated`, the strictest running cage: silence is not an exemption.",
                 "props": [
                   {
                     "name": "Check_Id",
@@ -64,7 +64,7 @@
                     "value": "stamp-posture"
                   }
                 ],
-                "remarks": "../posture/spire/clusterspiffeid-posture.yaml; the tier segment reads the label ../graded/policies/cage-tier.yaml renders from the governed Namespace — one render, no second policy"
+                "remarks": "../posture/spire/clusterspiffeid-posture.yaml; the tier segment reads the label ../graded/policies/cage-tier.yaml renders from the governed Namespace \u2014 one render, no second policy"
               }
             ]
           }
@@ -84,13 +84,13 @@
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7405",
                 "control-id": "sc-8",
-                "description": "Transmission Confidentiality and Integrity — every accepted connection in the mesh carries a SPIRE-signed SVID; plaintext is refused mesh-wide.",
+                "description": "Transmission Confidentiality and Integrity \u2014 every accepted connection in the mesh carries a SPIRE-signed SVID; plaintext is refused mesh-wide.",
                 "remarks": "istio/peerauthentication-strict.yaml (mtls.mode STRICT); istio/helmrelease.yaml"
               },
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7406",
                 "control-id": "ac-3",
-                "description": "Access Enforcement — authorization is decided on the caller's SPIFFE principal, not its IP address or namespace membership.",
+                "description": "Access Enforcement \u2014 authorization is decided on the caller's SPIFFE principal, not its IP address or namespace membership.",
                 "remarks": "demo-mtls/authorizationpolicy.yaml is the shipped worked example; a consuming org writes its own"
               }
             ]
@@ -111,7 +111,7 @@
               {
                 "uuid": "b0c2f0d0-0002-4000-8000-6964656e7407",
                 "control-id": "ia-2",
-                "description": "Identification and Authentication — a workload authenticates to the secret plane with a SPIRE-signed JWT-SVID validated against SPIRE's JWKS over TLS pinned to the SPIRE trust bundle. There is no shared password and no long-lived token.",
+                "description": "Identification and Authentication \u2014 a workload authenticates to the secret plane with a SPIRE-signed JWT-SVID validated against SPIRE's JWKS over TLS pinned to the SPIRE trust bundle. There is no shared password and no long-lived token.",
                 "remarks": "openbao/jwt-auth.yaml; openbao/helmrelease.yaml. SCOPE OF THE CLAIM: dev-mode OpenBao keeps this in memory, so a pod restart drops it and identity/up.sh must re-run. verify-identity.sh observes `bao auth list` live rather than reading this claim."
               }
             ]
@@ -122,8 +122,29 @@
         "uuid": "b0c2f0d0-0000-4000-8000-6964656e7409",
         "type": "software",
         "title": "Pomerium human front door",
-        "description": "Identity-aware proxy, delivered and versioned by this package; contents owned by platform/access. NO CONTROL CLAIM YET, deliberately. The ia-8 claim this component will carry — a human identified by an external issuer's account, with no human credential stored in this estate — is not true while Dex still serves a static bcrypt account in memory (../access/oidc/dex-helmrelease.yaml). A claim is made when it is true; the gap is named in README.md, 'Retiring Dex', with platform/access as its owner.",
+        "description": "Identity-aware proxy, delivered and versioned by this package; contents owned by platform/access. NO CONTROL CLAIM YET, deliberately. The ia-8 claim this component will carry \u2014 a human identified by an external issuer's account, with no human credential stored in this estate \u2014 is not true while Dex still serves a static bcrypt account in memory (../access/oidc/dex-helmrelease.yaml). A claim is made when it is true; the gap is named in README.md, 'Retiring Dex', with platform/access as its owner.",
         "control-implementations": []
+      },
+      {
+        "uuid": "b0c2f0d0-0000-4000-8000-6964656e7411",
+        "type": "software",
+        "title": "gitsign-verifying source controller",
+        "description": "Identity-pinned verification of the gitsign tag at the Flux source boundary (ticket 41, ADR-0023 D3). Flux 2.9 cannot verify an x509/CMS tag signature, so this reads the tag object itself, checks the CMS signature over the tag's own payload, chains the signer certificate to the pinned Fulcio root at the tagger timestamp inside the signed payload, and matches the certificate's URI SAN and Fulcio issuer extension against the pins the publisher's release.yml already carries. It signs nothing. TIME-BOXED until fluxcd/source-controller#1068 lands.",
+        "control-implementations": [
+          {
+            "uuid": "b0c2f0d0-0000-4000-8000-6964656e7412",
+            "source": "../nist/catalog/NIST_SP-800-53_rev5.2.0_catalog.json",
+            "description": "NIST SP 800-53 Rev 5.2.0",
+            "implemented-requirements": [
+              {
+                "uuid": "b0c2f0d0-0003-4000-8000-6964656e7412",
+                "control-id": "si-7",
+                "description": "Software, Firmware, and Information Integrity \u2014 policy delivered to this cluster is applied only while its source tag's gitsign signature verifies against a pinned signing identity and issuer. A source that fails verification has its dependent Kustomization suspended; it is never silently applied. The verifier holds no signing key: the estate has one signature and this reads it.",
+                "remarks": "identity/gitsign-verifier/verify_gitsign.py and its Deployment; the pins ride on the GitRepository annotations shown in distribution/verify/gate.yaml and are asserted equal to .github/workflows/release.yml by verify-source-verification.sh. CEILING, claimed honestly: the Rekor transparency-log entry is NOT checked, so this is weaker than the identity-pinned `gitsign verify-tag` CI runs on the same tag."
+              }
+            ]
+          }
+        ]
       }
     ]
   }

@@ -31,3 +31,11 @@ resources:
   - istio/peerauthentication-strict.yaml
   - openbao/helmrelease.yaml
   - openbao/jwt-auth.yaml
+  # Ticket 41: the gitsign-verifying source controller. A directory, not a
+  # file, because it generates its ConfigMap from the program itself -- one
+  # copy of verify_gitsign.py, the one the offline proof runs. It is a member
+  # of THIS package because which signing identity a cluster accepts a policy
+  # source from is the same question the ClusterSPIFFEIDs answer for
+  # workloads. It is also TIME-BOXED: when fluxcd/source-controller#1068
+  # lands, this line and that directory go, and the package cuts a new major.
+  - gitsign-verifier

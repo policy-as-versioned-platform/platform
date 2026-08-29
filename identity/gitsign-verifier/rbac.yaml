@@ -1,0 +1,47 @@
+# The controller's whole authority, and deliberately no more than it needs.
+#
+# It READS every GitRepository so it can find the ones carrying gitsign pins,
+# PATCHES those objects to record what it observed, and PATCHES the
+# Kustomizations named in `policy-as-versioned.dev/gitsign-gates` to hold or
+# release the gate. It cannot create or delete anything, cannot read a Secret,
+# and has no verb on any other resource. There is no signing key to guard
+# because it never signs (ADR-0023 D3: one signature, the gitsign tag).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitsign-verifier
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/name: gitsign-verifier
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitsign-verifier
+  labels:
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/name: gitsign-verifier
+rules:
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["gitrepositories"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitsign-verifier
+  labels:
+    app.kubernetes.io/part-of: platform
+    app.kubernetes.io/name: gitsign-verifier
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitsign-verifier
+subjects:
+  - kind: ServiceAccount
+    name: gitsign-verifier
+    namespace: flux-system

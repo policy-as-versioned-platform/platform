@@ -11,11 +11,12 @@ membership, `VERSION` its version, `component-definition.json` its claims,
 
 | Package file | What it is |
 |---|---|
-| `VERSION` | `1.0.0`. The number the tag `identity-substrate/vX.Y.Z` carries and the number `component-definition.json` repeats. `verify-identity.sh` asserts they agree. |
+| `VERSION` | `1.1.0` (1.0.0 + the gitsign-verifying source controller, ticket 41). The number the tag `identity-substrate/vX.Y.Z` carries and the number `component-definition.json` repeats. `verify-identity.sh` asserts they agree. |
 | `kustomization.yaml` | The delivered membership. Excludes `demo-mtls/` (a proof, not substrate) and `federation/` (each org applies one file, not four). |
 | `component-definition.json` | The control claims. ADR-0017: the claim belongs to whoever ships the implementation, so the platform makes them once instead of every adopter re-claiming them. |
 | `flux-pin.yaml` | `GitRepository` at the tag + three `Kustomization`s (`./identity`, `./posture/spire`, `./access/pomerium`). Copy into your `gitops/`, let Renovate bump the tag, merge the PR. |
 | `federation/<org>.yaml` | The `ClusterFederatedTrustDomain` objects that org's cluster applies, one per peer. |
+| `gitsign-verifier/` | **Ticket 41.** The identity-pinned gitsign-verifying source controller: which signing identity this cluster will accept a policy source from. Time-boxed until fluxcd/source-controller#1068 — see its README. |
 
 Two members sit outside this directory because kustomize refuses a resource
 above its root: the posture `ClusterSPIFFEID`
@@ -35,6 +36,7 @@ both from the same tag, so the package still versions as one thing.
 | OpenBao | `openbao/helmrelease.yaml` | dev-mode secret plane |
 | Secret seam | `openbao/jwt-auth.yaml` | enables `jwt` auth against SPIRE's OIDC JWKS |
 | mTLS proof | `demo-mtls/` | `ping` → `pong`; `AuthorizationPolicy` admits by SPIFFE **principal**, not IP |
+| Source verification | `gitsign-verifier/` | watches annotated `GitRepository` objects, verifies the tag's gitsign signature against the publisher's own `release.yml` pins, and suspends the Kustomizations that must not apply from an unverified source. It signs nothing. |
 
 ## The wiring (one attestation root)
 

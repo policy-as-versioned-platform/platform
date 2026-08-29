@@ -1,0 +1,29 @@
+# The gitsign-verifying source controller, as a member of the identity
+# substrate package (ticket 41, ADR-0023 D3). It ships HERE, not as its own
+# package, because it is an identity mechanism: it decides which signing
+# identity a cluster will accept a policy source from, which is the same
+# question `federation/` and the two ClusterSPIFFEIDs answer for workloads.
+# One package, one VERSION, one set of control claims.
+#
+# The program is delivered by configMapGenerator rather than copied into a
+# manifest, so there is exactly ONE copy of verify_gitsign.py in the repo: the
+# one the offline proof runs and the one the pod runs. The generated name
+# carries kustomize's content hash, so editing the program rolls the pods.
+#
+# `namespace:` is load-bearing, not tidiness: without it the generated
+# ConfigMap lands in the default namespace, kustomize's name-reference
+# transformer will not match it to a Deployment in flux-system, and the pod
+# mounts a ConfigMap that does not exist. Checked by building this directory,
+# not assumed.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: flux-system
+resources:
+  - rbac.yaml
+  - deployment.yaml
+configMapGenerator:
+  - name: gitsign-verifier
+    files:
+      - verify_gitsign.py
+      - fulcio-roots.pem
+      - fulcio-intermediates.pem

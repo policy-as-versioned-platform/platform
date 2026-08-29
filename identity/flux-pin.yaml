@@ -33,7 +33,7 @@ spec:
   interval: 1m
   url: https://github.com/policy-as-versioned-platform/platform
   ref:
-    tag: "identity-substrate/v1.0.0"    # Renovate bumps this; a human merges
+    tag: "identity-substrate/v1.1.0"    # Renovate bumps this; a human merges
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization

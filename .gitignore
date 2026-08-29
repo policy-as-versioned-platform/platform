@@ -1,4 +1,5 @@
-# Scratch only. NOTE: platform still carries 12 TRACKED __pycache__/*.pyc from an
-# earlier commit; this rule stops new ones being added, it does not untrack those.
+# Scratch only. The 12 tracked __pycache__/*.pyc this note used to warn about were untracked on
+# 2026-08-29: every selfcheck run rewrote them, so the gate dirtied the working tree on every
+# pass, and a committed .pyc can shadow the .py the gate believes it just proved.
 __pycache__/
 .work/
