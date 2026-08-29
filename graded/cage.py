@@ -67,6 +67,18 @@ import enforce  # noqa: E402
 # The rest are the literal dials the `cage-tier` MutatingPolicy stamps onto the pod.
 # ponytail: reduce/cost are calibration knobs — tune to real WAF/eviction telemetry;
 # the ORDERING (tighter => more reduce AND more cost) is what the selection relies on.
+#
+# WHOSE NUMBERS THESE ARE. They are the PLATFORM's, self-declared, evidenced by nothing but this
+# comment. An adopter that publishes its own graded response curve (driftwood's
+# twin/orgs/<org>/responses/*.yaml, each carrying an evidence_grade and a written basis) disagrees
+# with them materially -- its own mode reductions are 0.05/0.30/0.65/0.90 against the
+# 0.30/0.70/0.92/0.98 here. Composition prices the twin entry off THIS table, so the entry names
+# it: `residual_basis: platform-cage-tiers@<TABLE_VERSION>` says which reduction set produced the
+# residuals, instead of a free-text sentence a reader would attribute to the adopter's own curve.
+# verify/pound-seam/pound_seam.py grades the divergence: it FAILs when this table and a published
+# curve stop agreeing about which rung is cheapest.
+TABLE_VERSION = "1.0.0"
+
 TIERS = {
     "baseline": {
         "reduce": 0.30, "cost": 500,

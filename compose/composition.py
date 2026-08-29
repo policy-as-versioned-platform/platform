@@ -279,18 +279,25 @@ FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema
 # per-customer restatement. NO SUM CROSSES A PERSPECTIVE OR A CURRENCY.
 #   feed        a subscribed publisher's price (source: the publishing party)
 #   twin        the adopter's own forward-intel scenario (source: twin)
-#   premium     an insurance contract cost (source: insurer) -- RESERVED, schema
-#               support only: no quote feed exists yet, and a declared one with
-#               no converter is a MISSING INSTRUMENT that refuses (ADR-0020),
-#               never an invented amount. Producer: ticket 36 (the insurer).
+#   premium     an insurance contract cost (source: insurer), read off the
+#               insurer's own signed quote feed by price_quote() below --
+#               ticket 36, the producer ticket 25 reserved this kind for. What
+#               cover COSTS under the adopter's perspective, never what the
+#               insurer's own layer arithmetic makes of it (ticket 14 answer 3).
 #   switching   a portability/lock-in cost (source: twin) -- RESERVED, schema
 #               support only. Producer: ticket 32.
 #   reliability a failed cross-org reach demand, priced under the CALLER's
 #               perspective, never gated (ticket 15 amendment C18) -- RESERVED,
 #               schema support only. Producer: ticket 32.
-# Three of the four items in the spec's one schema pass are therefore reserved,
+# Two of the four items in the spec's one schema pass are therefore reserved,
 # not observed: nothing in this estate constructs an entry of those kinds yet.
 PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability")
+# A feed whose name starts with this is an insurance quote: one feed per insured
+# adopter (`quote-driftwood`, ticket 14 answer 4), priced by its publisher under
+# the INSURER's perspective and read here as one contract cost line under the
+# adopter's own. Matched on the name, not on the publishing party, so a second
+# carrier quoting the same adopter needs no change here.
+QUOTE_PREFIX = "quote-"
 # A party that states no reporting currency reports in USD (spec.md, "The £
 # seam"); the UK parties all declare GBP on their own artefacts.
 DEFAULT_REPORTING_CURRENCY = "USD"
@@ -401,11 +408,31 @@ def _major_dir(version: str) -> str:
     return "v" + v.split(".")[0]
 
 
+def _published_path(tree_path: Path, name: str) -> str | None:
+    """The directory the PUBLISHER itself declares for a feed name, on its own
+    party.yaml `publishes[]` (ADR-0019: the composer resolves `name` to `path`).
+    None where the tree carries no party artefact or does not publish that name.
+
+    Every feed in this estate but the insurer's publishes at a directory equal
+    to its name, so this changes nothing for them; the insurer publishes one
+    feed per adopter (`quote-driftwood` at `quote/driftwood`, ticket 14 answer
+    4) and is the first publisher whose name and path differ."""
+    party_yaml = Path(tree_path) / "party.yaml"
+    if not party_yaml.exists():
+        return None
+    doc = yaml.safe_load(party_yaml.read_text()) or {}
+    return next((e.get("path") for e in doc.get("publishes") or []
+                 if e.get("name") == name), None)
+
+
 def feed_file(party: str, name: str, version: str, tree_path: Path) -> Path:
     """Where a feed parent's file lives inside the party's own tree. The
-    envelope path `<name>/v<MAJOR>/feed.json` wins when it exists; otherwise
-    the pre-envelope location of the two migrating feeds."""
-    envelope = Path(tree_path) / name / _major_dir(version) / "feed.json"
+    envelope path `<path>/v<MAJOR>/feed.json` wins when it exists -- `<path>`
+    being what the publisher's own party.yaml declares for that name, or the
+    name itself; otherwise the pre-envelope location of the two migrating
+    feeds."""
+    envelope = (Path(tree_path) / (_published_path(tree_path, name) or name)
+                / _major_dir(version) / "feed.json")
     if envelope.exists():
         return envelope
     # ponytail: bridge until ico v3 lands (penalty-schema) and the platform
@@ -1508,6 +1535,13 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     total = _sum_prices(holes, adopter_party, reporting_currency) if holes else None
     amount = total if holes else new_price
 
+    # Every figure on this entry is an ANNUALISED loss, and the frequency that annualised it is
+    # editorial: ico's converter carries `DEFAULT_WARN_LEF = (1, 2, 4)` because the penalty schema
+    # publishes no frequency at all, and the threat register's driftwood entry carries [2, 4, 9]
+    # from a DBIR base rate. The converter says so in its own `note`, and this entry used to drop
+    # it -- so the amount arrived with no way to see how often the event was assumed to happen,
+    # and two lines annualised at 2.167 and 4.5 events a year were summed into one total. Carried,
+    # not computed: the note is the publisher's own words.
     entry = _price_entry(
         party, kind if kind in PRICE_KINDS else "feed", adopter_party, reporting_currency,
         amount, perspective_doc,
@@ -1516,6 +1550,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         old_price=old_price, new_price=amount,
         old_tier=old["tier"], proposed_tier=new["tier"],
         changed=old["tier"] != new["tier"],
+        lef=(new_sc.get("warn") or {}).get("lef"),
+        lef_basis=str(new_sc.get("note") or "") or None,
         proposed_as=PROPOSED_AS_LABEL,
         **fx,
     )
@@ -1604,7 +1640,7 @@ def _curve_hash(curve: object) -> str:
 
 def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: str | None,
                 parent_trees: dict[str, Path], prev_prices: list[dict],
-                lef_by_feed: dict[str, list], band_currency: str | None = None) -> dict | None:
+                lef_by_feed: dict[str, dict], band_currency: str | None = None) -> dict | None:
     """The `source: twin` pricing parent edge. The twin emits a scenario under a
     perspective and has no frequency; fair.py annualises it and the ADOPTER'S OWN
     versioned selection-policy package picks the tier (ADR-0021). One entry,
@@ -1627,23 +1663,35 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
     perspective_doc = _party_doc(perspective, adopter_dir, parent_trees)
     native = payload.get("currency") or _reporting_currency(perspective_doc)
     reporting = _reporting_currency(perspective_doc)
-    # A null lef means the SUBSCRIBED pricing feed supplies the frequency
-    # (ticket 08 Answer 2); the payload's own claim_scope names which one.
-    # ponytail ceiling: with exactly one priced feed the borrow is unambiguous
-    # and is RECORDED as `lef_from`, so the ALE can be re-derived from the
-    # entry. Making the payload declare it needs `claim_scope.frequency_from`,
-    # which the published forward-intel payload schema does not carry yet
-    # (it is additionalProperties:false) -- a payload major, not this seam's.
-    lef, lef_from = payload.get("lef"), None
+    # A null lef means a SUBSCRIBED pricing feed supplies the frequency (ticket 08 Answer 2), and
+    # the payload has to NAME which one. It used to fall through to "whatever single feed happens
+    # to publish a triple", so the borrow was unconditional and invisible: the twin's shock was
+    # annualised at 4.5 events a year off the threat register while the ico line beside it used
+    # 2.167, and nothing on either entry said so.
+    #
+    # What names it is `derived_from`, which the published payload schema already carries: the
+    # emitter now puts in it exactly what the render read, and the one subscribed feed whose
+    # frequency it borrows. `claim_scope.frequency_from` is read first where a payload carries it
+    # (additionalProperties:false today, so it is a payload major, not this seam's).
+    lef, lef_from, lef_basis = payload.get("lef"), None, None
     if lef is None:
         wanted = ((payload.get("claim_scope") or {}).get("frequency_from") or {}).get("name")
-        if wanted is None and len(lef_by_feed) == 1:
-            wanted = next(iter(lef_by_feed))
-        lef = lef_by_feed.get(wanted) if wanted else None
-        if lef is None:
+        if wanted is None:
+            named = sorted({str(d.get("name")) for d in (payload.get("derived_from") or [])
+                            if d.get("kind") == "feed" and d.get("party") != perspective
+                            and str(d.get("name")) in lef_by_feed})
+            if len(named) != 1:
+                raise Refused(
+                    f"missing instrument: {path} supplies no lef and its derived_from names "
+                    f"{len(named)} subscribed feeds that price one ({named or 'none'}); a "
+                    f"borrowed frequency has to be named, not guessed at")
+            wanted = named[0]
+        borrowed = lef_by_feed.get(wanted) if wanted else None
+        if borrowed is None:
             raise Refused(
                 f"missing instrument: {path} supplies no lef and names no subscribed feed "
                 f"that does (wanted {wanted!r}, priced {sorted(lef_by_feed)})")
+        lef, lef_basis = borrowed["lef"], borrowed["basis"]
         lef_from = wanted
     fair = _cage_engine().fair
     try:
@@ -1676,10 +1724,19 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
         tail=summary["tail"],
         policy_version=picked["policy_version"],
         policy_basis=picked["basis"],
+        # WHICH reduction set produced those residuals. `policy_basis` is the selection package's
+        # own sentence about the rung it picked ("the loosest tier whose caged residual is within
+        # the tolerance"), and a reader attributed the residuals in it to the adopter's own
+        # published curve. They are not: they are `ale * (1 - platform's table reduce)`, and the
+        # curve_hash beside them is an identifier of the input, not the input. Named, so the
+        # attribution is readable rather than inferred.
+        residual_basis=f"platform-cage-tiers@{getattr(cage, 'TABLE_VERSION', 'unversioned')}",
         residuals=residuals,
         curve_hash=_curve_hash(payload.get("curve", [])),
         shock=payload.get("shock"),
         horizon=payload.get("horizon"),
+        lef=lef,
+        lef_basis=lef_basis,
         **({"lef_from": lef_from} if lef_from else {}),
         old_tier=(prior or {}).get("proposed_tier", tier),
         proposed_tier=tier,
@@ -1687,6 +1744,142 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
         proposed_as=PROPOSED_AS_LABEL,
         **fx,
     )
+
+
+# --------------------------------------------------------------------------
+# 8c. the insurance premium edge (ticket 36; ticket 14 answer 3)
+# --------------------------------------------------------------------------
+
+
+def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
+                 perspective_doc: dict, reporting_currency: str,
+                 prev_version: str | None,
+                 parent_trees: dict[str, Path] | None = None) -> dict:
+    """One `kind: premium` prices[] entry, read off the insurer's own signed
+    quote feed. There is no arithmetic here on purpose: the premium is a
+    CONTRACT COST -- what this adopter pays, booked under its own perspective
+    beside costs.fix -- and the insurer's layer arithmetic that produced it
+    stays under `perspective: insurer` and is never summed with anything of the
+    adopter's (ticket 14 answer 3, ADR-0021).
+
+    Refuses (missing instrument, ADR-0020) only where the quote cannot be read
+    as this party's own cover: another adopter's quote, or a premium booked on
+    somebody else's balance sheet. A stale `priced_against` and a lapsed
+    `valid_until` are FACTS carried onto the entry, not refusals -- a pin past
+    the expiry is lapsed cover the composition prices as fully retained, and
+    this module may not read a clock to decide that (D1). ponytail ceiling:
+    the lapse is recorded, not yet priced; the upgrade path is the composition's
+    own as-of date reaching this function, which ticket 37 (insurance round 2)
+    is the place to decide."""
+    name = _feed_name(edge)
+    tree = Path(tree) if tree is not None else PLATFORM_DIR
+    path = feed_file(edge["party"], name, edge["version"], tree)
+    if not path.exists():
+        raise Refused(f"missing instrument: {adopter_party} pins {edge['party']}'s {name} "
+                       f"@{edge['version']} but {path} does not exist, so the cover it names "
+                       f"cannot be read")
+    payload = load_feed_payload(path, name, edge["version"])
+    quote_version = json.loads(path.read_text()).get("version")
+
+    insured = payload.get("adopter")
+    if insured != adopter_party:
+        raise Refused(f"missing instrument: {name}@{edge['version']} insures {insured!r}, not "
+                       f"{adopter_party!r} -- one composition holds one party's cover")
+    premium = payload.get("premium") or {}
+    booked = premium.get("perspective")
+    if booked != adopter_party:
+        raise Refused(f"missing instrument: {name}@{edge['version']} books its premium under "
+                       f"perspective {booked!r}; a premium on {adopter_party}'s balance sheet "
+                       f"is booked under {adopter_party!r} and no other party (ADR-0021)")
+    native = premium.get("currency")
+    if native is None or premium.get("amount") is None:
+        raise Refused(f"missing instrument: {name}@{edge['version']} states no premium amount "
+                       f"and currency, so there is no cost line to book")
+    amount, fx = _converted(float(premium["amount"]), native, reporting_currency,
+                             _feed_as_of(path), parent_trees)
+    return _price_entry(
+        edge["party"], "premium", adopter_party, reporting_currency, amount, perspective_doc,
+        name=name,
+        old_version=prev_version if prev_version is not None else edge["version"],
+        new_version=edge["version"],
+        quote_version=quote_version,
+        attachment=payload.get("attachment"),
+        limit=payload.get("limit"),
+        exclusions=payload.get("exclusions") or [],
+        conditions=payload.get("conditions") or [],
+        valid_from=payload.get("valid_from"),
+        valid_until=payload.get("valid_until"),
+        priced_against=payload.get("priced_against") or [],
+        **fx,
+    )
+
+
+# --------------------------------------------------------------------------
+# 8d. the signed exposure section (ticket 36; ticket 14 answer 2)
+# --------------------------------------------------------------------------
+
+# The name an exposure line is EXCLUDED BY. A quote's exclusions[] are keyed on
+# obligation regime names and (source, id) control keys (ticket 14 answer 1), so
+# a line is named by the regime its publisher prices where the publisher names
+# one, and by the feed's own name where it does not.
+EXPOSURE_REGIMES = {"penalty-schema": ICO_REGIME}
+# Which prices[] kinds ARE exposure. `premium` is what cover COSTS, not what is
+# at risk: folding it in would make the premium an input to the formula that
+# computes it. `switching` and `reliability` are costs too, and neither is
+# emitted yet.
+EXPOSURE_KINDS = ("feed", "twin")
+
+
+def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
+                      reporting_currency: str) -> dict | None:
+    """The adopter's own signed exposure: what it is on the hook for, under its
+    own perspective and currency, its appetite as the attachment, and the
+    breakdown by regime name and control id -- enough for an insurer to price a
+    layer from signed facts alone and never from the insurer's own model of
+    somebody else's business (ticket 14 answer 2).
+
+    The total is the estate's ONE summing helper over the exposure entries, so
+    it refuses rather than sums if a price of another party's ever lands in this
+    party's prices[] (ADR-0021). None where nothing priced -- a named absence,
+    never a zero this party did not declare.
+
+    ponytail ceiling: the total is the sum of the priced parent edges, not an
+    aggregate loss DISTRIBUTION (ale/var95/tvar over per-risk annual loss lists
+    summed year by year, ticket 14 answer 2's fuller shape). A layer attaching
+    at the appetite can be read off this total; a layer priced off the tail
+    between attachment and limit needs the distribution. Upgrade path: fair.py
+    gains a portfolio aggregate and this section gains its summary beside the
+    total -- the section's shape does not change."""
+    lines = []
+    for e in prices:
+        if e.get("kind") not in EXPOSURE_KINDS:
+            continue
+        feed = e.get("name") or e["kind"]
+        lines.append({
+            "name": EXPOSURE_REGIMES.get(feed, feed),
+            "source": e["source"],
+            "feed": feed,
+            "version": e.get("new_version") or e.get("feed_version"),
+            "amount": e["amount"],
+            "controls": [{"source": h["source"], "id": h["id"], "amount": h["amount"]}
+                          for h in e.get("holes") or []],
+        })
+    if not lines:
+        return None
+    return {
+        "perspective": adopter_party,
+        "currency": reporting_currency,
+        # The attachment IS the appetite, seen from the other side: the retention
+        # this party already signed, never a second number an insurer proposed
+        # (ticket 14 answer 1). Its own currency label rides with it, because an
+        # appetite declared in another currency is not silently relabelled.
+        "attachment": ({"amount": band["amount"],
+                         "currency": band.get("currency") or reporting_currency}
+                        if band else None),
+        "total": _sum_prices([e for e in prices if e.get("kind") in EXPOSURE_KINDS],
+                              adopter_party, reporting_currency),
+        "regimes": lines,
+    }
 
 
 def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | None,
@@ -1706,19 +1899,32 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
         return []
     reporting = _reporting_currency(perspective_doc)
     prices: list[dict] = []
-    lef_by_feed: dict[str, list] = {}
+    lef_by_feed: dict[str, dict] = {}
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
         prev_version = _previous_parent_version(prev_header, edge)
+        if (_feed_name(edge) or "").startswith(QUOTE_PREFIX):
+            # An insurance quote is not priced through a converter: the premium
+            # is a contract cost the insurer already priced and signed.
+            prices.append(price_quote(
+                edge, adopter_party, parent_trees.get(edge["party"]),
+                perspective_doc=perspective_doc, reporting_currency=reporting,
+                prev_version=prev_version, parent_trees=parent_trees))
+            continue
         prices.append(price_parent(
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
             perspective_doc=perspective_doc, reporting_currency=reporting,
             band_currency=band_currency, floor=floor, parent_trees=parent_trees))
         if _feed_name(edge) == "threat-register":
             tree = Path(parent_trees.get(edge["party"], PLATFORM_DIR))
-            lef_by_feed["threat-register"] = \
-                _threat_scenario(edge["version"], adopter_party, tree)["warn"]["lef"]
+            scenario = _threat_scenario(edge["version"], adopter_party, tree)
+            lef_by_feed["threat-register"] = {
+                "lef": scenario["warn"]["lef"],
+                # The converter's own words about where the triple came from, carried so a reader
+                # of the twin entry can see the editorial frequency instead of inferring it.
+                "basis": str(scenario.get("note") or "") or None,
+            }
     twin = price_twin(adopter_dir, adopter_party, tolerance, floor, parent_trees,
                        prev_prices or [], lef_by_feed, band_currency)
     if twin is not None:
@@ -1947,6 +2153,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     # -----------------------------------------------------------------
     # The adopter's own signed facts: its appetite band, its reporting currency
     # and its tighten-only cage floor. No fixture prices a party (ticket 25).
+    band = None
     try:
         band = _appetite(adopter_party, adopter_dir, parent_trees)
         prices = compute_prices(
@@ -2017,6 +2224,16 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     selection_policy = _selection_policy_version(adopter_dir)
     if selection_policy is not None:
         header["selection-policy"] = selection_policy
+    # What this party is on the hook for, signed under its own tag beside the
+    # cage it bought (ticket 36; ticket 14 answer 2). It lands on the RENDERED
+    # header, not only in the evidence document, so `composition.py verify`
+    # re-derives it byte for byte from the same parents: an exposure an insurer
+    # prices a layer against is a fact a verifier can re-compute, not a summary
+    # written once. Absent -- never zero -- where nothing priced.
+    exposure = exposure_section(prices, adopter_party, band,
+                                 _reporting_currency(party_doc))
+    if exposure is not None:
+        header["exposure"] = exposure
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
 
     document = {
@@ -2142,7 +2359,10 @@ def main(argv: list[str]) -> int:
 
 
 def _real_parent_trees() -> dict[str, Path]:
-    return {name: DEFAULT_ESTATE_CLONE / name for name in ("platform", "nist", "ico", "feeds")}
+    # `insurer` joined the list with ticket 36: driftwood pins its signed quote
+    # feed, and a parent with no tree is a party_artefact error, not a price.
+    return {name: DEFAULT_ESTATE_CLONE / name
+            for name in ("platform", "nist", "ico", "feeds", "insurer")}
 
 
 def _adopter_copy(name: str, dest: Path) -> Path:
@@ -2401,6 +2621,74 @@ def selfcheck() -> None:
           "restates its own amount per customer against driftwood's OWN signed size "
           "(%s customers)" % (customers if customers else "unsigned -> null"))
 
+    # ======================================================================
+    # ticket 36: the exposure section and the premium it buys
+    # ======================================================================
+
+    # --- the insurer's signed quote lands as ONE contract cost line, under the
+    # ADOPTER's perspective, and its amount is the quote's own signed premium ---
+    quote_path = feed_file("insurer", "quote-driftwood", "v1", DEFAULT_ESTATE_CLONE / "insurer")
+    if quote_path.exists():
+        quoted = json.loads(quote_path.read_text())["payload"]
+        premiums = [e for e in document["prices"] if e["kind"] == "premium"]
+        assert len(premiums) == 1, premiums
+        premium = premiums[0]
+        assert premium["source"] == "insurer" and premium["name"] == "quote-driftwood", premium
+        assert premium["perspective"] == "driftwood", premium
+        assert premium["amount"] == quoted["premium"]["amount"], (premium, quoted["premium"])
+        assert quoted["premium"]["perspective"] == "driftwood", quoted["premium"]
+        # The insurer's own layer arithmetic never crosses into this document.
+        assert quoted["perspective"] == "insurer", quoted
+        assert quoted["formula"]["layer"] not in [e["amount"] for e in document["prices"]]
+        print("OK prices[]: the insurer's signed quote books as one `premium` cost line under "
+              "driftwood's own perspective (%.2f %s), and the insurer's layer arithmetic stays "
+              "under its own" % (premium["amount"], premium["currency"]))
+
+        # A quote that insures somebody else, or books its premium on somebody
+        # else's sheet, is a MISSING INSTRUMENT and prices nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            for key, value, why in (("adopter", "ludlow", "another party's cover"),
+                                     ("premium", {"amount": 1.0, "currency": "GBP",
+                                                  "perspective": "insurer"},
+                                      "a premium on another party's sheet")):
+                planted = Path(tmp) / key
+                (planted / "quote" / "driftwood" / "v1").mkdir(parents=True)
+                (planted / "party.yaml").write_text(
+                    (DEFAULT_ESTATE_CLONE / "insurer" / "party.yaml").read_text())
+                doc = json.loads(quote_path.read_text())
+                doc["payload"][key] = value
+                (planted / "quote" / "driftwood" / "v1" / "feed.json").write_text(json.dumps(doc))
+                try:
+                    price_quote({"party": "insurer", "kind": "feed", "name": "quote-driftwood",
+                                 "version": "v1"}, "driftwood", planted,
+                                perspective_doc=driftwood_doc, reporting_currency="GBP",
+                                prev_version=None)
+                    raise AssertionError(f"priced {why} instead of refusing")
+                except Refused:
+                    pass
+        print("OK prices[]: a quote insuring another party, or booking its premium on another "
+              "party's sheet, refuses as a missing instrument and prices nothing")
+
+    # --- the signed exposure section: the insurer's whole input, and the
+    # premium is NOT in it (a cost is not an exposure) ---
+    exposure = yaml.safe_load(rendered["composed/HEADER.yaml"])["exposure"]
+    assert exposure["perspective"] == "driftwood" and exposure["currency"] == "GBP", exposure
+    band = _appetite("driftwood", driftwood, parent_trees)
+    assert exposure["attachment"] == {"amount": band["amount"],
+                                      "currency": band["currency"]}, exposure["attachment"]
+    priced = [e for e in document["prices"] if e["kind"] in EXPOSURE_KINDS]
+    assert math.isclose(exposure["total"], sum(e["amount"] for e in priced)), exposure["total"]
+    assert len(exposure["regimes"]) == len(priced), exposure["regimes"]
+    assert not any(e["kind"] == "premium" for e in document["prices"]
+                    if e["amount"] in [r["amount"] for r in exposure["regimes"]])
+    regime = next(r for r in exposure["regimes"] if r["name"] == ICO_REGIME)
+    assert math.isclose(sum(c["amount"] for c in regime["controls"]), regime["amount"])
+    assert {c["source"] for c in regime["controls"]} == {"nist"}, regime
+    print("OK exposure: driftwood's composed artefact signs its total priced exposure "
+          "(%.2f %s), its appetite as the attachment and the %s breakdown by regime name and "
+          "control id; the premium it buys is a cost and is not counted in it"
+          % (exposure["total"], exposure["currency"], len(exposure["regimes"])))
+
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
     assert _sum_prices([{"amount": 1.0}, {"amount": 2.0}], "driftwood", "GBP") == 3.0
@@ -2504,11 +2792,12 @@ def selfcheck() -> None:
 
     declared_kinds = {_parent_key(e) for e in yaml.safe_load(
         (driftwood / "party.yaml").read_text())["inherits"]}
-    assert declared_kinds == {"controls", "implementations", "penalty-schema", "threat-register"}
-    assert len(document["parents"]) == 4
+    assert declared_kinds == {"controls", "implementations", "penalty-schema", "threat-register",
+                              "quote-driftwood"}
+    assert len(document["parents"]) == 5
     for parent in document["parents"]:
         assert parent["sha"], parent
-    print("OK parents[]: all four declared parent kinds resolve to a non-empty SHA")
+    print("OK parents[]: all five declared parent kinds resolve to a non-empty SHA")
 
     # --- two members of one family at one version both survive resolution ---
     members_by_version, guards = load_implementations(parent_trees["platform"])
@@ -2573,7 +2862,7 @@ def selfcheck() -> None:
     # --- the header ---
     header = yaml.safe_load(rendered["composed/HEADER.yaml"])
     assert header["policy-as-versioned.dev/composed"] is True
-    assert len(header["parents"]) == 4
+    assert len(header["parents"]) == 5
     assert all(p["sha"] for p in header["parents"])
     assert header["baseline"] == "MODERATE"
     assert header["governed-namespaces"] == ["driftwood"]
@@ -3268,7 +3557,13 @@ def selfcheck() -> None:
         "feed prices as ONE source:twin entry naming its selection-policy version, curve hash "
         "and fair.py's tail, and a missing forward-intel feed is silence, not a refusal; an "
         "adopter with no signed appetite refuses as a missing instrument and prices nothing; "
-        "and the adopter's own overlay.floor clamps the selection UP and never down."
+        "and the adopter's own overlay.floor clamps the selection UP and never down. "
+        "TICKET 36 (the insurer quote slice): the composed artefact signs an `exposure` section "
+        "-- the adopter's total priced exposure under its own perspective and currency, its "
+        "appetite as the attachment, and the breakdown by regime name and control id -- and the "
+        "insurer's signed quote books as ONE `premium` contract cost line under the adopter's "
+        "perspective, is left out of the exposure it was priced from, and refuses as a missing "
+        "instrument if it insures another party or books its premium on another party's sheet."
     )
 
 
