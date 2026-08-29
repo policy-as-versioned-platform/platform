@@ -353,6 +353,55 @@ def resolve_sha(party: str, kind: str, version: str, adopter_dir: Path, tree_pat
     return _resolve_unpinned_sha(tree_path, kind, version, name)
 
 
+def _pin_containment_limit(parents: list[dict], parent_trees: dict[str, Path] | None,
+                           merged: dict) -> dict:
+    """Does the commit the adopter PINS actually contain the policy version
+    trees this composed set renders?
+
+    `resolve_sha` takes the implementations SHA from the adopter's own Flux pin
+    (ADR-0012: reused, never re-derived) while the BYTES are read out of the
+    parent worktree. Those two can disagree, and on 2026-08-29 they did: the
+    header asserted platform 1.1.1 at 58ef9c57 while the set rendered v4.0.0,
+    which that commit does not contain. Nothing graded the pair, so a composed
+    set could name a parent release that holds none of its own policy trees.
+
+    Named here rather than refused, because the honest reason it is open today
+    is that the phase is unpushed: the commit that DOES carry v4.0.0 is on a
+    local branch, and hard rule 3 says a signed tag cannot be cut locally. The
+    limit closes the day the owner merges and the adopter's pin moves.
+    ponytail: implementations only -- the one kind with both a Flux pin and a
+    per-version directory. Add controls when nist ships versioned trees.
+    """
+    versions = sorted({key[0] for key in merged})
+    absent: list[str] = []
+    checked = 0
+    for parent in parents:
+        if parent["kind"] != "implementations":
+            continue
+        tree = (parent_trees or {}).get(parent["party"])
+        if tree is None or not (Path(tree) / ".git").exists():
+            continue
+        for version in versions:
+            checked += 1
+            probe = subprocess.run(
+                ["git", "-C", str(tree), "cat-file", "-e",
+                 f"{parent['sha']}:distribution/policies/v{version}"],
+                capture_output=True, text=True)
+            if probe.returncode != 0:
+                absent.append(f"{parent['party']}@{parent['version']} ({parent['sha'][:8]}) "
+                              f"does not contain distribution/policies/v{version}")
+    return {
+        "name": "pinned-parent-lacks-rendered-versions",
+        "detail": "the composed set renders policy versions the pinned parent commit does "
+                  "not contain; the header names a parent release that holds none of these "
+                  "trees. " + ("; ".join(absent) if absent else "every rendered version is "
+                  "present at the pinned commit"),
+        "count": len(absent),
+        "checked": checked,
+        "status": "open" if absent else "closed",
+    }
+
+
 def _resolve_unpinned_sha(tree_path: Path, kind: str, version: str, name: str | None = None) -> str:
     if kind == "feed" and name:
         version_dir = feed_file("", name, version, tree_path).parent
@@ -2075,6 +2124,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "count": len(implementations_parties),
         "status": "closed" if len(implementations_parties) >= 2 else "open",
     }]
+    limits.append(_pin_containment_limit(parents, parent_trees, merged))
 
     restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
                                                                 parent_trees)
@@ -2567,6 +2617,14 @@ def _commit_header(work: Path, rendered: dict[str, str]) -> None:
 def selfcheck() -> None:
     driftwood = DEFAULT_ESTATE_CLONE / "driftwood"
     parent_trees = _real_parent_trees()
+    # The restatement cases below need a version that is actually DECLARED, and
+    # they used to name "2.0.0" as a literal. On 2026-08-29 2.0.0, 2.0.1 and
+    # 3.0.0 were retired from distribution/versions.yaml (they could not admit a
+    # pod), the literal named a version composition no longer loads, and every
+    # restatement silently matched nothing -- the refusal cases stopped
+    # refusing. Read the oldest LIVE version from the same array composition
+    # itself reads, so a retirement can never make these cases vacuous again.
+    live_v = _version_array(PLATFORM_DIR)[0]["version"]
 
     document, rendered = compose(driftwood, parent_trees)
     assert document["party_artefact_errors"] == []
@@ -3036,12 +3094,12 @@ def selfcheck() -> None:
     # --- a restatement of a mutate refuses (ADR-0016) ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
-        _with_restate(work, [{"name": "cage-tier", "version": "2.0.0", "action": "Deny"}])
+        _with_restate(work, [{"name": "cage-tier", "version": live_v, "action": "Deny"}])
         document, files = compose(work, parent_trees)
         assert document["outcome"] == "refused", document
         mutate_refusals = [r for r in document["refusals"] if r["kind"] == "restatement-of-non-validating"]
         assert len(mutate_refusals) == 1, document["refusals"]
-        assert mutate_refusals[0]["subject"] == "graded-enforcement/cage-tier@2.0.0"
+        assert mutate_refusals[0]["subject"] == f"graded-enforcement/cage-tier@{live_v}"
         assert mutate_refusals[0]["needs_composition"] is True
         assert document["restatements"] == [], document["restatements"]
     print("OK restatement-of-non-validating: restating cage-tier (a MutatingPolicy) refuses")
@@ -3049,15 +3107,15 @@ def selfcheck() -> None:
     # --- a stricter restatement is accepted and the rendered file carries it ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
-        _with_restate(work, [{"name": "require-nonroot", "version": "2.0.0", "action": "Deny"}])
+        _with_restate(work, [{"name": "require-nonroot", "version": live_v, "action": "Deny"}])
         document, files = compose(work, parent_trees)
         assert document["outcome"] == "composed", document
         _assert_only_known_dangling(document["refusals"], "stricter restatement")
         r = next(r for r in document["restatements"]
-                 if r["rule"] == "require-nonroot/require-nonroot@2.0.0")
+                 if r["rule"] == f"require-nonroot/require-nonroot@{live_v}")
         assert r["inherited_action"] == "Audit" and r["restated_action"] == "Deny"
         assert r["outcome"] == "accepted", r
-        rendered_doc = yaml.safe_load(files["composed/policies/v2.0.0/require-nonroot.yaml"])
+        rendered_doc = yaml.safe_load(files[f"composed/policies/v{live_v}/require-nonroot.yaml"])
         assert rendered_doc["spec"]["validationActions"] == ["Deny"], rendered_doc
     print("OK restatement accepted: Audit -> Deny is stricter, and the rendered file carries "
           "the restated Deny")
@@ -3073,7 +3131,7 @@ def selfcheck() -> None:
         with tempfile.TemporaryDirectory() as td:
             work = _adopter_copy(org, Path(td))
             _with_restate(work, [{
-                "name": "posture-trust-boundary", "version": "2.0.0", "action": "Audit",
+                "name": "posture-trust-boundary", "version": live_v, "action": "Audit",
                 "scenario": scenario_rel, "why": "needs CAP_NET_RAW; cannot meet condition C",
             }])
             document, files = compose(work, parent_trees)
@@ -3081,15 +3139,15 @@ def selfcheck() -> None:
             assert document["outcome"] == "composed", document
             _assert_only_known_dangling(document["refusals"], f"weaker restatement ({org})")
             r = next(r for r in document["restatements"]
-                     if r["rule"] == "posture/posture-trust-boundary@2.0.0")
+                     if r["rule"] == f"posture/posture-trust-boundary@{live_v}")
             assert r["inherited_action"] == "Deny" and r["restated_action"] == "Audit"
             assert r["outcome"] == "caged", r
             cage_entry = next(c for c in document["cages"]
-                               if c["rule"] == "posture/posture-trust-boundary@2.0.0")
+                               if c["rule"] == f"posture/posture-trust-boundary@{live_v}")
             assert cage_entry["party"] == org
             tiers[org] = cage_entry["tier"]
             assert cage_entry["tier"] == expected_tier, (org, cage_entry)
-            rendered_doc = yaml.safe_load(files["composed/policies/v2.0.0/posture-trust-boundary.yaml"])
+            rendered_doc = yaml.safe_load(files[f"composed/policies/v{live_v}/posture-trust-boundary.yaml"])
             assert rendered_doc["spec"]["validationActions"] == ["Deny"], rendered_doc  # stays inherited
             last_files = files
     print(f"OK cages[]: a weaker restatement is caged against each party's own appetite band, "

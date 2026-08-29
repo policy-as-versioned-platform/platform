@@ -137,6 +137,73 @@ def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
 
 
 # --------------------------------------------------------------------------
+# propose-never-dispose, read off the argv this module BUILDS
+# --------------------------------------------------------------------------
+# An attribute name is not what disposes of a pull request; a `gh` verb is. The
+# selfcheck used to assert only that no `merge`/`approve`/`dispose` attribute
+# existed on this module, and a single
+# `_gh("pr", "merge", "--squash", "--admin", branch, repo=repo)` appended to
+# `_open_or_update_pr` passed every one of those assertions and printed "The
+# war-gamer proposes; a human disposes." underneath it (found 2026-08-29).
+# propose-tier.yml already grants the `contents: write` + `pull-requests: write`
+# that call needs, so nothing else would have stopped it either.
+#
+# ponytail: string constants in positional arguments and in a list/tuple
+# literal, plus the one REST shape (`.../merge`) that carries the verb in a URL
+# rather than in an argument. A verb assembled at run time --
+# `_gh("pr", verb)` -- is not matched, and a credential that cannot merge is the
+# upgrade path (a GitHub App token with `pull_requests: write` and no
+# `contents: write` makes the refusal the server's). What is bought here is that
+# the ordinary way to write the call -- literally, the way the plant below
+# writes it -- is refused at selfcheck rather than at review.
+DISPOSING_ARGS = frozenset({
+    "merge", "--merge", "--squash", "--rebase", "--admin", "--auto",
+    "approve", "--approve", "close", "--delete-branch",
+})
+# Matched against string CONSTANTS in the tree, never against the raw text: a
+# comment saying the words is not a call making them, and a text-level scan
+# flagged this file's own explanation of itself.
+_MERGE_ENDPOINT = re.compile(r"/merges?/?$")
+
+
+def disposing_calls(source: str) -> list[str]:
+    """Every call in `source` that would dispose of a pull request rather than
+    propose one, as `line N: [argv]` strings. Empty is the property."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and _MERGE_ENDPOINT.search(node.value):
+            found.append(f"line {node.lineno} names a /merge REST endpoint: {node.value!r}")
+        if not isinstance(node, ast.Call):
+            continue
+        argv = [a.value for a in node.args
+                if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+        argv += [e.value for a in node.args if isinstance(a, (ast.List, ast.Tuple))
+                 for e in a.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if not argv:
+            continue
+        # The verb is usually its own argument (`"pr", "merge"`), and in the REST shape it is the
+        # last segment of a path (`"repos/o/r/pulls/1/merge"`), which is the same disposal wearing
+        # a URL.
+        verbs = set(argv) | {a.rsplit("/", 1)[-1] for a in argv if "/" in a}
+        if (DISPOSING_ARGS & verbs) and ({"pr", "api", "review"} & set(argv)):
+            found.append(f"line {node.lineno} builds a disposing gh command: {argv}")
+    return found
+
+
+# The plant. Kept beside the scanner rather than in a fixture file, so that
+# "the guard bites" is asserted by the same commit that could weaken it, and so
+# that a reader can see exactly what shape is being refused.
+PLANTED_DISPOSAL = '''
+def _open_or_update_pr(p, base, repo):
+    number = _gh("pr", "create", "--head", p["branch"], "--base", base, repo=repo)
+    _gh("pr", "merge", "--squash", "--admin", p["branch"], repo=repo)
+    _gh("api", "--method", "PUT", "repos/o/r/pulls/1/merge")
+    return number
+'''
+
+
+# --------------------------------------------------------------------------
 # the text edit -- a line edit, not a YAML re-dump (render-faithfulness
 # ethos, applied to the Namespace declaration instead of a composed policy)
 # --------------------------------------------------------------------------
@@ -596,30 +663,25 @@ def selfcheck() -> None:
             assert not callable(getattr(me, banned, None)), \
                 f"tier_pr must expose no {banned}()"
 
-        # Attribute names are not what disposes of a pull request; `gh` verbs are. A single
-        # `_gh("pr", "merge", "--squash", "--admin", branch, repo=repo)` appended to
-        # _open_or_update_pr passed every assertion above and printed "The war-gamer proposes; a
-        # human disposes." underneath it (found 2026-08-29), and propose-tier.yml already grants
-        # the `contents: write` + `pull-requests: write` that call needs. So read the argv this
-        # module builds, not the names it happens to define.
+        # Attribute names are not what disposes of a pull request; `gh` verbs are. So read the
+        # argv this module BUILDS (see `disposing_calls` above for what that does and does not
+        # buy), and -- because a scanner that has only ever seen clean source cannot tell
+        # "correct" from "always says nothing" -- PLANT the disposal and require it to be caught.
         source = Path(__file__).read_text()
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.Call):
-                continue
-            argv = [a.value for a in node.args
-                    if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-            argv += [e.value for a in node.args if isinstance(a, (ast.List, ast.Tuple))
-                     for e in a.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-            if not argv:
-                continue
-            disposing = {"merge", "--merge", "--squash", "--rebase", "--admin", "--auto",
-                         "approve", "--approve", "close", "--delete-branch"} & set(argv)
-            if disposing and ("pr" in argv or "api" in argv or "review" in argv):
-                raise AssertionError(
-                    f"line {node.lineno} builds a disposing gh command: {argv} -- the war-gamer "
-                    f"proposes and a human disposes (ADR-0015)")
-        assert not re.search(r"/merge['\"]", source), \
-            "this module builds a gh api call to a /merge endpoint"
+        # The plant lives in this module's own text as a string constant, so it must not be
+        # parsed as if it were code: check it separately, then check the rest.
+        assert PLANTED_DISPOSAL in source, "the planted-disposal fixture is not in this file"
+        planted = disposing_calls(PLANTED_DISPOSAL)
+        assert len(planted) == 3, ("the plant must be caught -- twice on argv, once on the "
+                                   "REST endpoint it names", planted)
+        assert any("--squash" in hit for hit in planted), planted
+        assert any("/merge REST endpoint" in hit for hit in planted), planted
+        # A pr CREATE in the same plant is not a disposal, so the scanner is not just shouting
+        # at every gh call it sees.
+        assert not disposing_calls('_gh("pr", "create", "--head", b, "--base", base)')
+
+        real = disposing_calls(source.replace(PLANTED_DISPOSAL, ""))
+        assert not real, (real, "the war-gamer proposes and a human disposes (ADR-0015)")
 
     print(
         "ok  a proposal opens a PR editing posture.acme.io/tier on the GOVERNED NAMESPACE "
@@ -631,7 +693,10 @@ def selfcheck() -> None:
         "a price still flagged proposed_as=issue opens a PULL REQUEST -- no issue path "
         "exists any more (ADR-0022); yesterday's closed-unmerged PR SUPPRESSES the identical "
         "proposal while one priced under another curve does not (the ledger is derived, "
-        "nothing records the no); no merge()/approve()/dispose() anywhere in this module."
+        "nothing records the no); no merge()/approve()/dispose() anywhere in this module, and "
+        "no DISPOSING GH CALL either -- the argv this module builds is read, a planted "
+        "`_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and a planted /merge REST path "
+        "are both caught, and a `gh pr create` is not."
     )
 
 

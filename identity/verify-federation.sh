@@ -90,14 +90,27 @@ if ! substrate_ok "$CLUSTER"; then
 elif ! timeout 10 kubectl --context "$CTX" get crd clusterfederatedtrustdomains.spire.spiffe.io >/dev/null 2>&1; then
   live_tail_skip "the ClusterFederatedTrustDomain CRD is not installed on $CTX (run identity/up.sh)"
 else
-  # The CRD is there. What is not there is a counterparty.
+  # The CRD is there. Is a counterparty? 2026-08-29 review: every branch of this
+  # tail called live_tail_skip, the `else` unconditionally, so pass_line below
+  # was unreachable -- the script could never report the good news on the day a
+  # second trust domain appeared. SKIP is still the truthful answer today, but
+  # it is now the answer to an OBSERVATION rather than a foregone conclusion.
   TD=$(timeout 10 kubectl --context "$CTX" -n spire-system get cm spire-server \
     -o jsonpath='{.data.server\.conf}' 2>/dev/null \
     | tr -d ' "' | grep -o 'trust_domain:[^,}]*' | head -1 || true)
-  live_tail_skip "no peer trust domain serves a bundle endpoint: driftwood still runs the single \
-estate-wide domain (${TD:-trust_domain unreadable}) rather than driftwood.acme.internal, tuppence \
-and ludlow run no SPIRE at all, and spire-server.federation is disabled here so this cluster \
-serves no endpoint either. Federation is declared in identity/federation/, not observed"
+  # A federated peer exists on this cluster when SPIRE has been told about one:
+  # a ClusterFederatedTrustDomain object naming a bundle endpoint.
+  PEERS=$(timeout 10 kubectl --context "$CTX" get clusterfederatedtrustdomains.spire.spiffe.io \
+    -o jsonpath='{range .items[*]}{.spec.trustDomain}{" "}{end}' 2>/dev/null || true)
+  if [ -z "${PEERS// /}" ]; then
+    live_tail_skip "no peer trust domain serves a bundle endpoint: this cluster carries no \
+ClusterFederatedTrustDomain object at all, driftwood still runs the single estate-wide domain \
+(${TD:-trust_domain unreadable}) rather than driftwood.acme.internal, tuppence and ludlow run no \
+SPIRE at all, and spire-server.federation is disabled here so this cluster serves no endpoint \
+either. Federation is declared in identity/federation/, not observed"
+  else
+    echo "  ok  live: ${TD:-this cluster} federates with declared peer trust domain(s): ${PEERS% }"
+  fi
 fi
 
 pass_line "each cluster-running party has its own trust domain and the four domains federate pairwise"

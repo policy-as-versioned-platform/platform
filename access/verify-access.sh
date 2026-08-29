@@ -114,10 +114,29 @@ else
   }
   hr_msg() { timeout 20 kubectl --context "$CTX" -n access get helmrelease "$1" \
                -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null; }
+  # One kubectl call is not an observation. Under load (a KinD control plane
+  # sharing a laptop with kyverno, a rollout and the rest of the gate) the API
+  # server intermittently answers slowly or not at all, and an EMPTY listing
+  # graded as "pod not Running" is exactly the confusion this whole surface
+  # exists to refuse: silence is not evidence. Observed 2026-08-29 -- two
+  # consecutive gate runs each failed on a DIFFERENT pod that was, both times,
+  # Running. Retry; and if the listing is empty every time, the substrate could
+  # not be looked at, which is a skip, not a false.
+  pod_phases() {
+    for _ in 1 2 3; do
+      out="$(timeout 20 kubectl --context "$CTX" -n access get pods \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null)"
+      [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+      sleep 2
+    done
+    return 1
+  }
   running() {
-    timeout 20 kubectl --context "$CTX" -n access get pods \
-      -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
-      | grep -q "^$1.* Running$"
+    phases="$(pod_phases)" || {
+      live_tail_skip "the API server on $CTX returned no pod listing for namespace access in three tries"
+      return 0
+    }
+    printf '%s\n' "$phases" | grep -q "^$1.* Running$"
   }
   for r in dex pomerium; do
     hr_ready "$r" && echo "  ok   HelmRelease $r Ready" || fail "HelmRelease $r not Ready: $(hr_msg "$r")"

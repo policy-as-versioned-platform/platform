@@ -89,13 +89,25 @@ if fails: sys.exit(f"\n{len(fails)} invariant(s) broken")
 print("  -- de-posture is out-of-scope for stamp/validate/orphan-guard AND drops the posture SVID --")
 PY
 
-if have kubectl; then
-  say "4. offline: manifests are valid (client dry-run)"
-  kubectl apply --dry-run=client -f "$HERE/manifests/rbac.yaml"    >/dev/null || fail "rbac.yaml invalid"
-  kubectl apply --dry-run=client -f "$HERE/manifests/cronjob.yaml" >/dev/null || fail "cronjob.yaml invalid"
-  echo "  ok   rbac.yaml + cronjob.yaml apply-clean"
-else
+# `kubectl apply --dry-run=client` was labelled "offline" here and is not:
+# kubectl downloads the OpenAPI schema from the API SERVER to validate against,
+# so with no reachable cluster it fails on the download, not on the manifest.
+# That went unnoticed while a current-context happened to point at a live KinD;
+# on 2026-08-29 another agent's `kind delete cluster` unset the current context
+# and this section failed with "failed to download openapi ... connection
+# refused" while both manifests were perfectly valid. Name the cluster this
+# estate actually runs, and when it is not reachable say that instead of
+# grading the manifests on it (the same shape as the kubectl-absent branch
+# right below, and the same shape as this script's own live tail).
+if ! have kubectl; then
   say "4. skipped: kubectl absent (manifest dry-run)"
+elif ! timeout 10 kubectl --context "$CTX" version >/dev/null 2>&1; then
+  say "4. skipped: $CTX not reachable -- a client dry-run validates against the API server's own OpenAPI schema, so there is nothing to validate against"
+else
+  say "4. manifests are valid (client dry-run against $CTX's schema)"
+  kubectl --context "$CTX" apply --dry-run=client -f "$HERE/manifests/rbac.yaml"    >/dev/null || fail "rbac.yaml invalid"
+  kubectl --context "$CTX" apply --dry-run=client -f "$HERE/manifests/cronjob.yaml" >/dev/null || fail "cronjob.yaml invalid"
+  echo "  ok   rbac.yaml + cronjob.yaml apply-clean"
 fi
 
 # ---- live tail: only if the CronJob is installed and a stale postured pod exists ----
