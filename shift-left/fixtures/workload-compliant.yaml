@@ -1,19 +1,24 @@
-# An institution dev's workload PR, pinned to policy-version 2.0.0 and
-# compliant with BOTH 2.0.0 and 3.0.0 -- passes the whole ±1 window.
+# REPINNED 2026-08-29: the whole 2.x/3.x fan-out is retired from
+# distribution/versions.yaml -- every one of those lines could not admit a pod,
+# and every one read the tier from the pod's own label. 4.0.0 is the only
+# version the array declares now, so it is the only version a fixture may
+# claim: ci-check.py refuses an orphan target, by design.
 #
-# It carries posture.acme.io/tier=restricted on purpose. The cage
-# (cage-tier.yaml) mutates every version-claiming pod BEFORE validation runs,
-# and the default `baseline` tier sets readOnlyRootFilesystem=false on every
-# container -- which 3.0.0's require-nonroot then refuses. A baseline-tier pod
-# cannot satisfy 3.0.0's tightened rule at all; only restricted/quarantine
-# (harden=true) can. Declaring the tier here is what makes "compliant with
-# 3.0.0" true after the cage, not just before it.
+# An institution dev's workload PR, pinned to policy-version 4.0.0 and
+# compliant with its whole (currently single-line) +/-1 window.
+#
+# It carries posture.acme.io/tier=restricted on purpose. Under 4.0.0 the tier
+# is declared on the governed Namespace and this label is an OUTPUT the cage
+# writes (ADR-0022) -- but `kyverno apply` offline has no Namespace object to
+# read, so the cage falls closed to `isolated` and the label here is what makes
+# the fixture's intent legible to a reader. Either way the rung is hardened, so
+# require-nonroot's readOnlyRootFilesystem rule is satisfied after the cage.
 apiVersion: v1
 kind: Pod
 metadata:
   name: checkout-svc
   labels:
-    policy-as-versioned.dev/policy-version: "2.0.0"
+    policy-as-versioned.dev/policy-version: "4.0.0"
     posture.acme.io/tier: restricted
 spec:
   securityContext: { runAsNonRoot: true }

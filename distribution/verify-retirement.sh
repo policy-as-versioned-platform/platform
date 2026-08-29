@@ -5,9 +5,14 @@
 # — stops allowing it, so a workload still claiming the retired version is denied.
 # Exits non-zero if the beat would fail on stage.
 #
-# Offline core: render the orphan-guard BEFORE and AFTER retiring 2.0.0 and show
-# the same 2.0.0 pod flips admit -> deny. Live tail (if reachable): the retired
-# version's Kustomization/policy is actually gone.
+# Offline core: render the orphan-guard BEFORE and AFTER retiring a version the
+# array really declares, and show the same pod flips admit -> deny. Live tail
+# (if reachable): the retired version's Kustomization/policy is actually gone.
+#
+# The subject is the FIRST version the array declares, read from versions.yaml
+# rather than hardcoded -- 2026-08-29 really did retire 2.0.0, 2.0.1 and 3.0.0
+# (none of them could admit a pod), and a hardcoded subject would have made this
+# beat fail on a retirement, which is the one event it exists to prove.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -16,7 +21,31 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-RETIRE=2.0.0
+RETIRE="$(python3 -c "
+import importlib.util
+from pathlib import Path
+here = Path('$HERE')
+spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
+og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
+print(og.versions(here / 'versions.yaml')[0])
+")"
+[ -n "$RETIRE" ] || fail "distribution/versions.yaml declares no versions to retire"
+# The beat is "retire ONE and the rest keep running". With a single declared
+# version there is no rest: retiring it leaves an empty allow-list, which
+# render-orphan-guard.py refuses to render (a guard that allows nothing is not
+# a policy anyone ships). Could-not-look with that reason, never a pass.
+DECLARED="$(python3 -c "
+import importlib.util
+from pathlib import Path
+here = Path('$HERE')
+spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
+og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
+print(len(og.versions(here / 'versions.yaml')))
+")"
+if [ "$DECLARED" -lt 2 ]; then
+  echo "SKIP: distribution/versions.yaml declares one version ($RETIRE), so a retirement would leave an empty allow-list, which render-orphan-guard.py refuses to render; the beat needs a second declared version to show one retiring while the other keeps running"
+  exit 3
+fi
 
 cat > "$WORK/pod.yaml" <<YAML
 apiVersion: v1

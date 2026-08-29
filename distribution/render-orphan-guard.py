@@ -101,19 +101,26 @@ def selfcheck() -> None:
     # (cs-15 replaced 1.0.0/2.0.0 with 2.0.0/3.0.0), and this selfcheck must
     # not need editing on every one.
     vs = versions(HERE / "versions.yaml")
-    assert len(vs) >= 2, f"expected at least the two founding versions, got {vs}"
+    # >= 1, not >= 2: on 2026-08-29 the whole 2.x/3.x fan-out was retired and the
+    # array legitimately declares one line. An array with NO element would render
+    # an empty allow-list, which orphan_guard() refuses outright.
+    assert len(vs) >= 1, f"the version array declares nothing, so nothing can run: {vs}"
     # elements() carries the raw dicts (commit field and all) versions()
     # itself is built from -- one parse point, not two.
     els = elements(HERE / "versions.yaml")
     assert [e["version"] for e in els] == vs, els
-    # Every element but possibly the newest carries a pinned `commit`. The
-    # newest may be UNCUT: its element is added when the policy body changes,
-    # and cut-release.yml fills the commit in when it cuts the signed tag
-    # (the ResourceSet template already makes `commit` optional, and
-    # computed-semver/release_integrity.py's empty-commit rule refuses a
-    # RELEASE whose array still has a hole). An older element without one
-    # would be a real hole, so only the last is allowed to be uncut.
-    assert all("commit" in e for e in els[:-1]), els
+    # Uncut elements are a TAIL, never a hole. An element is added when the
+    # policy body changes and cut-release.yml fills its commit in when it
+    # cuts the signed tag (the ResourceSet template already makes `commit`
+    # optional, and computed-semver/release_integrity.py's empty-commit rule
+    # refuses a RELEASE whose array still has one). One release event may cut
+    # more than one version -- 2026-08-29 briefly queued 2.0.2, 3.0.1 and 4.0.0 at
+    # once (two patch backports plus the cage release) -- so the check is
+    # that no CUT element sits after an uncut one, not that only the last is
+    # uncut. A cut element following an uncut one is the real hole.
+    cut = ["commit" in e for e in els]
+    assert cut == sorted(cut, reverse=True), \
+        f"a cut element sits after an uncut one -- an uncut element is a pending tail, not a hole: {els}"
     # allow-list is exactly the array — no drift
     og = orphan_guard(vs)
     assert og["spec"]["variables"][0]["expression"] == _allow_expr(vs)
@@ -124,7 +131,18 @@ def selfcheck() -> None:
     retired = vs[-1]
     remaining = versions(HERE / "versions.yaml", retire=retired)
     assert remaining == [v for v in vs if v != retired], remaining
-    assert orphan_guard(remaining)["spec"]["variables"][0]["expression"] == _allow_expr(remaining)
+    if remaining:
+        assert orphan_guard(remaining)["spec"]["variables"][0]["expression"] == _allow_expr(remaining)
+    else:
+        # Retiring the ONLY declared version leaves nothing runnable, and an
+        # empty allow-list is not a policy anyone should ship -- orphan_guard()
+        # refuses it outright, and this asserts that it does.
+        try:
+            orphan_guard(remaining)
+        except SystemExit as e:
+            assert "empty allow-list" in str(e), e
+        else:
+            raise AssertionError("an empty allow-list rendered instead of being refused")
     # every declared version has a rendered dir (the fan-out cannot orphan a
     # dir the array still points at). NOT the other direction: cs-15 retired
     # 1.0.0/2.0.0 from the array while deliberately leaving their rendered

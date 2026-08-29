@@ -312,6 +312,32 @@ PY
 )
   # The newest declared version is the one the current authoring copy rendered
   # to, so it is the copy whose behaviour this tail is entitled to assert.
+  #
+  # 2026-08-29 review: that is a correct statement about AUTHORSHIP and a wrong
+  # one about RISK. Every version in the array is installed and selectable by
+  # any pod, so the array's weakest member is the estate's actual cage -- and
+  # the behavioural probes below (forged tier clobbered, untiered falls closed,
+  # tighten-only, host namespaces) only ever ran against NEWEST. The array
+  # holds exactly one version today, so NEWEST IS the whole array and the gap
+  # is closed by arithmetic; if a second is ever declared, this says so rather
+  # than quietly grading a quarter of the surface.
+  # ponytail: the honest upgrade is a per-version expectation table and a loop.
+  # Add it the day a second line is declared; until then it would be untestable
+  # code with no second line to run against.
+  DECLARED_COUNT="$(python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+import importlib.util
+dist = Path(sys.argv[1]).parent / "distribution"
+spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(len(mod.versions(dist / "versions.yaml")))
+PY
+)"
+  if [ "$DECLARED_COUNT" -gt 1 ]; then
+    live_tail_skip "distribution/versions.yaml declares $DECLARED_COUNT versions and the behavioural probes below only exercise the newest; every declared version is installed and selectable by any pod, so the others are ungraded here and this tail may not claim the cage holds for them"
+  fi
   NEWEST="$(python3 - "$HERE" <<'PY'
 import sys
 from pathlib import Path

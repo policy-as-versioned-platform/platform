@@ -56,6 +56,14 @@ while IFS= read -r v; do
     || echo "  (Kyverno GeneratingPolicy CRD not ready — install Kyverno, then re-run up.sh)"
 done < "$WORK/versions.txt"
 
+# Prune what the array no longer declares -- the other half of the fan-out.
+# The ResourceSet's Kustomizations carry `prune: true`; this demo path only ever
+# applied, so a retired version's cage stayed installed forever. See
+# graded/prune-retired.py for what that cost on 2026-08-29.
+say "pruning versions distribution/versions.yaml no longer declares (Flux's prune: true, offline)"
+# shellcheck disable=SC2046  # word splitting is the argv this wants
+python3 "$HERE/prune-retired.py" "$CTX" $(cat "$WORK/versions.txt")
+
 # The two CLUSTER-WIDE guards. Both are rendered by flux-operator's ResourceSet in
 # distribution/versions.yaml, which is NOT in the loop on this demo path -- so
 # until now a cluster that had the cage did not have its guards, and the review of

@@ -22,7 +22,7 @@ that flip BEFORE merge, not at deploy.
 
 Usage:
     ci-check.py --resource path/to/workload.yaml
-    ci-check.py --resource path/to/workload.yaml --target 2.0.0   # override the label
+    ci-check.py --resource path/to/workload.yaml --target 4.0.0   # override the label
 """
 from __future__ import annotations
 

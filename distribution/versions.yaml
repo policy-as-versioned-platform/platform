@@ -28,9 +28,37 @@ metadata:
 spec:
   inputs:
     - versions:
-        - { version: "2.0.0", tag: "policy/v2.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
-        - { version: "2.0.1", tag: "policy/v2.0.1", commit: "a1072d9e183ca06a9aaf626d25869996e6179695" }
-        - { version: "3.0.0", tag: "policy/v3.0.0", commit: "fa862b710fe34b475aba54f926a95164f003b0c1" }
+        # RETIRED 2026-08-29 -- 2.0.0, 2.0.1, 3.0.0 and the two patch backports
+        # 2.0.2 and 3.0.1 were all here. Two independent reasons, both observed:
+        #
+        #   1. Not deployable. Every 2.x/3.x cage-tier writes
+        #      spec.priorityClassName from a mutating webhook without the
+        #      spec.priority and spec.preemptionPolicy the Priority admission
+        #      plugin re-derives from that same class, so the plugin refuses the
+        #      pod because the fields disagree. An adopter pinned to one of them
+        #      could not deploy at all. The 2.0.2/3.0.1 backports repaired
+        #      exactly that triple, and nothing else.
+        #
+        #   2. Not safe, and unfixable as a patch. Every pre-ADR-0022 body reads
+        #      the tier from the POD's own label. Observed live on kind-driftwood
+        #      once the backports made pods creatable again: in Namespace
+        #      driftwood, which declares posture.acme.io/tier=isolated, a pod
+        #      claiming 2.0.2 and forging posture.acme.io/tier=baseline was
+        #      admitted as baseline with hostNetwork=true and reached the API
+        #      server; the identical pod claiming 4.0.0 was clobbered to
+        #      isolated, hostNetwork=false, and reached nothing. Teaching a 2.x
+        #      or 3.x body to read namespaceObject IS ADR-0022, which the engine
+        #      classifies major -- so it cannot be a patch on those lines, and
+        #      ADR-0011 refuses a declaration weaker than the computed one. The
+        #      honest repair is retirement, not a number.
+        #
+        # Deleting the element is the estate's own retirement mechanism
+        # (verify-retirement.sh): Flux prunes each Kustomization and the orphan
+        # guard stops allowing the version. The RELEASED trees for 2.0.0, 2.0.1
+        # and 3.0.0 stay on disk and behind their signed tags, unedited -- a
+        # released tree is frozen and history is not rewritten. The 2.0.2 and
+        # 3.0.1 backport trees were never cut and are gone. See README.md.
+        #
         # 4.0.0 -- the cage release (ticket 26, ADR-0022): the tier moves to the
         # governed Namespace and is read through namespaceObject, the pod label
         # becomes an output, the cage is tighten-only, the `isolated` rung and
@@ -39,7 +67,14 @@ spec:
         # without which the API server's Priority admission plugin refuses the
         # pod. `commit` is deliberately absent: the ResourceSet template makes it
         # optional, and it is filled in when cut-release.yml cuts the signed tag.
-        - { version: "4.0.0", tag: "policy/v4.0.0" }
+        # `bump` is the DECLARED bump (ticket 43, ticket 18 Answer 5): the
+        # reviewed array element is where the publisher declares what kind of
+        # change this release is, and cut-release-gate.py reads it and refuses
+        # if the number the tag steps disagrees. Before this field the "declared"
+        # bump was derived from the tag arithmetic, so it could never disagree
+        # with itself. major: the cage tier moved to the governed Namespace and
+        # the pod label became an output -- every 3.0.0 consumer must act.
+        - { version: "4.0.0", tag: "policy/v4.0.0", bump: "major" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---

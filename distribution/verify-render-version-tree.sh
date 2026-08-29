@@ -71,6 +71,64 @@ echo "$out" | awk '/caged\/Pod\/claims-8-8-8/{f=1} f&&/^---/{exit} f' | grep -q 
 echo "$out" | awk '/caged\/Pod\/claims-9-9-9/{f=1} f&&/^---/{exit} f' | grep -q 'priorityClassName' \
   && fail "8.8.8's cage-tier mutated a pod claiming 9.9.9 -- self-scope leaked across versions"
 
+say "3. offline: every tree's cage-tier dial agrees with that tree's own PriorityClasses"
+# The defect class that took out 2.0.0, 2.0.1 and 3.0.0: the API server's
+# Priority admission plugin re-derives priority and preemptionPolicy from the
+# class the mutation names and refuses the pod if any of the three disagrees.
+# cage-tier hand-duplicates that class's integer in its dial and writes
+# preemptionPolicy as a literal, so a one-line edit to a PriorityClass body
+# stops every pod on that line admitting. Caught here, offline, before a
+# cluster sees it.
+python3 - "$HERE" <<'PY' || fail "a cage-tier dial disagrees with its own PriorityClasses"
+import re, sys
+from pathlib import Path
+import yaml
+
+dist = Path(sys.argv[1])
+# The DECLARED versions plus the authoring copy the next release renders from.
+# A retired tree is frozen behind its signed tag and is not runnable, so its
+# (real, and exactly this) defect is history, not a standing red -- see
+# distribution/versions.yaml.
+import importlib.util
+spec = importlib.util.spec_from_file_location("rog", dist / "render-orphan-guard.py")
+rog = importlib.util.module_from_spec(spec); spec.loader.exec_module(rog)
+trees = [dist / "policies" / f"v{v}" for v in rog.versions(dist / "versions.yaml")]
+trees.append(dist.parent / "graded" / "policies")
+bad, checked = [], 0
+for tree in trees:
+    tier_file, pc_file = tree / "cage-tier.yaml", tree / "priorityclasses.yaml"
+    if not tier_file.exists() or not pc_file.exists():
+        continue
+    classes = {d["metadata"]["name"]: d
+               for d in yaml.safe_load_all(pc_file.read_text())
+               if isinstance(d, dict) and d.get("kind") == "PriorityClass"}
+    body = tier_file.read_text()
+    # the dial: one {'tier': {...'pc':'NAME'...'prio':'INT'...}} entry per rung
+    dial = dict(re.findall(r"'pc'\s*:\s*'([^']+)'\s*,\s*'prio'\s*:\s*'(-?\d+)'", body))
+    if not dial:
+        bad.append(f"{tree.name}: no 'pc'/'prio' dial found in cage-tier.yaml")
+        continue
+    literal = re.search(r'preemptionPolicy:\s*\\"([A-Za-z]+)\\"', body)
+    for name, prio in dial.items():
+        checked += 1
+        pc = classes.get(name)
+        if pc is None:
+            bad.append(f"{tree.name}: the dial names PriorityClass {name}, which the tree does not ship")
+            continue
+        if int(prio) != int(pc["value"]):
+            bad.append(f"{tree.name}: dial says priority {prio} for {name}, the class says {pc['value']}")
+        want = pc.get("preemptionPolicy", "PreemptLowerPriority")
+        if literal and literal.group(1) != want:
+            bad.append(f"{tree.name}: cage-tier writes preemptionPolicy {literal.group(1)!r}, "
+                       f"{name} declares {want!r}")
+for line in bad:
+    print(f"  bad  {line}")
+if bad:
+    raise SystemExit(1)
+print(f"  ok   {checked} (tree, rung) dial entries match their own PriorityClass value and preemptionPolicy")
+PY
+
 echo "PASS: every mandatory member renders with a versioned name, the policy-version label, a"
 echo "      matchConditions self-scope (never objectSelector); cage-tier names its own"
-echo "      PriorityClasses; and two rendered versions coexist, each judging only its own claim."
+echo "      PriorityClasses and agrees with their value and preemptionPolicy; and two rendered"
+echo "      versions coexist, each judging only its own claim."
