@@ -54,6 +54,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,18 +66,50 @@ import pairing
 NO_PREDECESSOR = "no predecessor"
 
 
-def parse_semver(v: str) -> tuple[int, int, int]:
+SEMVER_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?")
+
+
+def parse_semver(v: str) -> tuple:
     """The one semver parser gate.py's version-legality rule (cs-18) and this
     module's window both need. Lives here, the leaf module gate.py imports
     (never the reverse), so gate.py delegates to it rather than keeping a
-    second copy."""
-    parts = v.split(".")
-    if len(parts) != 3:
+    second copy.
+
+    Ticket 43 / 18 Answer 1: prerelease-aware, because a DEGRADED publish
+    carries a prerelease suffix on the declared number
+    (`policy/v4.0.1-quarantine.1`) and "the base number stays and sorts
+    BELOW the clean number". Semver 2.0.0 rule 11 exactly: a version with a
+    prerelease has LOWER precedence than the same base without one, and two
+    prereleases compare identifier by identifier, numeric identifiers below
+    alphanumeric ones.
+
+    The first three elements stay plain ints, so every caller that indexes
+    [0], [1], [2] for major/minor/patch (gate.check_version_legality) is
+    unchanged. Element 3 is the release flag -- 0 for a prerelease, 1 for a
+    clean release -- which is what makes 4.0.1-quarantine.1 < 4.0.1, and it
+    always decides before any mixed-type identifier is reached."""
+    m = SEMVER_RE.fullmatch(v.strip())
+    if not m:
         raise ValueError(f"not a plain major.minor.patch version: {v!r}")
-    try:
-        return tuple(int(p) for p in parts)  # type: ignore[return-value]
-    except ValueError:
-        raise ValueError(f"not a plain major.minor.patch version: {v!r}") from None
+    base = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    pre = m.group(4)
+    if pre is None:
+        return base + (1,)
+    ids = tuple((0, int(p)) if p.isdigit() else (1, p) for p in pre.split("."))
+    return base + (0,) + ids
+
+
+def is_prerelease(v: str) -> bool:
+    """True for `4.0.1-quarantine.1`, false for `4.0.1`. One reader for the
+    one thing a degraded publish is recognised by."""
+    return parse_semver(v)[3] == 0
+
+
+def base_version(v: str) -> str:
+    """`4.0.1-quarantine.1` -> `4.0.1`. The declared BASE number, which a
+    degraded publish never rewrites (ADR-0011's superseding note)."""
+    major, minor, patch = parse_semver(v)[:3]
+    return f"{major}.{minor}.{patch}"
 
 
 def window_below(window: list[str], declared: str, backport: bool = False) -> list[str]:
@@ -193,6 +226,26 @@ def selfcheck() -> None:
     assert window_below(["1.0.0", "2.0.1"], "3.0.0", backport=True) == ["2.0.1"]
     assert window_below(["1.0.0"], "3.0.0", backport=True) == ["1.0.0"]
     assert window_below([], "3.0.0", backport=True) == []
+
+    # 1b. Ticket 43 / 18 Answer 1: prerelease ordering. A DEGRADED publish
+    #     carries a prerelease suffix on the declared number, and the base
+    #     number must sort BELOW the clean number -- if it sorted above, the
+    #     degraded release would become the newest supported version and
+    #     every window, every `existing_versions` sort and every
+    #     `window_below` call would treat the weak release as the strong
+    #     one's successor.
+    assert parse_semver("4.0.1-quarantine.1") < parse_semver("4.0.1"), "a prerelease must sort BELOW its own release"
+    assert parse_semver("4.0.0") < parse_semver("4.0.1-quarantine.1")
+    assert parse_semver("4.0.1-quarantine.1") < parse_semver("4.0.1-quarantine.2")
+    assert parse_semver("4.0.1-quarantine.2") < parse_semver("4.0.1-quarantine.10"), "numeric identifiers compare numerically"
+    assert sorted(["4.0.1", "4.0.1-quarantine.1", "4.0.0"], key=parse_semver) == [
+        "4.0.0", "4.0.1-quarantine.1", "4.0.1"], "the sort a release array and a tag history both use"
+    assert is_prerelease("4.0.1-quarantine.1") and not is_prerelease("4.0.1")
+    assert base_version("4.0.1-quarantine.1") == "4.0.1", "the base number a degraded publish never rewrites"
+    #     ...and the window sees a degraded release as a real predecessor
+    #     below the clean number, not as something above it.
+    assert window_below(["4.0.0", "4.0.1-quarantine.1"], "4.0.1") == ["4.0.0", "4.0.1-quarantine.1"]
+    assert window_below(["4.0.0", "4.0.1"], "4.0.1-quarantine.1") == ["4.0.0"]
 
     # 2. An empty window is NO_PREDECESSOR, not a bare classification --
     #    "a comparison against nothing is not dressed up as a computed patch."
@@ -312,7 +365,8 @@ def selfcheck() -> None:
     assert "1.0.0:" in ev_rogue.pairing_failure, ev_rogue.pairing_failure
 
     print(
-        "selfcheck ok: window_below filters and sorts ascending, tolerates a gap, "
+        "selfcheck ok: a prerelease sorts below its own release and above the "
+        "version beneath it (ticket 43's degraded publish); window_below filters and sorts ascending, tolerates a gap, "
         "and backport narrows to the single highest entry; an empty window is "
         "NO_PREDECESSOR, not a bare classification; comparing against the whole "
         "window catches a major an N-1-only comparison would hide (proven against "
