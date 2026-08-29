@@ -213,14 +213,15 @@ def propose(row):
 
 def _propose_tier(row):
     """A priced cage-tier drift (ticket 16's `prices[]`) becomes a proposal
-    that tier_pr.py (ticket 17) lands as a real PR (an ordinary tier) or a
-    real issue (a proposed `deny`) -- this only shapes what gets landed. A
-    `deny` never travels as a label: `TIERS` holds only
-    baseline/restricted/quarantine, and the `cage-tier` MutatingPolicy
-    coerces an unrecognised label value to `baseline`, so a merged `deny`
-    label would silently INVERT the proposal (ADR-0015)."""
+    that tier_pr.py (ticket 17) lands as a real PR against the adopter's
+    GOVERNED NAMESPACE declaration -- this only shapes what gets landed.
+
+    Always a pull request. ADR-0022 retired ADR-0015's issue branch: the
+    bottom rung is `isolated`, a real running cage, so every tier on the
+    ladder travels as a declaration and nothing is ever refused. `deny` is
+    not a tier any more, and composition emits `proposed_as: "label"` for
+    every entry."""
     price = row["price"]
-    is_deny = price.get("proposed_as") == "issue"
     slug = f"tier-{row['org']}-{row['kind']}-{price['source']}-{price['kind']}".replace("@", "-").replace(".", "-")
     return {
         "branch": f"wargamer/retune-{slug}",
@@ -231,17 +232,25 @@ def _propose_tier(row):
         "signed": True,
         "from_evidence": {"source": price["source"], "kind": price["kind"],
                            "old_version": price.get("old_version"), "new_version": price.get("new_version")},
-        "change": None if is_deny else {
+        "change": {
             "label": "posture.acme.io/tier",
             "from": price["old_tier"],
             "to": price["proposed_tier"],
         },
-        "proposal_kind": "issue" if is_deny else "pull_request",
+        # What moved the tier, for the PR body tier_pr.py writes: the price
+        # itself, under its own perspective and currency (ADR-0021).
+        "price": {
+            "source": price["source"], "kind": price["kind"],
+            "from": price.get("old_price"), "to": price.get("new_price"),
+            "currency": price.get("currency"), "perspective": price.get("perspective"),
+            "curve_hash": price.get("curve_hash"),
+            "policy_version": price.get("policy_version"),
+        },
+        "proposal_kind": "pull_request",
         "required_gate": GATE,
         "merged": False,               # propose-never-dispose: the agent never merges
         "auto_merge": False,
-        "disposition": ("OPEN -- issue, never a label, awaiting human review" if is_deny
-                         else "OPEN -- awaiting human review + version cross-check gate"),
+        "disposition": "OPEN -- awaiting human review + version cross-check gate",
     }
 
 
