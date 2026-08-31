@@ -393,7 +393,7 @@ if substrate_ok "$CLUSTER"; then
     set +e
     PYTHONDONTWRITEBYTECODE=1 python3 - "$tmp/gitrepos.json" "$PKG/deployment.yaml" \
       "$re_release" "$iss_release" >"$tmp/live.out" 2>&1 <<'PY'
-import json, re, sys, time, yaml
+import calendar, json, re, sys, time, yaml
 
 items = json.load(open(sys.argv[1]))["items"]
 dep = yaml.safe_load(open(sys.argv[2]))
@@ -453,7 +453,12 @@ for o in watched:
                      f"its gate stays as it was and this is not a pass")
         continue
     try:
-        age = now - time.mktime(time.strptime(at, "%Y-%m-%dT%H:%M:%SZ")) + time.timezone
+        # calendar.timegm, not time.mktime + time.timezone: `at` is UTC ("...Z") and
+        # time.mktime interprets its argument as LOCAL time, so the mktime+timezone fix-up is
+        # wrong by exactly the DST offset whenever the host is on summer time (found 2026-08-31,
+        # BST: a verdict written 90s ago read as 60 min old and SKIPped a fresh, correct verify).
+        # timegm treats the struct_time as UTC directly -- no local zone, no DST, involved at all.
+        age = now - calendar.timegm(time.strptime(at, "%Y-%m-%dT%H:%M:%SZ"))
     except ValueError:
         skips.append(f"{who}: verdict {verdict!r} carries no readable gitsign-verified-at, so its age is unknown")
         continue
