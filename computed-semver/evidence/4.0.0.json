@@ -9,11 +9,64 @@
   },
   "movement": [
     {
-      "policy": "<supported-version-array>",
+      "policy": "cage-tier.yaml",
       "verdict": "major",
+      "entries": [
+        "expr-pin-18c6b4506c6b9bb4",
+        "expr-pin-c92fcd7a8db7118b",
+        "expr-tier-18c6b4506c6b9bb4",
+        "expr-tier-42ea4b79f2f37962",
+        "expr-tier-d5ae4235772c05ac",
+        "ns-declares-130c51f5a416583f",
+        "ns-declares-1db5bcc1e654287e",
+        "ns-declares-1e95b53f4c52995a",
+        "ns-declares-8f9050cb63e886ee",
+        "ns-declares-964191f9e705b5d9",
+        "pin-declares-130c51f5a416583f",
+        "pin-declares-41c910233cb036c8",
+        "pin-ns-1db5bcc1e654287e",
+        "pin-ns-1e95b53f4c52995a",
+        "pin-ns-79aa1292efa90bce",
+        "pin-ns-dda0208d2fbdc19d",
+        "tier-declares-04446dcef10c368c",
+        "tier-declares-130c51f5a416583f",
+        "tier-declares-7749c3036c6b1807",
+        "tier-ns-1db5bcc1e654287e",
+        "tier-ns-1e95b53f4c52995a",
+        "tier-ns-3ebc3707d0128df9",
+        "tier-ns-7d217dad3fed0eeb",
+        "tier-ns-8c2001d9c3399825",
+        "tier-ns-9a4b92b228c90764",
+        "tier-ns-d7180b78e37bef53",
+        "tier-ns-e891a60413d1e233",
+        "tier-ns-e9c7cf7b9ce97ba2"
+      ],
+      "expressions": [
+        "{'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline-4-0-0',  'prio':'-10',   'harden':'false','wafCpu':'0',   'wafMem':'0'},\n 'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted-4-0-0','prio':'-100',  'harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},\n 'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine-4-0-0','prio':'-1000', 'harden':'true', 'wafCpu':'250m','wafMem':'256Mi'},\n 'isolated':  {'cpu':'100m','mem':'64Mi', 'pc':'cage-isolated-4-0-0',  'prio':'-10000','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]",
+        "namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'",
+        "namespaceObject != null\n  ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('')\n  : ''",
+        "variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n  ? variables.nsTier\n  : (variables.nsGoverned ? 'isolated' : 'baseline')"
+      ],
+      "detail": "expr-pin-18c6b4506c6b9bb4 (tier=baseline): readOnlyRootFilesystem no longer written over the workload's own value; expr-pin-c92fcd7a8db7118b (tier=baseline): readOnlyRootFilesystem no longer written over the workload's own value; expr-tier-18c6b4506c6b9bb4 (tier=baseline): readOnlyRootFilesystem no longer written over the workload's own value; expr-tier-42ea4b79f2f37962 (tier=baseline): readOnlyRootFilesystem no longer written over the workload's own value; expr-tier-d5ae4235772c05ac (tier=baseline): readOnlyRootFilesystem no longer written over the workload's own value; ns-declares-130c51f5a416583f (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; ns-declares-1db5bcc1e654287e (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; ns-declares-1e95b53f4c52995a (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; ns-declares-8f9050cb63e886ee (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed, readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; ns-declares-964191f9e705b5d9 (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed, readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; pin-declares-130c51f5a416583f (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; pin-declares-41c910233cb036c8 (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; pin-ns-1db5bcc1e654287e (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; pin-ns-1e95b53f4c52995a (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; pin-ns-79aa1292efa90bce (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; pin-ns-dda0208d2fbdc19d (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-declares-04446dcef10c368c (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; tier-declares-130c51f5a416583f (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; tier-declares-7749c3036c6b1807 (tier=baseline): readOnlyRootFilesystem, runAsNonRoot no longer written over the workload's own value; tier-ns-1db5bcc1e654287e (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-1e95b53f4c52995a (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-3ebc3707d0128df9 (tier quarantine->isolated): priorityClass narrowed; tier-ns-7d217dad3fed0eeb (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-8c2001d9c3399825 (tier restricted->quarantine): cpu, mem, priorityClass, waf narrowed; tier-ns-9a4b92b228c90764 (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-d7180b78e37bef53 (tier baseline->quarantine): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-e891a60413d1e233 (tier baseline->isolated): cpu, mem, priorityClass, dropAll, readOnlyRootFs, waf narrowed; tier-ns-e9c7cf7b9ce97ba2 (tier restricted->isolated): cpu, mem, priorityClass, waf narrowed"
+    },
+    {
+      "policy": "posture-trust-boundary.yaml",
+      "verdict": "none",
       "entries": [],
-      "expressions": [],
-      "detail": "version 3.0.0 retired from the supported window between the before-this-release window and the after -- an array-only change, no policy body diff, still breaks every cluster still pinned to it"
+      "expressions": [
+        "variables.posture == variables.claimed"
+      ],
+      "detail": "no fixture in the corpus moved"
+    },
+    {
+      "policy": "require-nonroot.yaml",
+      "verdict": "none",
+      "entries": [],
+      "expressions": [
+        "object.spec.?securityContext.?runAsNonRoot.orValue(false) == true",
+        "object.spec.containers.all(c, c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true)"
+      ],
+      "detail": "no fixture in the corpus moved"
     }
   ],
   "counts": {
@@ -23,7 +76,7 @@
   },
   "generator_version": "0.2.0",
   "corpus_checksum": "sha256:ae12308f64efddb0b99e7f452c372b70a6d42d920954df7f1f7f40dbeff82c0a",
-  "wall_clock": 0.28637754172086716,
+  "wall_clock": 88.783784424,
   "coverage": {
     "cells": 39,
     "pairs": 164,
