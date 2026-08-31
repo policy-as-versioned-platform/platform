@@ -11,6 +11,24 @@
 # federation is DECLARED, not observed, and this script exits 3 rather than
 # passing on a structural proof. That is the whole point of the exit-3 rung:
 # absence is never a pass.
+#
+# 2026-08-31 judgment call: could a second live trust domain be stood up here
+# and made to exchange a real bundle? Checked, not assumed. Network is NOT the
+# obstacle -- kind's default install puts driftwood, tuppence and ludlow on
+# ONE Docker bridge ("kind"), not three isolated ones, and a pod on driftwood
+# already reaches kind-tuppence-control-plane's IP directly (curl'd its
+# apiserver on 6443 from inside a mesh-demo pod, got a real 403, no extra
+# networking needed). The obstacle is that no second party runs SPIRE at all:
+# platform has no live cluster in this estate and tuppence/ludlow carry no
+# SPIRE CRDs, so standing one up means installing the full chart set
+# (identity/up.sh) onto a cluster this task does not own outright while
+# another agent is concurrently provisioning it (Kyverno, flux-operator) --
+# exactly the collision the build brief says not to cause. So: SKIP stands,
+# not because federation is structurally impossible, but because nothing to
+# federate WITH has been installed anywhere reachable, and installing it here
+# today would mean fighting another agent for a cluster neither of us solely
+# owns. Next runner: if tuppence or ludlow already carries SPIRE when you read
+# this, the live tail below will say so on its own -- see the 2026-08-29 note.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
@@ -106,8 +124,10 @@ else
     live_tail_skip "no peer trust domain serves a bundle endpoint: this cluster carries no \
 ClusterFederatedTrustDomain object at all, driftwood still runs the single estate-wide domain \
 (${TD:-trust_domain unreadable}) rather than driftwood.acme.internal, tuppence and ludlow run no \
-SPIRE at all, and spire-server.federation is disabled here so this cluster serves no endpoint \
-either. Federation is declared in identity/federation/, not observed"
+SPIRE at all, platform runs no live cluster in this estate either, and spire-server.federation is \
+disabled here so this cluster serves no endpoint of its own. Not a network limit -- driftwood, \
+tuppence and ludlow share one reachable Docker network -- there is simply no second trust domain \
+anywhere yet to federate with. Federation is declared in identity/federation/, not observed"
   else
     echo "  ok  live: ${TD:-this cluster} federates with declared peer trust domain(s): ${PEERS% }"
   fi
