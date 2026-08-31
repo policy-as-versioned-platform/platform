@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://policy-as-versioned.dev/schema/feeds/forward-intel.json",
+  "title": "forward-intel payload",
+  "$comment": "VERSION 2.0.0. A major, and one major: ticket 15's amendment C10 lands `register`, `claim_scope` and `derived_from` together in a single payload_schema change, because a payload_schema change is a major under ADR-0019 and three separate majors for one seam would be three re-reads for every consumer. 1.0.0 was the ADR-0021 payload alone (perspective, shock, horizon, lef, lm, currency, curve). A consumer pinned to 1.x re-reads once and gets all three.",
+  "description": "The scenario a party's twin emits about its own future, published from that party's own repo in the ADR-0019 envelope as `kind: feed, name: forward-intel`, signed by that party's twin-agent identity through the gitsign tag and nothing else. It is a scenario, never an instruction: there is no recommended-action field and there never will be (ADR-0021). The estate consumes it as one more pricing parent edge -- `source: twin` in `prices[]` -- and `platform/fair/fair.py` annualises it; a versioned selection-policy package published by the adopter turns `curve` into one cage tier. The curve never picks. The envelope's `published_at` is the as_of date of every amount in here, which is the date an FX rate must exist for if `currency` is not the consuming party's reporting currency (ADR-0020: no rate, no number, refuse).",
+  "type": "object",
+  "required": [
+    "perspective",
+    "shock",
+    "horizon",
+    "lef",
+    "lm",
+    "currency",
+    "curve",
+    "register",
+    "claim_scope",
+    "derived_from"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "perspective": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The party whose balance sheet this scenario is on, as on its party.yaml. Every amount below is that party's money and nothing else: no sum crosses perspectives (ADR-0021, hard rule 7)."
+    },
+    "shock": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What happens, in one line of plain English. The thing being priced, not its remedy."
+    },
+    "horizon": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Years the frequency triple is expressed over. 1 unless stated otherwise; it is stated here rather than assumed by the reader (ticket 08)."
+    },
+    "lef": {
+      "type": ["array", "null"],
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "number", "minimum": 0 },
+      "description": "Loss event frequency over `horizon` as a (min, mode, max) triple, or null. Null means the twin has no frequency and the subscribed pricing feed supplies it -- which is the normal case, because the twin prices one shock and has no clock (ADR-0021)."
+    },
+    "lm": {
+      "type": ["array", "object"],
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "number", "minimum": 0 },
+      "required": ["model", "mu", "sigma", "u", "xi", "beta"],
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "enum": ["lognormal-gpd"],
+          "description": "The only severity spec fair.py dispatches to twin/severity.py for. Anything else is a new model and a new major."
+        },
+        "mu": { "type": "number", "description": "Lognormal body: mean of ln(loss)." },
+        "sigma": { "type": "number", "exclusiveMinimum": 0, "description": "Lognormal body: sd of ln(loss)." },
+        "u": { "type": "number", "exclusiveMinimum": 0, "description": "Threshold where the body hands over to the tail, in `currency`." },
+        "xi": { "type": "number", "minimum": 0, "description": "GPD shape, heavy or exponential tail only. Above 0 the tail is a power law and the mean is finite only for xi < 1. Bounded below at 0 because platform/fair/severity.py accepts xi >= 0: a payload this schema passes must be one the pricer can price." },
+        "beta": { "type": "number", "exclusiveMinimum": 0, "description": "GPD scale, in `currency`." }
+      },
+      "description": "Loss magnitude, in `currency`, one of two shapes: a (min, mode, max) triple, which fair.py prices with its bounded beta-PERT and reports as tail `bounded-pert`; or a lognormal-GPD severity spec, which fair.py dispatches to twin/severity.py and reports under its own tail name. Expressed as one node rather than a oneOf on purpose: draft-07 applies `items` only to arrays and `required`/`properties` only to objects, so the union validates under a full validator and under the estate's stdlib subset checker alike."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217, for `lm` and for every `net_cost_of_risk` below. Restating in another currency needs an fx rate for the envelope's published_at date; no rate is a missing instrument and refuses (ADR-0020)."
+    },
+    "curve": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The trade-off curve: what the scenario costs under each account the party could put it in. The selection policy names the account it selects under and picks one tier from this; the curve itself never picks (ADR-0021).",
+      "items": {
+        "type": "object",
+        "required": ["account", "net_cost_of_risk"],
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The account the cost lands in -- for a cage decision, a tier name from the ladder (baseline, restricted, quarantine, isolated, infra)."
+          },
+          "net_cost_of_risk": {
+            "type": "number",
+            "description": "Residual risk plus the cost of holding this account, in `currency`, under `perspective`. Net: the control's own cost is already in it."
+          }
+        }
+      }
+    },
+    "register": {
+      "type": "array",
+      "description": "C10. Entries the scenario names but does not price. Each takes the tier selected for the priced hits in the same scenario and perspective -- strictest on the ladder if nothing in the scenario priced. No new knob, and nothing runs looser than the hit it hangs off (ticket 15 answer 4). An empty register is a real answer.",
+      "items": {
+        "type": "object",
+        "required": ["source", "id", "tier"],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The publisher of the id's namespace, e.g. 'nist', or the party for a bespoke control."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The control id inside that namespace, e.g. 'sc-28'. Keyed (source, id): a bare id is not a key."
+          },
+          "tier": {
+            "enum": ["baseline", "restricted", "quarantine", "isolated", "infra"],
+            "description": "The tier this unpriced entry takes, copied from the tier the scenario's priced hits selected. `infra` is only ever a platform-role party's."
+          },
+          "note": { "type": "string", "minLength": 1, "description": "Why it is unpriced, in one line." }
+        }
+      }
+    },
+    "claim_scope": {
+      "type": "object",
+      "description": "C10. What an insurance claim off this scenario would and would not cover, so the insurer prices exclusions from the same artefact the estate prices risk from (ticket 36: exclusions key on regime names and control ids). The twin writes scope; only an override prices.",
+      "required": ["included", "excluded"],
+      "additionalProperties": false,
+      "properties": {
+        "included": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Regime names ('uk-gdpr') or control keys ('nist:sc-28') this scenario's loss is claimable under."
+        },
+        "excluded": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The same keying, for what is carved out. An empty list is a claim of no exclusions and is read as one."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "derived_from": {
+      "type": "array",
+      "minItems": 1,
+      "description": "C10. Every pinned input this scenario was derived from, in the same shape as `inherits[]` on a party artefact, so provenance reads the same way on both sides of the seam. At least one: a scenario derived from nothing pinned is not evidence.",
+      "items": {
+        "type": "object",
+        "required": ["party", "kind", "version"],
+        "additionalProperties": false,
+        "properties": {
+          "party": { "type": "string", "minLength": 1 },
+          "kind": {
+            "enum": ["controls", "implementations", "feed"],
+            "description": "The closed parent kind, as on inherits[]."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The feed's name. Required in practice when kind is feed; meaningless otherwise."
+          },
+          "version": { "type": "string", "minLength": 1, "description": "The pinned version, no leading v." },
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The exact commit or tag read, where the version alone does not identify it (the twin's own overlay ref, say)."
+          }
+        }
+      }
+    }
+  }
+}

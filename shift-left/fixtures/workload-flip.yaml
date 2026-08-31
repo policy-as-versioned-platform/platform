@@ -1,13 +1,19 @@
-# An institution dev's workload PR, pinned to policy-version 2.0.0. Compliant
-# with 2.0.0's own rule (runAsNonRoot) but NOT its neighbor 3.0.0's tightened
-# rule (no readOnlyRootFilesystem). Today both are Audit, so this would deploy
-# fine live -- but the shift-left check runs the whole declared ±1 window
-# regardless of Audit/Deny, so it catches this before the dev ever drifts onto
-# 3.0.0's pin, or before either version's Audit is promoted to Deny (the
-# Audit->Deny flip, ADR-0006: promotion is editorial, never a timer).
+# REPINNED 2026-08-29, and DORMANT: see workload-compliant.yaml for why the
+# 2.x/3.x lines are gone from distribution/versions.yaml.
+#
+# This fixture exists to be CAUGHT: a workload compliant with its own target's
+# rule but not with a NEIGHBOUR's tightened one, which the +/-1 window catches
+# before the dev ever drifts onto that neighbour's pin (ADR-0006: an
+# Audit->Deny promotion is editorial, never a timer).
+#
+# The declared array holds ONE major line today, so there is no neighbour and
+# nothing for the window to catch. verify-shift-left.sh reads the array, sees
+# one major, and grades this beat could-not-look with that reason rather than
+# passing it on a technicality. Re-point this fixture at the older line the day
+# a second major is declared again.
 apiVersion: v1
 kind: Pod
-metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "2.0.0" } }
+metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "4.0.0" } }
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx }]

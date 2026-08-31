@@ -17,7 +17,8 @@
 #   version exists; bounded): trigger one job and assert the pod is de-postured.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -88,17 +89,33 @@ if fails: sys.exit(f"\n{len(fails)} invariant(s) broken")
 print("  -- de-posture is out-of-scope for stamp/validate/orphan-guard AND drops the posture SVID --")
 PY
 
-if have kubectl; then
-  say "4. offline: manifests are valid (client dry-run)"
-  kubectl apply --dry-run=client -f "$HERE/manifests/rbac.yaml"    >/dev/null || fail "rbac.yaml invalid"
-  kubectl apply --dry-run=client -f "$HERE/manifests/cronjob.yaml" >/dev/null || fail "cronjob.yaml invalid"
-  echo "  ok   rbac.yaml + cronjob.yaml apply-clean"
-else
+# `kubectl apply --dry-run=client` was labelled "offline" here and is not:
+# kubectl downloads the OpenAPI schema from the API SERVER to validate against,
+# so with no reachable cluster it fails on the download, not on the manifest.
+# That went unnoticed while a current-context happened to point at a live KinD;
+# on 2026-08-29 another agent's `kind delete cluster` unset the current context
+# and this section failed with "failed to download openapi ... connection
+# refused" while both manifests were perfectly valid. Name the cluster this
+# estate actually runs, and when it is not reachable say that instead of
+# grading the manifests on it (the same shape as the kubectl-absent branch
+# right below, and the same shape as this script's own live tail).
+if ! have kubectl; then
   say "4. skipped: kubectl absent (manifest dry-run)"
+elif ! timeout 10 kubectl --context "$CTX" version >/dev/null 2>&1; then
+  say "4. skipped: $CTX not reachable -- a client dry-run validates against the API server's own OpenAPI schema, so there is nothing to validate against"
+else
+  say "4. manifests are valid (client dry-run against $CTX's schema)"
+  kubectl --context "$CTX" apply --dry-run=client -f "$HERE/manifests/rbac.yaml"    >/dev/null || fail "rbac.yaml invalid"
+  kubectl --context "$CTX" apply --dry-run=client -f "$HERE/manifests/cronjob.yaml" >/dev/null || fail "cronjob.yaml invalid"
+  echo "  ok   rbac.yaml + cronjob.yaml apply-clean"
 fi
 
 # ---- live tail: only if the CronJob is installed and a stale postured pod exists ----
-if have kubectl && timeout 10 kubectl --context "$CTX" -n currency-system get cronjob currency-controller >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" -n currency-system get cronjob currency-controller >/dev/null 2>&1; then
+  live_tail_skip "no currency-controller CronJob on $CTX (run currency-controller/up.sh)"
+else
   STALE=$(timeout 10 kubectl --context "$CTX" get pods -A -l posture.acme.io/version \
             -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}={.metadata.labels.posture\.acme\.io/version} {end}' 2>/dev/null || true)
   if [ -n "$STALE" ]; then
@@ -106,13 +123,10 @@ if have kubectl && timeout 10 kubectl --context "$CTX" -n currency-system get cr
     timeout 20 kubectl --context "$CTX" -n currency-system delete job currency-verify --ignore-not-found >/dev/null 2>&1 || true
     timeout 20 kubectl --context "$CTX" -n currency-system create job --from=cronjob/currency-controller currency-verify >/dev/null 2>&1 \
       && echo "  ok   reconcile job created (inspect: kubectl -n currency-system logs job/currency-verify)" \
-      || echo "  (could not create job — image pull or RBAC; see README)"
+      || live_tail_skip "could not create the reconcile job on $CTX (image pull or RBAC; see README)"
   else
-    say "5. live: CronJob installed but no postured pods to reconcile yet (nothing stale) — skipping trigger"
+    live_tail_skip "CronJob installed on $CTX but no postured pod exists to reconcile"
   fi
-else
-  say "5. live checks skipped: no currency-controller CronJob at context '$CTX'"
-  say "     (run estate/platform/currency-controller/up.sh; offline proofs above are the demonstrable claim)"
 fi
 
-echo "PASS: stale posture is re-evaluated post-admission; the re-patch drops BOTH labels so the SVID falls back to base-mesh."
+pass_line "stale posture is re-evaluated post-admission; the re-patch drops BOTH labels so the SVID falls back to base-mesh"

@@ -95,10 +95,11 @@ python3 proposer_bounds.py dispositions   # one line per drift + why
 ## 3 · Governs itself (reflexive.py)
 
 Everything the estate does to a workload, the apparatus does to itself — scored by
-the **same** `../risk/enforce.py` against the **same** `../risk/appetite.json`
-(org `platform`, marked `root_of_trust`), not a bespoke self-scoring path or a
-separate appetite file (ticket 16 part 2 merged the two stores; `tolerance_for`
-no longer takes an override path here). `platform-self.json`
+the **same** `../risk/enforce.py` against the platform's **own signed
+`party.yaml`** `appetite.tolerance` (eco-system ticket 25, ADR-0021), not a
+bespoke self-scoring path and not a platform-held fixture — `risk/appetite.json`
+is retired, and a party that declares no band is a missing instrument that
+refuses (ADR-0020). `platform-self.json`
 is the apparatus as a workload: controls **off** (unsigned/unbounded feeds, an
 auto-merging proposer, silent Flux drift) is the warn state; controls **on** (signed
 feeds, bounded proposer, the gate) is the deny state. It **passes its own test** when

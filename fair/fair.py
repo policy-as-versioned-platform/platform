@@ -30,13 +30,23 @@ Scenario JSON (versioned triples):
   every source shares the risk's single lef and is summed *within* each
   simulated event, never sampled as independent risks with their own
   frequency. See simulate()'s docstring for why.
+
+  An lm entry may instead be a severity spec object
+  {"model": "lognormal-gpd", "mu", "sigma", "u", "xi", "beta"} -- a lognormal
+  body spliced to a generalised-Pareto tail above u (severity.py), which a
+  twin forward-intel payload emits when a bounded triple cannot carry the tail
+  (ticket 08 decision 7). summarize()["tail"] names the model that was used.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import severity  # noqa: E402  the lognormal-GPD tail (ticket 08 decision 7)
 
 # Defaults. ponytail: PERT lambda fixed at 4 (standard FAIR confidence); cost-of-
 # capital fixed at Solvency-II's 6% risk-margin rate. Expose per-scenario only if
@@ -45,6 +55,42 @@ ITERATIONS = 10_000
 SEED = 42
 PERT_LAMBDA = 4.0
 COST_OF_CAPITAL = 0.06  # risk load = COC * economic capital (TVaR - ALE)
+BOUNDED_PERT = "bounded-pert"  # the severity model fair.py has always used
+
+
+class _Losses(list):
+    """Annual losses that remember which severity model drew them."""
+
+    tail = BOUNDED_PERT
+
+
+def sum_prices(entries):
+    """Total a list of prices[] entries, refusing any mix of perspective or currency.
+
+    ADR-0021: every price carries a perspective (whose balance sheet) and a
+    currency, and no sum crosses either. Adding one org's £ to another's, or GBP
+    to USD, is not a smaller number -- it is a wrong one, so this raises rather
+    than converting or guessing. Convert through the signed FX feed first (a date
+    with no rate is a missing instrument and refuses, ADR-0020), and sum one
+    perspective at a time.
+
+    Returns the total amount as a float; the caller already knows the one
+    perspective and currency it just asserted.
+    """
+    total = 0.0
+    labels = set()
+    for i, e in enumerate(entries):
+        for k in ("perspective", "currency", "amount"):
+            if e.get(k) is None:
+                raise ValueError(
+                    "prices[%d] has no %s: an unlabelled price cannot be summed" % (i, k))
+        labels.add((e["perspective"], e["currency"]))
+        if len(labels) > 1:
+            raise ValueError(
+                "refusing to sum across perspectives/currencies: %s"
+                % ", ".join("%s/%s" % pc for pc in sorted(labels)))
+        total += float(e["amount"])
+    return total
 
 
 def pert(lo, mode, hi, n, rng, lam=PERT_LAMBDA):
@@ -74,18 +120,41 @@ def simulate(lef, lm, n=ITERATIONS, seed=SEED):
     source land in a quiet year for another, diversifying the tail away, which is
     not how one breach drawing several consequences behaves. Ticket 18.
 
-    Returns a list of annual losses, one per simulated year.
+    A source's magnitude is either a bounded beta-PERT triple or a severity spec
+    object, which dispatches to severity.py (a lognormal body with a
+    generalised-Pareto tail, ticket 08 decision 7). Mixing the two across sources
+    on one risk is allowed; the returned losses name every model used.
+
+    Returns the annual losses, one per simulated year, as a list that also
+    carries .tail -- the severity model(s) actually sampled -- so summarize()
+    can report it without being handed the scenario again.
     """
     rng = random.Random(seed)
     freqs = [max(0, round(f)) for f in pert(*lef, n, rng)]
-    lms = lm if lm and isinstance(lm[0], (list, tuple)) else [lm]
-    losses = []
+    lms = _sources(lm)
+    for spec in lms:                       # refuse a malformed spec before sampling
+        if severity.is_spec(spec):
+            severity.check(spec)
+    losses = _Losses()
+    losses.tail = "+".join(sorted({
+        severity.MODEL if severity.is_spec(src) else BOUNDED_PERT for src in lms}))
     for f in freqs:
         if f == 0:
             losses.append(0.0)
             continue
-        losses.append(sum(sum(pert(*triple, f, rng)) for triple in lms))
+        losses.append(sum(
+            sum(severity.sample(src, f, rng) if severity.is_spec(src) else pert(*src, f, rng))
+            for src in lms))
     return losses
+
+
+def _sources(lm):
+    """Normalise lm to a list of magnitude sources (triples and/or severity specs)."""
+    if severity.is_spec(lm):
+        return [lm]
+    if lm and isinstance(lm[0], (list, tuple, dict)):
+        return list(lm)
+    return [lm]
 
 
 def percentile(xs, p):
@@ -101,21 +170,26 @@ def percentile(xs, p):
     return s[lo] + frac * (s[lo + 1] - s[lo])
 
 
-def summarize(losses, coc=COST_OF_CAPITAL):
+def summarize(losses, coc=COST_OF_CAPITAL, tail=None):
     """The board numbers. ALE = mean, VaR95 = 95th pct, TVaR = mean beyond VaR95.
 
     £ carried = TVaR + risk load, where risk load = coc * economic capital and
     economic capital = TVaR - ALE (the unexpected loss you must hold capital for).
     By construction TVaR >= VaR95 >= ALE for a right-skewed non-negative loss.
+
+    "tail" names the severity model these losses were actually drawn from, so a
+    reader of the number knows whether the tail is bounded. simulate() carries it
+    on its result; pass tail= only when summarizing losses from somewhere else.
     """
     ale = sum(losses) / len(losses)
     var95 = percentile(losses, 95)
-    tail = [x for x in losses if x >= var95]
-    tvar = sum(tail) / len(tail) if tail else var95
+    beyond = [x for x in losses if x >= var95]
+    tvar = sum(beyond) / len(beyond) if beyond else var95
     econ_capital = tvar - ale
     risk_load = coc * econ_capital
     return {
         "iterations": len(losses),
+        "tail": tail or getattr(losses, "tail", BOUNDED_PERT),
         "ale": ale,
         "var95": var95,
         "tvar": tvar,
@@ -235,6 +309,59 @@ def cmd_selfcheck(_args):
     print("ok  multi-source: combined ALE=%.0f (~= %.0f+%.0f) TVaR=%.0f > naive-independent TVaR=%.0f" % (
         combined["ale"], single_a["ale"], single_b["ale"], combined["tvar"], naive["tvar"]))
 
+    # --- the tail is named, and a heavy tail is actually heavier (ticket 08 #7) --
+    # Every number the board reads says which severity model drew it.
+    assert s["tail"] == BOUNDED_PERT, s
+    spec = {"model": "lognormal-gpd", "mu": 8.0, "sigma": 1.0,
+            "u": 20_000, "xi": 0.5, "beta": 15_000}
+    heavy = summarize(simulate((2, 4, 9), spec))
+    assert heavy["tail"] == "lognormal-gpd", heavy
+    assert summarize(simulate((2, 4, 9), [lm_a, spec]))["tail"] == "bounded-pert+lognormal-gpd"
+
+    # Same mean, heavier 95th: a bounded triple whose mean magnitude equals the
+    # spliced model's. A symmetric PERT (0, m, 2m) has mean m, so the two
+    # scenarios carry the same ALE and differ only in the shape of the tail.
+    mean_mag = sum(severity.sample(spec, 20_000, random.Random(SEED))) / 20_000
+    light = summarize(simulate((2, 4, 9), (0.0, mean_mag, 2 * mean_mag)))
+    assert abs(heavy["ale"] - light["ale"]) < 0.05 * light["ale"], (heavy, light)
+    assert heavy["var95"] > light["var95"], (heavy, light)   # the whole point
+    assert heavy["tvar"] > light["tvar"], (heavy, light)
+
+    # A malformed severity spec refuses, with a message that names what is wrong.
+    for bad, want in (
+        ({"model": "lognormal-gpd", "mu": 8.0, "sigma": 1.0, "u": 20_000}, "missing xi, beta"),
+        ({"model": "pareto", "mu": 1, "sigma": 1, "u": 1, "xi": 1, "beta": 1}, "unknown model"),
+        ({"model": "lognormal-gpd", "mu": 8.0, "sigma": 0, "u": 1, "xi": 0.5, "beta": 1},
+         "sigma must be > 0"),
+    ):
+        try:
+            simulate((2, 4, 9), bad, n=10)
+        except ValueError as exc:
+            assert want in str(exc), (want, str(exc))
+        else:
+            raise AssertionError("malformed severity spec did not refuse: %r" % (bad,))
+
+    print("ok  tail: %s VaR95=%.0f vs %s VaR95=%.0f at the same ALE (%.0f); malformed specs refuse"
+          % (heavy["tail"], heavy["var95"], light["tail"], light["var95"], light["ale"]))
+
+    # --- sums never cross a perspective or a currency (ADR-0021) ---------------
+    gbp = [{"perspective": "driftwood", "currency": "GBP", "amount": 1_000},
+           {"perspective": "driftwood", "currency": "GBP", "amount": 250.5}]
+    assert sum_prices(gbp) == 1_250.5
+    assert sum_prices([]) == 0.0
+    for mixed in (
+        gbp + [{"perspective": "tuppence", "currency": "GBP", "amount": 1}],   # two orgs
+        gbp + [{"perspective": "driftwood", "currency": "USD", "amount": 1}],  # two currencies
+        gbp + [{"perspective": "driftwood", "amount": 1}],                     # unlabelled
+    ):
+        try:
+            sum_prices(mixed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("summed across perspectives/currencies: %r" % (mixed,))
+    print("ok  sum_prices: one perspective and one currency sums, every mix refuses")
+
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Deterministic FAIR risk engine.")
@@ -253,7 +380,10 @@ def main(argv=None):
     pk.set_defaults(func=cmd_selfcheck)
 
     args = p.parse_args(argv)
-    args.func(args)
+    try:
+        args.func(args)
+    except ValueError as exc:   # a malformed severity spec, not a stack trace
+        sys.exit("refused: %s" % exc)
 
 
 if __name__ == "__main__":

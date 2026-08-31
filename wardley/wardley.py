@@ -52,10 +52,11 @@ sys.path.insert(0, os.path.join(PLATFORM, "wargamer"))
 import tcor       # noqa: E402  the four-move crossover the war-gamer prices with
 
 INTEL = os.path.join(HERE, "intel", "market-intel.json")
-# The risk-bearing institutions the forward layer must speak for -- read from the
-# same appetite file tolerance_for() judges against (../risk/appetite.json), so the
-# org set can never drift out of step with the bands it is priced into.
-APPETITE = os.path.join(PLATFORM, "risk", "appetite.json")
+# The risk-bearing institutions the forward layer must speak for -- derived from
+# the SIGNED party artefacts tolerance_for() now judges against (each party's own
+# party.yaml appetite, ticket 25), so the org set can never drift out of step
+# with the bands it is priced into. risk/appetite.json is retired.
+ESTATE = os.path.dirname(os.path.dirname(HERE))
 # Independent enactment corroboration (ticket 19) -- deliberately NOT inside
 # market-intel.json. market-intel.json is platform's own commoditisation CLAIM, signed
 # with the feeds key; a claim cannot corroborate itself. This file carries the editorial
@@ -138,11 +139,22 @@ def corroborated_enactment(component_id, enactment=None):
                       % (entry.get("channel"), len(evidence))}
 
 
-def institutions(appetite_path=APPETITE):
-    """The risk-bearing institutions the forward signal runs against, in appetite-file
-    order (driftwood, tuppence, ludlow) -- one band per org, never a single stand-in."""
-    with open(appetite_path) as fh:
-        return list(json.load(fh)["orgs"])
+def institutions(estate_dir=None):
+    """The risk-bearing parties the forward signal runs against: every sibling party
+    that signs an `appetite` band on its OWN party.yaml -- the same set the retired
+    platform/risk/appetite.json used to list, now read from the artefacts each party
+    signs itself (ticket 25). One band per org, never a single stand-in."""
+    import yaml
+    found = []
+    for name in sorted(os.listdir(estate_dir or ESTATE)):
+        path = os.path.join(estate_dir or ESTATE, name, "party.yaml")
+        if not os.path.isfile(path):
+            continue
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        if doc.get("appetite"):
+            found.append(doc["party"])
+    return found
 
 
 # --- 1. the Wardley map + commoditisation flags -------------------------------
@@ -424,15 +436,24 @@ def selfcheck():
     total_drifts = total_props = 0
     for org, out in out_all.items():
         drifts = [r for r in out["rows"] if r["drift"]]
-        assert drifts, (org, "the forward signal must surface at least one drift the "
-                        "war-gamer re-tunes before the threat lands", out["rows"])
-        assert out["proposals"], (org, "forward drift detected but the war-gamer proposed no PR")
+        # An institution whose own band the cage ladder ALREADY satisfies surfaces no
+        # drift, and that is a real answer rather than a broken signal: ADR-0022 put a
+        # running `isolated` rung where `deny` used to fall through, so a cage now fits
+        # bands that previously had no tier at all (tuppence, today). What must hold
+        # per institution is the seam itself -- a drift becomes a PR and no drift
+        # becomes no PR. That the ESTATE still surfaces drift is asserted after the
+        # loop, and that two bands disagree is asserted below that.
+        assert bool(out["proposals"]) == bool(drifts), (
+            org, "proposals must follow drift exactly: drift proposes a PR, no drift "
+            "proposes nothing", len(drifts), len(out["proposals"]))
         for p in out["proposals"]:
             assert p["merged"] is False and p["auto_merge"] is False, p  # propose, never dispose
             assert "cross-check" in p["required_gate"], p                # rides the existing gate
             assert p["signed"] is True and "Rekor" in p["identity"], p   # attestable identity
         total_drifts += len(drifts)
         total_props += len(out["proposals"])
+    assert total_drifts, ("the forward signal surfaced no drift anywhere in the estate -- "
+                          "the forward layer is then buying nothing", out_all)
     # the divergence, machine-checked: driftwood and ludlow must NOT drift on the
     # identical control set, or the "own band" claim above is not actually wired in.
     dw_drift_ids = {r["control"] for r in out_all["driftwood"]["rows"] if r["drift"]}
@@ -469,8 +490,14 @@ def selfcheck():
 
     # The slate is not tuned the OTHER way either: pkg-registry-worm DOES fire and
     # DOES flip the deployed move (cage -> fix) once the forward bump is applied.
+    # The band this is read at is ludlow's, not driftwood's: since ADR-0022 gave the
+    # ladder a running `isolated` rung in place of the `deny` fallthrough, a cage
+    # exists for the re-priced worm at driftwood's loose GBP40k band and stays the
+    # cheapest way to carry it. At ludlow's GBP5k band no tier brings it inside, so
+    # the flip is still there to observe -- the scenario can move a deployed move,
+    # which is all this assertion ever claimed.
     assert "pkg-registry-worm" in ids, ids
-    worm_row = next(r for r in forward_into_wargamer(intel, "driftwood")["rows"]
+    worm_row = next(r for r in forward_into_wargamer(intel, "ludlow")["rows"]
                      if r["control"] == "dependency-worm-exfil")
     assert worm_row["deployed"] == "cage" and worm_row["implied"] == "fix", worm_row
     assert worm_row["drift"] is True, worm_row

@@ -34,19 +34,15 @@ spec:
   chart:
     spec:
       chart: pomerium
-      version: "52.3.0"          # tunable knob — pin to the appVersion you tour
+      # 34.0.1 is the newest chart on helm.pomerium.io (appVersion v0.22.x) —
+      # verified against the live index, not guessed. Tunable knob: re-pin and
+      # re-run verify-access.sh if you tour a newer chart.
+      version: "34.0.1"
       sourceRef: { kind: HelmRepository, name: pomerium }
   values:
     # Core (open-source) mode — no Enterprise console. Config is the source of truth.
     config:
       rootDomain: access.svc
-      # The estate OIDC issuer (Dex). Same root the gitsign committer authenticates to.
-      idp:
-        provider: oidc
-        url: http://dex.access.svc:5556/dex
-        clientID: pomerium
-        clientSecret: pomerium-oidc-secret   # ponytail: demo secret; OpenBao-source at a venue
-        scopes: [openid, email, profile]
       # WebAuthn device enrolment lives at this URL; the passkey binds to the
       # laptop's Secure Enclave / TPM (unclonable). This is what makes tier-2+
       # ops require a real hardware-bound key, not just a password.
@@ -69,7 +65,23 @@ spec:
                       is: operator@acme.internal
                   - device:
                       is: approved          # WebAuthn-enrolled + approved device
-    # The signing key Pomerium uses for the JWT assertion the apiserver trusts.
-    # Demo value; a venue generates a real EC key and points the apiserver's
-    # --oidc-issuer-url / structured authn at Pomerium's JWKS.
-    signingKey: ""                          # ponytail: chart mounts a demo key; supply a real EC key at a venue
+    # The estate OIDC issuer (Dex). Same root the gitsign committer authenticates
+    # to. The chart reads the IdP at `authenticate.idp` (it renders into
+    # config.yaml as idp_provider_url); a copy under `config:` is silently
+    # ignored, which is how this release shipped pointing at nothing.
+    authenticate:
+      idp:
+        provider: oidc
+        url: http://dex.access.svc:5556/dex
+        clientID: pomerium
+        clientSecret: pomerium-oidc-secret   # ponytail: demo secret; OpenBao-source at a venue
+        scopes: "openid,email,profile"       # chart joins this into idp_scopes verbatim
+    # No ingress controller on the KinD cluster; the plane is reached by
+    # port-forward at a venue, so don't leave a dangling Ingress behind.
+    ingress:
+      enabled: false
+    # The signing key Pomerium uses for the JWT assertion the apiserver trusts:
+    # the chart's config.generateSigningKey (default true) mints one into the
+    # pomerium-signing-key Secret. A venue supplies a real EC key here and points
+    # the apiserver's structured authn at Pomerium's JWKS.
+    # ponytail: chart-generated demo key; supply a real EC key at a venue.

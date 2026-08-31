@@ -85,7 +85,8 @@ estate/platform/break-glass/verify-break-glass.sh   # offline asserts (no cluste
 ## Calibration knobs (real-world, not constants)
 
 - **`assurance-bands.json`** — `step_up_at` / `attest_at` / `no_cage_at` in £/yr.
-  Calibrated against the estate's appetite ordering (`../risk/appetite.json`,
+  Calibrated against the estate's appetite ordering (each party's own signed
+  `party.yaml` `appetite.tolerance`; `../risk/appetite.json` is retired, ADR-0021 —
   ludlow strictest). Bump to re-tour; the tier boundaries move with them.
 - **Scenario triples** — each op's `(min, mode, max)` loss magnitude is an
   estimate; a reassessment (as in `../risk/` ticket 06) can push an op across a

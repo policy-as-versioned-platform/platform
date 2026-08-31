@@ -1,0 +1,28 @@
+# A GitRepository carrying the gitsign pins, watched by gitsign-verifier.
+# spec.ref.commit stays UNSET (README, "Ceilings, named") -- with a commit
+# pinned, Flux would serve an artifact that need not descend from the tag,
+# so verifying the tag would prove nothing about what got applied.
+# ANN_GATES is deliberately empty: gating a suspend/release cycle onto a real
+# Kustomization is proved exhaustively offline (verify-source-verification.sh
+# section 7, with a stub API server); this live object exists to prove the
+# crypto verdict against a real fetch, not to touch driftwood's own workload.
+# %%IDENTITY_REGEXP%% / %%ISSUER%% are substituted by deploy.sh, sed'd
+# straight out of release.yml -- never literals, so this cannot drift from
+# what cut-release.yml actually pins.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: gitsign-verify-source
+  namespace: flux-system
+  annotations:
+    # single-quoted: YAML double-quotes would try to interpret RE's literal
+    # backslashes (\.) as escapes and fail to parse.
+    policy-as-versioned.dev/gitsign-identity-regexp: '%%IDENTITY_REGEXP%%'
+    policy-as-versioned.dev/gitsign-issuer: '%%ISSUER%%'
+    policy-as-versioned.dev/gitsign-gates: ""
+spec:
+  interval: 1m
+  url: http://gitsign-tag-server.flux-system.svc.cluster.local/cgi-bin/git/platform.git
+  ref:
+    tag: policy/v3.0.0
+  timeout: 30s

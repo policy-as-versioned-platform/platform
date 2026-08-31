@@ -1,12 +1,59 @@
-# cage-netpol — the GENERATE half of the graded envelope.
+# cage-netpol — the GENERATE half of the graded envelope: PER-TIER REACH.
 #
-# The cage-tier MUTATE stamps `posture.acme.io/caged: "true"` on a behind-posture
-# pod. This GENERATING policy fires off that label and generates, in the pod's own
-# namespace, a NetworkPolicy that locks caged pods down to egress DNS only — the
-# "reach" projection of the same posture decision (spec: a cage injects a
-# NetworkPolicy). A pod that fell behind keeps running, but can no longer phone
-# out. The netpol selects by the caged label, so one policy covers every caged pod
-# in the namespace; it is torn down when the last caged pod leaves (synchronize).
+# cage-tier stamps `posture.acme.io/caged: "true"` and CLOBBERS
+# `posture.acme.io/tier` from the pod's Namespace (ADR-0022). This GENERATING
+# policy fires off those two labels and generates, in the pod's own namespace,
+# the NetworkPolicy that is the "reach" projection of the same tier. Reach is
+# now generated FROM THE TIER, not one flat egress lockdown for everybody:
+#
+#   baseline    normal reach. NO NetworkPolicy is generated at all — a nudge
+#               does not take the network away. (matchConditions below excludes
+#               it, so nothing selects the pod and nothing is restricted.)
+#   restricted  Ingress from the pod's own namespace; egress DNS ONLY.
+#   quarantine  the same reach as restricted; the tier's bite is in its dials
+#               (cage.py: reach "namespace" vs "namespace+named").
+#   isolated    the bottom rung: policyTypes Ingress AND Egress with NO rules —
+#               nothing in, nothing out. It still RUNS. That is what makes
+#               "not functional" literally true without ever denying a pod.
+#
+# ponytail: restricted's cage.py reach is "namespace+named" — the "+named"
+# allowance is NOT generated here, because no adopter has declared a named peer
+# yet. Add a peer list to the composed artefact and range it here when one does;
+# until then restricted and quarantine generate the same reach and this comment
+# is the disclosure, not a claim that they differ.
+#
+# ALL THREE RUNGS UP FRONT, AND NOTHING DELETES (repaired 2026-08-28). Until
+# this repair the policy generated ONE NetworkPolicy named for the triggering
+# pod's own tier, with `spec.evaluation.synchronize.enabled: true`. Two things
+# were wrong with that, and the second was much worse than the first:
+#
+#   1. THE SYNCHRONIZE GAP, disclosed but real: a TIER MOVE was a delete of
+#      `cage-reach-<old>` and a create of `cage-reach-<new>`, and between the
+#      two the pod had NO NetworkPolicy selecting it — full reach, looser than
+#      either end of the move.
+#   2. Observed live on kind-driftwood: Kyverno 1.18's GeneratingPolicy dynamic
+#      watcher calls DeleteDownstreams for the WHOLE POLICY when it processes a
+#      new UpdateRequest, so creating ONE caged pod anywhere deleted every
+#      `cage-reach-*` NetworkPolicy in EVERY other namespace and regenerated
+#      only the triggering pod's own. The other namespaces' isolated and
+#      quarantine pods then reached the API server and the internet, and stayed
+#      that way (the reviewer's poll: three reach policies at 19:34:54, one at
+#      19:34:58, still one ~100s later). verify-graded.sh's own live tail was
+#      one of the triggers, and the run still exited 0.
+#
+# Both are closed by taking the upgrade path the old comment only named: this
+# policy now generates ALL THREE restricting rungs' NetworkPolicies into the
+# namespace at once, and each one's `podSelector` carries its own tier, so a
+# tier move is a label change on the pod and NOTHING is created or deleted in
+# the path of the move. `synchronize` is therefore OFF: there is nothing left
+# for it to keep in step, and leaving it on is what deleted other namespaces'
+# cages. baseline is still absent from the list (a nudge keeps its network) and
+# the matchConditions still exclude a baseline-only namespace, so a baseline
+# namespace gets no NetworkPolicy at all.
+# ponytail: the two rungs a namespace is not currently at generate a policy that
+# selects no pods — three tiny objects instead of one, and no delete anywhere.
+# Upgrade path if that ever matters: render them per governed Namespace from the
+# composed artefact and drop the GeneratingPolicy entirely.
 #
 # Every CEL object value is dyn()-wrapped: generator.Apply takes a map(string,dyn)
 # and CEL infers a map's value type from its entries, so a heterogeneous k8s object
@@ -20,6 +67,11 @@ metadata:
     app.kubernetes.io/part-of: platform
     policy-as-versioned.dev/policy: graded-enforcement
 spec:
+  evaluation:
+    synchronize:
+      enabled: false   # nothing to keep in step: all three rungs are generated up
+                       # front and a tier move touches no downstream. Leaving it on
+                       # deleted OTHER namespaces' reach cages -- see the header.
   matchConstraints:
     resourceRules:
       - apiGroups: [""]
@@ -30,20 +82,53 @@ spec:
     - name: is-caged
       expression: >-
         object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
+    # baseline reaches normally: no NetworkPolicy is generated for it at all.
+    # The tier read here is cage-tier's OUTPUT label, which cage-tier clobbered
+    # from the Namespace — a pod cannot buy itself looser reach by forging it,
+    # and cage-tier always writes a value from the ladder, so "not baseline"
+    # is exactly "restricted, quarantine or isolated". Written as a `!=` on
+    # one literal rather than an `in [...]` list deliberately: that is the
+    # predicate shape computed-semver/corpus_generator.py can probe
+    # (`_LABEL_RE`), and an unprobeable predicate is a gap in the corpus, not
+    # a statistic to skip past.
+    - name: tier-restricts-reach
+      expression: >-
+        object.metadata.?labels['posture.acme.io/tier'].orValue('baseline') != 'baseline'
   variables:
     - name: nsName
       expression: "string(object.metadata.namespace)"
+    - name: tier
+      expression: "object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')"
+    # The rungs that restrict reach — the whole ladder minus baseline. All three
+    # are generated on every trigger, so a tier move needs no create and no
+    # delete: the pod's new tier label simply matches a policy that is already
+    # there.
+    - name: rungs
+      expression: "['restricted', 'quarantine', 'isolated']"
+    # The reach table. isolated gets EMPTY ingress and EMPTY egress rule lists —
+    # with both policyTypes set that is a deny-all in both directions, the
+    # bottom rung's "no ingress, no egress". Every other restricted tier gets
+    # same-namespace ingress and DNS-only egress.
+    - name: reach
+      expression: >-
+        {'isolated': {'ingress': dyn([]), 'egress': dyn([])},
+         'other':    {'ingress': dyn([dyn({"from": dyn([dyn({"podSelector": dyn({})})])})]),
+                      'egress':  dyn([dyn({
+                        "to": dyn([dyn({"namespaceSelector": dyn({"matchLabels": dyn({"kubernetes.io/metadata.name": dyn("kube-system")})})})]),
+                        "ports": dyn([dyn({"protocol": dyn("UDP"), "port": dyn(53)})])})])}}
   generate:
     - expression: >-
-        generator.Apply(variables.nsName, [dyn({
+        generator.Apply(variables.nsName, variables.rungs.map(t, dyn({
           "apiVersion": dyn("networking.k8s.io/v1"),
           "kind": dyn("NetworkPolicy"),
-          "metadata": dyn({"name": dyn("cage-egress-lockdown"), "namespace": dyn(variables.nsName),
-                       "labels": dyn({"app.kubernetes.io/managed-by": dyn("kyverno"), "posture.acme.io/cage": dyn("egress-lockdown")})}),
+          "metadata": dyn({"name": dyn("cage-reach-" + t), "namespace": dyn(variables.nsName),
+                       "labels": dyn({"app.kubernetes.io/managed-by": dyn("kyverno"),
+                                      "posture.acme.io/cage": dyn("reach"),
+                                      "posture.acme.io/tier": dyn(t)})}),
           "spec": dyn({
-            "podSelector": dyn({"matchLabels": dyn({"posture.acme.io/caged": dyn("true")})}),
-            "policyTypes": dyn(["Egress"]),
-            "egress": dyn([dyn({
-              "to": dyn([dyn({"namespaceSelector": dyn({"matchLabels": dyn({"kubernetes.io/metadata.name": dyn("kube-system")})})})]),
-              "ports": dyn([dyn({"protocol": dyn("UDP"), "port": dyn(53)})])})])})})
-        ])
+            "podSelector": dyn({"matchLabels": dyn({"posture.acme.io/caged": dyn("true"),
+                                                    "posture.acme.io/tier": dyn(t)})}),
+            "policyTypes": dyn(["Ingress", "Egress"]),
+            "ingress": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].ingress),
+            "egress": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].egress)})})
+        ))

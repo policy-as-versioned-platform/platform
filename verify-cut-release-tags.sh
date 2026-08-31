@@ -107,10 +107,46 @@ for bad in 'Policy/v3.0.0' 'POLICY/v3.0.0' 'policy/V3.0.0' 'policy//v3.0.0' ' po
 done
 echo "ok: every case/slash/whitespace variant of a policy tag refused before any tag was created"
 
+say "7. ticket 43: a DEGRADED publish's prerelease tag is a legal shape, and sorts below the clean number"
+# The suffix is the whole point of ticket 18 Answer 1: the declared BASE
+# number is untouched and the degraded release sorts BELOW the clean one, so
+# no consumer ever treats a degraded publish as the newer version.
+VERSION_INPUT="" MESSAGE_INPUT="" \
+  TAGS_INPUT='[{"tag":"policy/v4.0.1-quarantine.1","message":"degraded"}]' \
+  python3 "$scripts/cut-release-normalize.py" >tags.json ||
+  fail "normalize refused a legal degraded policy tag: $(cat tags.json)"
+[ "$(jq -r '.[0].tag' tags.json)" = "policy/v4.0.1-quarantine.1" ] ||
+  fail "normalize mangled the degraded tag: $(cat tags.json)"
+# ...and the ordering, through the SAME parser the gate, the tag history and
+# every window sort use -- not a second copy that could disagree with it.
+python3 - "$here" <<'PYEOF' || fail "prerelease ordering is wrong"
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "computed-semver"))
+from comparison_window import parse_semver
+order = sorted(["4.0.1", "4.0.1-quarantine.1", "4.0.0", "4.0.1-quarantine.2"], key=parse_semver)
+assert order == ["4.0.0", "4.0.1-quarantine.1", "4.0.1-quarantine.2", "4.0.1"], order
+print("ok: 4.0.0 < 4.0.1-quarantine.1 < 4.0.1-quarantine.2 < 4.0.1")
+PYEOF
+# the shape check still bites: a suffix on the platform's OWN line is not a
+# legal tag (nothing gates that line, so nothing there can degrade), and an
+# empty suffix is not a prerelease.
+for bad in 'v1.0.0-quarantine.1' 'policy/v4.0.1-' 'policy/v4.0.1-.1'; do
+  if VERSION_INPUT="" MESSAGE_INPUT="" \
+    TAGS_INPUT="$(jq -nc --arg t "$bad" '[{"tag":$t,"message":"m"}]')" \
+    python3 "$scripts/cut-release-normalize.py" >bad.out 2>bad.err; then
+    fail "normalize should have refused $(printf '%q' "$bad")"
+  fi
+  grep -q "not a legal shape" bad.err || fail "wrong error for $(printf '%q' "$bad"): $(cat bad.err)"
+done
+echo "ok: policy/v4.0.1-quarantine.1 accepted and ordered below policy/v4.0.1; a suffix on the platform's own line refused"
+
 echo
 echo "PASS: single-tag legacy form works, multi-tag dispatch cuts every tag"
 echo "on the same commit, the existing-tag refusal runs for every tag before"
 echo "any tag is created, a failed atomic push leaves nothing on the"
 echo "remote, and a mis-shaped policy tag (wrong case, stray slash or"
 echo "whitespace) is refused at normalize time -- it can never reach"
-echo "cut-release-gate.py's skip branch and get pushed ungated."
+echo "cut-release-gate.py's skip branch and get pushed ungated; and a degraded"
+echo "publish's prerelease tag (ticket 43) normalizes cleanly and sorts BELOW"
+echo "the clean number through the one shared parser."

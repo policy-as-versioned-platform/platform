@@ -12,7 +12,7 @@ even the tightest cage leaves a residual over the org's appetite band.
 |---|---|---|
 | The £ engine | `cage.py` | Named tiers → dials (deterministic); the £ picks the tier; emits the TCoR ledger line (residual + cost-of-controls). Reuses `../fair/fair.py` and `../risk/enforce.py`. |
 | Cage (mutate) | `policies/cage-tier.yaml` | `MutatingPolicy`: every pod that claims a policy version is mutated into a cage — cpu/mem limits, eviction PriorityClass, and (restricted+) drop-ALL caps, read-only-fs, a WAF sidecar. A pod carrying `posture.acme.io/tier` gets that tier; one with no (or an unrecognized) tier defaults to `baseline`, the loosest tier — no uncaged state within that population. A pod claiming no policy version at all (system/COTS) is out of scope, unmatched. Never denies. |
-| Egress lockdown (generate) | `policies/cage-netpol.yaml` | `GeneratingPolicy`: a caged pod triggers a namespace `NetworkPolicy` that allows egress DNS only — the "reach" cut of the same decision. |
+| Per-tier reach (generate) | `policies/cage-netpol.yaml` | `GeneratingPolicy`: a caged non-baseline pod triggers ALL THREE restricting rungs' `NetworkPolicy` objects in its namespace at once, each selecting its own tier — so a tier move is a label change with nothing created or deleted in its path, and `synchronize` is off. Repaired 2026-08-28: with one policy per trigger and synchronize on, Kyverno's watcher deleted every `cage-reach-*` in every OTHER namespace whenever one caged pod was created anywhere. |
 | Eviction priority | `policies/priorityclasses.yaml` | Three `PriorityClass`es below the default; tighter tier = evicted sooner under pressure. |
 | Tests | `tests/` | `kyverno test` matrices: the cage is a **mutation** (cage present), not a deny; the generate emits the lockdown netpol. |
 | Bring-up / verify | `up.sh`, `verify-graded.sh` | idempotent apply (no waits); offline proofs + bounded live tail. |
@@ -28,13 +28,30 @@ on any drift):
 | `baseline` | 500m / 256Mi | — | — | — | −10 | 30% | 500 |
 | `restricted` | 250m / 128Mi | ALL | yes | light (100m) | −100 | 70% | 2,000 |
 | `quarantine` | 100m / 64Mi | ALL | yes | heavy (250m) | −1000 | 92% | 6,000 |
+| `isolated` | 100m / 64Mi | ALL | yes | heavy (250m) | first | 98% | 15,000 |
+| `infra` | — | — | — | — | `system-cluster-critical` | — | — |
+
+`isolated` is quarantine's dials plus **no reach at all** (no ingress, no egress) and
+**first eviction** — a running, unreachable cage, the rung `deny` used to occupy
+(ADR-0022). `infra` is declared by role on a Namespace manifest by a `platform`-role
+party and is never selected by the price, so it is not on the selection ladder.
+The `reduce`/`cost` figures for `isolated` are calibration knobs, marked as such in
+`cage.py`. **Not yet served:** `graded/policies/cage-tier.yaml` still carries only the
+first three rungs and its per-tier reach is still one flat egress lockdown, so
+`verify-graded.sh` step 4 reports the drift; eco-system ticket 26 lands the Kyverno
+half (dial map, `cage-isolated` PriorityClass, per-tier reach, and the unknown-tier
+fallback flipping from `baseline` to `isolated`).
 
 ## The £ picks the tier (and TCoR)
 
 A cage is a **priced partial-reduce on a retained risk**: it collapses part of the
 behind-posture residual (R′ stays > 0) at a booked run-cost (C_cage > 0). The £
-picks the **loosest** cage whose residual still fits the org's appetite band
-(`../risk/appetite.json`) — else **Deny**, the bottom rung.
+picks the **loosest** cage whose residual still fits the org's appetite band (read from
+that org's OWN signed `party.yaml` `appetite.tolerance`; the platform-held
+`../risk/appetite.json` fixture is retired, ADR-0021) — else `isolated`, the bottom
+rung: quarantine's dials plus no reach at all and first eviction, a RUNNING cage,
+never a Deny (ADR-0022). The selection is then clamped UP to the adopter's own
+`overlay.floor`, never down.
 
 ```mermaid
 flowchart TD
@@ -42,7 +59,13 @@ flowchart TD
   S -->|baseline fits| C1[Cage: baseline<br/>TCoR = R′ + £500]
   S -->|needs restricted| C2[Cage: restricted<br/>TCoR = R′ + £2k]
   S -->|needs quarantine| C3[Cage: quarantine<br/>TCoR = R′ + £6k]
-  S -->|even quarantine over-band| D[Deny<br/>bottom rung: loss path closed]
+  S -->|even quarantine over-band| D[Cage: isolated<br/>no reach, evicted first<br/>TCoR = R′ + £15k]
+  C1 --> F{below the adopter's<br/>overlay.floor?}
+  C2 --> F
+  C3 --> F
+  D --> F
+  F -->|yes| G[clamp UP to the floor<br/>tighten-only, never down]
+  F -->|no| H[selected tier]
 ```
 
 Same behind-posture workload, different appetite → different cage. Loose-appetite
@@ -114,6 +137,19 @@ policy's reach — they are unmatched, not caged. Whether that permanently
 unversioned population should also default to `baseline` is a real question,
 genuinely left open and spun out to its own effort (ticket 02 answer #5), not
 a decision this policy body has already made.
+
+**Inside a GOVERNED Namespace that question is closed, and the answer is not
+"uncaged".** Left open there it meant one omitted label bought a workload out of
+the cage entirely: observed live on 2026-08-28, a claim-less pod ran in a
+governed Namespace whose declared tier was `isolated` with no tier label, no
+PriorityClass, no limits, no hardening and no reach cage, and it reached the API
+server and the internet. `governed-namespace-requires-claim` was promoted from
+`Audit` to `Deny` that day (`../distribution/render-governed-namespace-guard.py`,
+ADR-0022, ADR-0014's own promotion path), and `graded/up.sh` now installs it and
+the orphan guard on the cluster, because an offline-only proof of an admission
+control is not a proof. That refusal is a missing INSTRUMENT (ADR-0020): the
+claim is what selects which served version cages the pod. A pod that claims is
+caged and priced, never refused.
 
 ## Calibration knobs
 

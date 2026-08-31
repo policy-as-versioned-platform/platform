@@ -3,6 +3,15 @@
 # the EXISTING driftwood KinD cluster, delivered as inherited platform machinery
 # via Flux HelmReleases. Re-runnable at a venue. Never creates/deletes a cluster.
 #
+# DEMO PATH, not delivery (ticket 32). Since this directory became a
+# self-versioned implementations package, the delivery path is `flux-pin.yaml`:
+# an org pins `identity-substrate/vX.Y.Z` and Flux reconciles ./identity,
+# ./posture/spire and ./access/pomerium from the signed tag. This script stays
+# as the venue path — it brings the substrate up on an existing KinD cluster
+# without waiting on a tag — and as the thing that re-runs the jwt-setup Job
+# when SPIRE's CA has rotated out from under it. Every kubectl apply below is
+# a member of the package's kustomization.yaml, so the two cannot drift.
+#
 # Drives everything through Flux's helm-controller (installed by driftwood/up.sh),
 # so the HelmRelease YAML is the single source of truth — no duplicated helm flags.
 # Every reconcile is `timeout`-bounded: nothing hangs; a slow image pull just
@@ -28,6 +37,25 @@ KAPPLY "$HERE/spire/helmrelease.yaml"
 RECON spire-system spire-crds
 RECON spire-system spire
 
+# The agent caches the trust bundle in its data dir and PREFERS that cache over
+# the freshly-projected `spire-bundle` ConfigMap. The chart backs that data dir
+# with an emptyDir, so the cache survives every container restart but not pod
+# recreation. If the server rotates its X509 CA while the agent is down, the
+# cached bundle goes stale and the agent crashloops forever on
+#   "x509svid: could not verify leaf certificate: certificate signed by unknown authority"
+# — nothing re-reads the ConfigMap, so it never recovers on its own. Observed
+# live on driftwood 2026-08-28 after an 8-day crashloop, which left every meshed
+# sidecar without an SDS socket. Recreating the pod clears the cache.
+# ponytail: blunt pod delete; the upstream fix is the agent falling back to
+# trust_bundle_path when the cached bundle fails to verify the server.
+say "SPIRE agent Ready (recreate if it is stuck on a stale cached trust bundle)"
+DS_READY() { timeout 180 kubectl --context "$CTX" -n spire-system rollout status ds/spire-agent --timeout=150s; }
+DS_READY || {
+  echo "  spire-agent not Ready — deleting its pods to drop the cached trust bundle"
+  kubectl --context "$CTX" -n spire-system delete pod -l app.kubernetes.io/name=agent,app.kubernetes.io/instance=spire --wait=false || true
+  DS_READY || echo "  (spire-agent still not Ready — safe to re-run up.sh)"
+}
+
 say "Istio, consuming SPIRE identity (SPIRE Workload API socket integration)"
 KAPPLY "$HERE/istio/helmrelease.yaml"
 RECON istio-system istio-base
@@ -42,10 +70,39 @@ RECON openbao openbao
 say "identity config: base ClusterSPIFFEID, STRICT mTLS, OpenBao jwt seam"
 KAPPLY "$HERE/spire/clusterspiffeid-mesh.yaml" || echo "  (ClusterSPIFFEID CRD not ready — re-run up.sh)"
 KAPPLY "$HERE/istio/peerauthentication-strict.yaml" || echo "  (Istio CRDs not ready — re-run up.sh)"
+
+# The jwt-setup Job is RECREATED, never re-applied. Two reasons, both real:
+#   * a Job's pod template is immutable, so `apply` over a changed spec fails;
+#   * the Job pins the SPIRE trust bundle as it stands when it runs
+#     (oidc_discovery_ca_pem — see openbao/jwt-auth.yaml), and SPIRE rotates
+#     its X.509 CA about daily, so a stale run is worse than no run.
+# It also moved namespace (openbao -> spire-system, where the bundle
+# ConfigMap lives), so the old object is cleaned up here too.
+say "OpenBao jwt seam (recreated so it re-pins the current SPIRE trust bundle)"
+kubectl --context "$CTX" -n openbao delete job openbao-jwt-setup --ignore-not-found >/dev/null 2>&1 || true
+kubectl --context "$CTX" -n spire-system delete job openbao-jwt-setup --ignore-not-found --wait=true >/dev/null 2>&1 || true
 KAPPLY "$HERE/openbao/jwt-auth.yaml"
+timeout 120 kubectl --context "$CTX" -n spire-system wait --for=condition=complete job/openbao-jwt-setup --timeout=110s \
+  || echo "  (openbao-jwt-setup not complete yet — safe to re-run up.sh; verify-identity.sh reads the live truth)"
 
 say "mTLS proof workloads (ping -> pong, SPIFFE AuthorizationPolicy)"
 KAPPLY "$HERE/demo-mtls/workloads.yaml"
 KAPPLY "$HERE/demo-mtls/authorizationpolicy.yaml" || echo "  (Istio CRDs not ready — re-run up.sh)"
+
+# A sidecar admitted while the SPIRE agent had no socket never recovers: the
+# `spire` inject template mounts the CSI volume read-only over
+# /var/run/secrets/workload-spiffe-uds, so when pilot-agent falls back to
+# serving its own SDS there it gets EROFS, gives up after a few tries
+# ("SDS grpc server could not be started"), and Envoy stays un-Ready for the
+# life of the pod. Restart any demo Deployment that did not come Ready so it is
+# re-admitted against a working agent.
+for d in pong ping; do
+  timeout 180 kubectl --context "$CTX" -n mesh-demo rollout status deploy/"$d" --timeout=150s || {
+    echo "  $d has no Ready sidecar — restarting so it is re-admitted"
+    kubectl --context "$CTX" -n mesh-demo rollout restart deploy/"$d" || true
+    timeout 180 kubectl --context "$CTX" -n mesh-demo rollout status deploy/"$d" --timeout=150s \
+      || echo "  ($d still not Ready — safe to re-run up.sh)"
+  }
+done
 
 say "done. verify with estate/platform/identity/verify-identity.sh"

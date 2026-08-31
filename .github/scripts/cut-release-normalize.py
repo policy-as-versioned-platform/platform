@@ -27,7 +27,11 @@ import os
 import re
 import sys
 
-TAG_RE = re.compile(r"^(v\d+\.\d+\.\d+|policy/v\d+\.\d+\.\d+)$")
+# Ticket 43 (18 Answer 1): a policy tag may carry a prerelease suffix --
+# `policy/v4.0.1-quarantine.1` is what a DEGRADED publish is tagged. The
+# platform's own `v<semver>` line takes no suffix: it is not gated, so
+# nothing there can degrade.
+TAG_RE = re.compile(r"^(v\d+\.\d+\.\d+|policy/v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?)$")
 
 
 def fail(msg: str) -> None:
@@ -68,7 +72,8 @@ def main() -> None:
             return
         if not TAG_RE.match(e["tag"]):
             fail(f"tag {e['tag']!r} is not a legal shape -- must be exactly "
-                 f"vX.Y.Z or policy/vX.Y.Z (case-sensitive, no stray whitespace/slashes)")
+                 f"vX.Y.Z, policy/vX.Y.Z or policy/vX.Y.Z-<prerelease> "
+                 f"(case-sensitive, no stray whitespace/slashes)")
             return
         if e["tag"] in seen:
             fail(f"tag {e['tag']} listed more than once in one dispatch")

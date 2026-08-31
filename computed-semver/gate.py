@@ -70,6 +70,17 @@ GENERATOR_VERSION = corpus_generator.GENERATOR_VERSION
 
 COMPONENTS = ("major", "minor", "patch")
 
+MATRIX_NOTE = (
+    "empty at the publisher, on purpose (ticket 18 Answer 4): each institution fills its own row "
+    "by running this published computed-semver package inside its own adopter-gate.py, against its "
+    "own claimed policy versions with its own workloads as extra corpus entries, and lands the row "
+    "in its own composed evidence. The publisher never reads an adopter repository (NORTH-STAR §2)."
+)
+
+# Ticket 18 Answer 1: the suffix a DEGRADED publish carries on the declared
+# base number. `quarantine` is the tier such a release is published at.
+DEGRADED_TIER = "quarantine"
+
 
 @dataclass
 class RepoState:
@@ -98,6 +109,16 @@ class RepoState:
     ticket -- no regression for cs-21/cs-22 callers that never wire a
     window.
 
+    `declared_bump` -- ticket 43 (18 Answer 5): the bump the release
+    DECLARES, read from the reviewed `versions.yaml` array element (`bump:`)
+    for platform, or the one-key `bump.yaml` beside the feed for ico and
+    nist. Before this it was never declared anywhere -- the gate derived it
+    from the tag number against tag history and then checked that derived
+    value against its own computation, which cannot disagree with itself in
+    the one way that matters (a publisher who means "minor" and types a
+    major number). Optional and defaults to None: a caller that wires no
+    declaration keeps the old derived-from-the-number behaviour exactly.
+
     `release` -- cs-26: the four extra structural gate rules' inputs
     (release_integrity.ReleaseIntegrity) -- the frozen-tree check, the
     re-render check, the mandatory-member check and the empty-commit check.
@@ -105,6 +126,7 @@ class RepoState:
     tickets 18-24, which never wire this."""
     subject_dir: Path
     corpus_dir: Path
+    declared_bump: str | None = None
     old_subject_dir: Path | None = None
     window: comparison_window.ComparisonWindow | None = None
     release: release_integrity.ReleaseIntegrity | None = None
@@ -117,7 +139,11 @@ def existing_versions(subject_dir: Path) -> list[str]:
     subset -- versions retire out of it); this is the full history the
     version-legality rule needs its base from."""
     doc = yaml.safe_load((subject_dir / "versions.yaml").read_text())
-    return list(doc["versions"])
+    # Ticket 43: sorted through the ONE prerelease-aware parser, so a
+    # degraded publish (`4.0.1-quarantine.1`) sits where semver says it sits
+    # -- below the clean `4.0.1`, above `4.0.0` -- in every reader of this
+    # list, not only in the two callers that happen to sort for themselves.
+    return sorted((str(v) for v in doc["versions"]), key=comparison_window.parse_semver)
 
 
 # cs-24: comparison_window.py is the leaf module gate.py imports (never the
@@ -146,11 +172,37 @@ def check_version_legality(existing: list[str], declared: str) -> Legality:
         dv = _parse_semver(declared)
     except ValueError as e:
         return Legality(False, str(e), None, None)
-    lower = [v for v in existing if _parse_semver(v) < dv]
+
+    # Ticket 43 / 18 Answer 1: a DEGRADED publish is the declared base
+    # number plus a prerelease suffix, so the base number a degraded
+    # release announces must still be unreleased -- once `4.0.1` is out,
+    # `4.0.1-quarantine.1` is a number that sorts BELOW something already
+    # shipped, and no consumer would ever move to it.
+    if comparison_window.is_prerelease(declared):
+        released_base = comparison_window.base_version(declared)
+        if released_base in existing:
+            return Legality(
+                False,
+                f"declared version {declared} illegal: its base number {released_base} is already "
+                f"released, and a prerelease sorts BELOW its own release -- nothing could adopt it",
+                released_base, None)
+
+    # The base is the highest existing CLEAN release below `declared`. A
+    # prerelease predecessor (a degraded publish of the same base number) is
+    # deliberately not a base: `4.0.1` following `4.0.1-quarantine.1` steps
+    # a patch from `4.0.0`, exactly as it would have without the degraded
+    # publish in between -- the suffix never changes what the base number
+    # means (ADR-0011's superseding note: "never rewrites the base number").
+    lower = [v for v in existing
+             if _parse_semver(v) < dv and not comparison_window.is_prerelease(v)]
     base = max(lower, key=_parse_semver) if lower else None
     bv = _parse_semver(base) if base is not None else (0, 0, 0)
 
-    leftmost = next(i for i in range(3) if dv[i] != bv[i])
+    leftmost = next((i for i in range(3) if dv[i] != bv[i]), None)
+    if leftmost is None:
+        # Unreachable for a clean declared version (base is strictly lower),
+        # reachable only if a caller hands in a base that is not.
+        return Legality(False, f"declared version {declared} does not step past base {base}", base, None)
     assert dv[leftmost] > bv[leftmost]  # guaranteed: base is the highest tag BELOW declared
     bump_class = COMPONENTS[leftmost]
 
@@ -187,7 +239,37 @@ def empty_document() -> dict:
         "coverage": {"cells": None, "pairs": None, "pairwise_gap": None},
         "not_looked_at": [],
         "limits": [],
+        # Ticket 18 Answer 4: the per-institution matrix is filled BY THE
+        # ADOPTER, inside its own adopter-gate.py, against its own claimed
+        # versions and its own workloads. The publisher's copy stays empty
+        # and says why -- an empty dict with no note reads like an omission,
+        # and the publisher reading adopter repos to fill it is exactly what
+        # NORTH-STAR §2 forbids.
         "matrix": {},
+        "matrix_note": MATRIX_NOTE,
+    }
+
+
+def _degrade(doc: dict, declared_bump: str, computed_bump: str, base: str, named: str) -> None:
+    """Ticket 18 Answer 1, and the fault-vs-behaviour line in ticket 18's own
+    facts: "declared weaker than computed is a read-and-priced behaviour, it
+    publishes degraded". The gate READ everything it needed -- there is no
+    instrument fault here -- so it does not refuse. It records `degraded`,
+    names the computed bump that the declared number failed to reach, and
+    hands the caller the prerelease suffix the release publishes under:
+    `4.0.1-quarantine.1`, the declared BASE number untouched, sorting below
+    the clean number (ADR-0011's superseding note). The tier travels with
+    the release as a signed fact; the ADOPTER prices it (Answer 2) -- the
+    publisher sets no floor in anyone else's repository."""
+    doc["outcome"] = {"result": "degraded", "reason": (
+        f"declared bump {declared_bump!r} is weaker than the computed bump {computed_bump!r} "
+        f"(window: {base}) -- {named}. Published DEGRADED at tier {DEGRADED_TIER!r} with a "
+        f"prerelease suffix on the declared number; the adopter prices the tier, nothing is refused")}
+    doc["degraded"] = {
+        "tier": DEGRADED_TIER,
+        "computed_bump": computed_bump,
+        "declared_bump": declared_bump,
+        "suffix": DEGRADED_TIER,
     }
 
 
@@ -239,6 +321,24 @@ def run_gate(repo: RepoState, declared: str) -> dict:
     # subject tree, when one is available (cs-21). The coverage matrix
     # remains later tickets' job.
     doc["outcome"] = {"result": "passed", "reason": None}
+
+    # Ticket 43 (18 Answer 5): the DECLARED bump comes from the reviewed
+    # file -- versions.yaml's array element, or ico/nist's bump.yaml -- and
+    # must agree with the step the declared NUMBER takes against its base.
+    # Disagreement is an instrument fault, not a behaviour: the gate has two
+    # declarations of the same fact and no rule for choosing between them,
+    # so it refuses rather than picking one (CONTEXT.md, "the gate cannot
+    # read something it needs"). It never rewrites either.
+    if repo.declared_bump is not None:
+        doc["bump"]["declared"] = repo.declared_bump
+        if repo.declared_bump != legality.bump_class:
+            doc["outcome"] = {"result": "refused", "reason": (
+                f"the release declares bump {repo.declared_bump!r} but version {declared} steps "
+                f"{legality.bump_class!r} from base {legality.base or '0.0.0'} -- the declared bump "
+                f"and the declared number disagree, and the gate has no rule for choosing one")}
+            doc["wall_clock"] = time.monotonic() - start
+            doc["limits"] = coverage.compute_limits(doc["movement"])
+            return doc
 
     # cs-26: the four extra structural gate rules -- frozen-tree, re-render,
     # mandatory-member, empty-commit. Runs before movement/coverage: none of
@@ -321,6 +421,8 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                 return doc
 
             doc["matrix"] = outcome.matrix
+            if outcome.matrix:
+                doc.pop("matrix_note", None)  # an adopter filled it: the note is the publisher's
             if outcome.strictest is None:
                 # cs-24: the first release. "A comparison against nothing is
                 # not dressed up as a computed patch" -- NO_PREDECESSOR is
@@ -342,13 +444,8 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                         f"via `{'; '.join(m.expressions) or 'n/a'}`"
                         for m in worst
                     )
-                    doc["outcome"] = {
-                        "result": "refused",
-                        "reason": (
-                            f"declared bump {legality.bump_class!r} is weaker than the computed bump "
-                            f"{outcome.strictest.computed_bump!r} (window: {outcome.base}) -- {named}"
-                        ),
-                    }
+                    _degrade(doc, doc["bump"]["declared"], outcome.strictest.computed_bump,
+                             outcome.base, named)
                     doc["wall_clock"] = time.monotonic() - start
                     doc["limits"] = coverage.compute_limits(doc["movement"])
                     return doc
@@ -394,13 +491,8 @@ def run_gate(repo: RepoState, declared: str) -> dict:
                     f"via `{'; '.join(m.expressions) or 'n/a'}`"
                     for m in worst
                 )
-                doc["outcome"] = {
-                    "result": "refused",
-                    "reason": (
-                        f"declared bump {legality.bump_class!r} is weaker than the computed bump "
-                        f"{result.computed_bump!r} -- {named}"
-                    ),
-                }
+                _degrade(doc, doc["bump"]["declared"], result.computed_bump,
+                         repo.old_subject_dir.name, named)
                 doc["wall_clock"] = time.monotonic() - start
                 doc["limits"] = coverage.compute_limits(doc["movement"])
                 return doc
@@ -432,6 +524,7 @@ def selfcheck() -> None:
     assert set(doc) == {
         "outcome", "bump", "movement", "counts", "generator_version",
         "corpus_checksum", "wall_clock", "coverage", "not_looked_at", "limits", "matrix",
+        "matrix_note",
     }, sorted(doc)
     assert doc["outcome"] == {"result": "passed", "reason": None}
     assert doc["bump"] == {"declared": "minor", "computed": None}
@@ -443,6 +536,34 @@ def selfcheck() -> None:
     assert {l["name"] for l in doc["limits"]} == {
         "cage-ratchet-one-way", "cage-removal-scores-patch", "cage-not-priced-residual",
     }, doc["limits"]
+
+    # ticket 43 (18 Answer 5): the DECLARED bump is read from the reviewed
+    # file, and a declaration that disagrees with the number the release
+    # actually steps refuses -- the gate has two declarations of one fact.
+    repo = subject_with(["1.0.0"])
+    repo.declared_bump = "minor"
+    doc = run_gate(repo, "2.0.0")
+    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert "declares bump 'minor'" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+    assert "steps 'major'" in doc["outcome"]["reason"], doc["outcome"]["reason"]
+    repo.declared_bump = "major"
+    doc = run_gate(repo, "2.0.0")
+    assert doc["outcome"]["result"] == "passed", doc["outcome"]
+    assert doc["bump"]["declared"] == "major", doc["bump"]
+
+    # ticket 43 (18 Answer 1): a degraded publish's prerelease number is
+    # legal, steps from the same base as the clean number would, and the
+    # clean number is still legal afterwards -- the suffix never moves the
+    # base. Publishing a prerelease BELOW an already-released base is not.
+    assert check_version_legality(["4.0.0"], "4.0.1-quarantine.1").bump_class == "patch"
+    assert check_version_legality(["4.0.0", "4.0.1-quarantine.1"], "4.0.1").bump_class == "patch"
+    assert existing_versions(subject_with(["4.0.1", "4.0.0", "4.0.1-quarantine.1"]).subject_dir) == [
+        "4.0.0", "4.0.1-quarantine.1", "4.0.1"], "the degraded number must sort BELOW the clean one"
+    illegal = check_version_legality(["4.0.0", "4.0.1"], "4.0.1-quarantine.1")
+    assert not illegal.legal and "already released" in illegal.reason, illegal
+
+    # ticket 18 Answer 4: the publisher's matrix is empty AND says so.
+    assert doc["matrix"] == {} and "adopter-gate.py" in doc["matrix_note"], doc["matrix_note"]
 
     # a version gap (1.0.0 -> 3.0.0, nothing in between) is legal
     repo = subject_with(["1.0.0"])
@@ -459,6 +580,7 @@ def selfcheck() -> None:
     assert set(doc) == {
         "outcome", "bump", "movement", "counts", "generator_version",
         "corpus_checksum", "wall_clock", "coverage", "not_looked_at", "limits", "matrix",
+        "matrix_note",
     }
     assert doc["movement"] == [] and doc["not_looked_at"] == []
     # cs-23: limits are never omitted, not even here -- the three named ones
@@ -660,11 +782,16 @@ def selfcheck() -> None:
         "has(object.metadata.labels) && 'department' in object.metadata.labels"
     ], dept_movement["expressions"]
 
-    # declared WEAKER than computed: refuses, and names the moved corpus
-    # entries and the CEL expression -- "the gate never estimates viability.
-    # It prints one sentence instead" -- one sentence, no viability language.
+    # declared WEAKER than computed: ticket 43 / 18 Answer 1 -- this is a
+    # read-and-priced BEHAVIOUR, not an instrument fault, so it publishes
+    # DEGRADED (prerelease suffix, tier quarantine, the adopter prices it)
+    # rather than refusing. It still names the moved corpus entries and the
+    # CEL expression -- "the gate never estimates viability. It prints one
+    # sentence instead" -- one sentence, no viability language.
     doc = run_gate(repo, "1.1.0")
-    assert doc["outcome"]["result"] == "refused", doc["outcome"]
+    assert doc["outcome"]["result"] == "degraded", doc["outcome"]
+    assert doc["degraded"] == {"tier": "quarantine", "computed_bump": "major",
+                               "declared_bump": "minor", "suffix": "quarantine"}, doc["degraded"]
     assert doc["bump"]["declared"] == "minor" and doc["bump"]["computed"] == "major", doc["bump"]
     reason = doc["outcome"]["reason"]
     assert "require-department-label.yaml" in reason, reason
@@ -808,12 +935,12 @@ def selfcheck() -> None:
     # B) the SAME window, only `backport=True` differs, genuinely changes the
     #    outcome: narrowed to the 2.0.1 line alone, computed drops to "none",
     #    a "minor" declared bump now passes (stronger than computed, prints
-    #    the discrepancy) instead of the major refusal the full window forces.
+    #    the discrepancy) instead of the degraded publish the full window forces.
     window_b_full = comparison_window.ComparisonWindow(
         old_window=["1.0.0", "2.0.1"], new_window=["1.0.0", "2.0.1"],
         subject_tree_for=lambda v: win_trees[v])
     doc_full = run_gate(RepoState(subject_dir=new_win, corpus_dir=corpus_win, window=window_b_full), "2.2.0")
-    assert doc_full["outcome"]["result"] == "refused", doc_full["outcome"]
+    assert doc_full["outcome"]["result"] == "degraded", doc_full["outcome"]
     assert doc_full["bump"] == {"declared": "minor", "computed": "major"}, doc_full["bump"]
 
     window_b_backport = comparison_window.ComparisonWindow(
@@ -940,7 +1067,10 @@ def selfcheck() -> None:
     assert "commit" in doc26["outcome"]["reason"] and "1.0.0" in doc26["outcome"]["reason"], doc26["outcome"]
 
     print(
-        "selfcheck ok: every document field present on pass and on refusal; "
+        "selfcheck ok: the declared bump is read from the reviewed file and a declaration "
+        "that disagrees with the number refuses; a degraded prerelease number is legal and sorts "
+        "below its clean release, which stays legal after it; the publisher matrix is empty and "
+        "says the adopter fills it; every document field present on pass and on refusal; "
         "a version gap is legal; a declared version that already exists "
         "refuses; the real 2.1.1 refuses under reset-on-bump and names base "
         "2.0.1; a malformed declared version refuses instead of crashing; a "
@@ -948,7 +1078,8 @@ def selfcheck() -> None:
         "into the document, and their absence leaves the None placeholder; the "
         "two historical known-good bumps (1.0.0->2.0.0 major, 2.0.1->2.1.1 "
         "whole-body minor) rederive exactly through cage_engine and this seam; "
-        "a declared bump weaker than computed refuses, naming the moved "
+        "a declared bump weaker than computed publishes DEGRADED (tier quarantine, a "
+        "prerelease suffix on the untouched base number), naming the moved "
         "corpus entries and the CEL expression in one sentence with no "
         "viability language; a stronger declared bump passes and prints the "
         "discrepancy; the declared number is never rewritten; cs-22: movement "

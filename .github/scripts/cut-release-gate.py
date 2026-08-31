@@ -81,7 +81,11 @@ import gate  # noqa: E402
 import release_integrity  # noqa: E402
 
 DISTRIBUTION = corpus_generator.DISTRIBUTION
-POLICY_TAG_RE = re.compile(r"^policy/v(\d+\.\d+\.\d+)$")
+# Ticket 43 (18 Answer 1): prerelease-aware, because a DEGRADED publish is
+# tagged `policy/v4.0.1-quarantine.1` -- the declared base number plus a
+# suffix. `release.yml`'s own `policy/v*.*.*` glob already matched that
+# shape; this regexp and cut-release-normalize.py's TAG_RE did not.
+POLICY_TAG_RE = re.compile(r"^policy/v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$")
 EVIDENCE_DIR = COMPUTED_SEMVER / "evidence"
 
 
@@ -133,6 +137,31 @@ def _has_predicates(tree_dir: Path) -> bool:
     return bool(corpus_generator.predicates(tree_dir))
 
 
+def declared_bump(array: list[dict], version: str) -> str | None:
+    """Ticket 43 (18 Answer 5): the bump the release DECLARES, off the
+    reviewed `versions.yaml` array element -- "the array element is already
+    the reviewed unit and the gate already parses it". Absent -> None, and
+    run_gate keeps deriving the bump from the number exactly as before, so
+    every element cut before this field existed still gates."""
+    for element in array:
+        if element.get("version") == version:
+            bump = element.get("bump")
+            return str(bump) if bump else None
+    return None
+
+
+def degraded_tag(version: str, legal_history: list[str]) -> str:
+    """The number a DEGRADED release publishes under: the declared BASE
+    number, untouched, plus `-quarantine.N` (ADR-0011's superseding note).
+    N counts past degraded publishes of the same base number, so a second
+    degraded attempt at 4.0.1 is `4.0.1-quarantine.2`, which sorts above
+    `.1` and still below the clean `4.0.1`."""
+    base = comparison_window.base_version(version)
+    prefix = f"{base}-{gate.DEGRADED_TIER}."
+    n = 1 + sum(1 for v in legal_history if v.startswith(prefix))
+    return f"{base}-{gate.DEGRADED_TIER}.{n}"
+
+
 def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_history: list[str]) -> dict:
     """Builds the real RepoState for `version` and runs it through the one
     seam. `cut_versions` is every policy version in THIS dispatch (so the
@@ -156,6 +185,32 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
     is_backport = any(comparison_window.parse_semver(v) > comparison_window.parse_semver(version)
                        for v in old_window)
     below_declared = comparison_window.window_below(old_window, version, backport=is_backport)
+    # 2026-08-29: the declared array can legitimately hold ONE line. The whole
+    # 2.x/3.x fan-out was retired (unable to admit a pod, and reading the tier
+    # from the pod's own label), so cutting 4.0.0 left `old_window` empty and
+    # the computed bump came out "no predecessor" -- the gate could not compute
+    # anything to compare the declaration against, which is the one thing it
+    # exists to do. A RETIRED version is still a RELEASED one: it is what the
+    # world was pinned to before this release, its tree is on disk behind its
+    # signed tag, and retiring it from the window is itself a major (see
+    # comparison_window._retirement_movement). So the predecessor falls back to
+    # the real tag history, never to nothing. This is gap 2 of the two
+    # distribution/README.md named.
+    if not below_declared:
+        released_trees = [v for v in legal_history
+                          if (DISTRIBUTION / "policies" / f"v{v}").is_dir()]
+        below_declared = comparison_window.window_below(released_trees, version)[-1:]
+        # `old_window` is deliberately NOT reassigned here. It is the window as
+        # DECLARED before this release, and the retirement rule reads it: any
+        # version in it and not in `new_window` is reported retired, a major.
+        # Writing the fallback into it fabricates a retirement of a version the
+        # array never declared -- a release that moves nothing then classifies
+        # major, naming a "retirement" that never happened (observed 2026-08-29
+        # in tuppence's adopter-gate Scenario A). The fallback exists to give
+        # the BODY diff a basis when the declared window is empty, and
+        # `old_for_corpus` below is the only thing that should read it. A real
+        # retirement still surfaces: the adopter gate compares the arrays at
+        # the two pins it is given, which is where a consumer actually feels it.
     old_for_corpus = below_declared[-1] if below_declared else version
     old_tree = DISTRIBUTION / "policies" / f"v{old_for_corpus}"
     new_tree = DISTRIBUTION / "policies" / f"v{version}"
@@ -176,12 +231,24 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         subject_tree_for=lambda v: DISTRIBUTION / "policies" / f"v{v}",
         backport=is_backport,
     )
-    prior_versions = {e["version"]: e["tag"] for e in array if e["version"] in old_window}
+    # release_integrity's four rules are about RELEASED versions: rule 1 reads a
+    # prior version's frozen tree from its git TAG, and rule 4 refuses a released
+    # element whose `commit` is empty. An array element for a version that has
+    # never been tagged is not a released version -- it is a version DECLARED and
+    # not yet cut (the ResourceSet template makes `commit` optional for exactly
+    # that state, and cut-release fills it when it cuts the tag). Reading a tag
+    # that does not exist yet, or demanding a commit for a release that has not
+    # happened, is a refusal about the future, not about the shipped estate. So
+    # the release-integrity subject is the array filtered to `legal_history` --
+    # this module's own "every version this repo has EVER really tagged".
+    released = [e for e in array if e["version"] in legal_history]
+    prior_versions = {e["version"]: e["tag"] for e in released if e["version"] in old_window}
     release = release_integrity.ReleaseIntegrity(
         git_repo=REPO, policies_dir=DISTRIBUTION / "policies",
-        prior_versions=prior_versions, version_array=array,
+        prior_versions=prior_versions, version_array=released,
     )
-    repo_state = gate.RepoState(subject_dir=subject_dir, corpus_dir=corpus_dir, window=window, release=release)
+    repo_state = gate.RepoState(subject_dir=subject_dir, corpus_dir=corpus_dir, window=window,
+                                release=release, declared_bump=declared_bump(array, version))
     doc = gate.run_gate(repo_state, version)
 
     # cs-25's generator_standing_check.py evidence-record convention
@@ -242,10 +309,19 @@ def write_summary(records: list[tuple[str, dict]]) -> None:
 
 
 def main(argv: list[str]) -> int:
+    # `--dry-run`: run the whole gate, write the evidence, print the tag CI
+    # would cut -- and sign nothing. Ticket 43's own rule: everything a
+    # release needs is real except the signature, because a gitsign tag and a
+    # keyless cosign bundle can only be produced by cut-release.yml inside
+    # Actions. A dry run that wrote a stand-in bundle would be faking the one
+    # thing that cannot be faked, so it writes none at all.
+    dry_run = "--dry-run" in argv
+    argv = [a for a in argv if a != "--dry-run"]
     if len(argv) != 2:
-        print("usage: cut-release-gate.py <tags.json>", file=sys.stderr)
+        print("usage: cut-release-gate.py [--dry-run] <tags.json>", file=sys.stderr)
         return 2
-    entries = json.loads(Path(argv[1]).read_text())
+    tags_path = Path(argv[1])
+    entries = json.loads(tags_path.read_text())
 
     cut: list[tuple[str, str]] = []  # (tag, version)
     for e in entries:
@@ -266,24 +342,57 @@ def main(argv: list[str]) -> int:
     legal_history = real_tag_history(REPO)
 
     records: list[tuple[str, dict]] = []
+    retag: dict[str, str] = {}  # declared tag -> the tag actually cut
     for tag, version in sorted(cut, key=lambda tv: comparison_window.parse_semver(tv[1])):
         record = gate_one(version, cut_versions, array, legal_history)
-        evidence_path = EVIDENCE_DIR / f"{version}.json"
+        published = version
+        if record["outcome"]["result"] == "degraded":
+            # Ticket 18 Answer 1: a degraded publish carries a prerelease
+            # suffix on the DECLARED number. The base number is untouched --
+            # this is the one rewrite ADR-0011 did not consider, and it is a
+            # rewrite of the suffix, never of the number the publisher
+            # declared. The evidence is filed under the number actually
+            # published, so evidence file and tag always name the same thing.
+            published = degraded_tag(version, legal_history)
+            record["published_as"] = published
+            retag[tag] = f"policy/v{published}"
+            print(f"DEGRADED {tag}: {record['outcome']['reason']}")
+            print(f"         publishing as policy/v{published} (tier "
+                  f"{record['degraded']['tier']}), array element carries tier: "
+                  f"{record['degraded']['tier']}")
+        evidence_path = EVIDENCE_DIR / f"{published}.json"
         evidence_path.write_text(json.dumps(record, indent=2, sort_keys=False))
-        bundle_path = sign_evidence(evidence_path)
-        print(f"signed: {bundle_path}")
-        records.append((tag, record))
+        if dry_run:
+            print(f"dry run: wrote {evidence_path.relative_to(REPO)}, signed nothing")
+        else:
+            bundle_path = sign_evidence(evidence_path)
+            print(f"signed: {bundle_path}")
+        records.append((retag.get(tag, tag), record))
 
     write_summary(records)
 
-    refused = [(tag, r) for tag, r in records if r["outcome"]["result"] != "passed"]
+    refused = [(tag, r) for tag, r in records if r["outcome"]["result"] not in ("passed", "degraded")]
     if refused:
         for tag, r in refused:
             print(f"REFUSED {tag}: {r['outcome']['reason']}", file=sys.stderr)
         print("GATE: refused -- no commit, no tag. Signed evidence uploaded as a run artifact.", file=sys.stderr)
         return 1
 
-    print(f"GATE: passed for {', '.join(tag for tag, _ in records)}")
+    if retag and not dry_run:
+        # The later steps (create-tags, push, the array correction) all read
+        # tags.json, so the suffix is applied once, here, where the gate
+        # decided it -- never re-derived by three separate scripts.
+        for e in entries:
+            if e["tag"] in retag:
+                e["message"] = f"{e['message']} [degraded: published at tier {gate.DEGRADED_TIER}]"
+                e["tag"] = retag[e["tag"]]
+        tags_path.write_text(json.dumps(entries))
+
+    for tag, _ in records:
+        print(f"GATE: cut-release.yml must cut {tag} in Actions -- a gitsign tag and a keyless "
+              f"cosign bundle need a live Actions signing identity, which no local run has")
+    print(f"GATE: passed for {', '.join(tag for tag, _ in records)}"
+          + (" (some DEGRADED -- see above)" if retag else ""))
     return 0
 
 

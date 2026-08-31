@@ -2,10 +2,27 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://policy-as-versioned.dev/schema/party-artefact.json",
   "title": "party artefact",
-  "description": "One signed file per party (policy-composition ticket 11, spec.md 'The party artefact'; ADR-0012, ADR-0013). Declares the party's name, its roles, its parents as party+kind+version, its selected baseline name, and its overlay. Promoted from the shape spikes/cs-06b-cross-party-composition/material/parties/*.yaml proposed. The single source of truth for the allowed roles and parent kinds -- party_artefact.py reads its enums from this file rather than re-declaring them.",
+  "description": "One signed file per party (policy-composition ticket 11, spec.md 'The party artefact'; ADR-0012, ADR-0013). Declares the party's name, its roles, its parents as party+kind+version(+name for a feed), its selected baseline name, and its overlay. Eco-system ticket 21 / ADR-0019 widened it: the parent kind enum closed to controls|implementations|feed with a free feed `name` and an optional `since`; `publishes[]` became the discovery record (there is no central catalogue -- the set of signed publisher artefacts IS the catalogue); `size`, `appetite` and `reporting_currency` became the signed facts the pricing seam reads (ticket 25, ADR-0020/0021) so no fixture prices a party; `overlay.floor` became the party's own tighten-only cage floor (ticket 26, ADR-0022). `baseline` is required only of a party that adopts. The single source of truth for the allowed roles and parent kinds -- party_artefact.py reads its enums from this file rather than re-declaring them.",
   "type": "object",
-  "required": ["party", "roles", "baseline", "inherits", "overlay"],
+  "required": ["party", "roles", "inherits", "overlay"],
   "additionalProperties": false,
+  "definitions": {
+    "money": {
+      "type": "object",
+      "required": ["amount", "currency"],
+      "additionalProperties": false,
+      "properties": {
+        "amount": { "type": "number", "minimum": 0 },
+        "currency": { "$ref": "#/definitions/currency" }
+      },
+      "description": "Every amount carries its currency. No sum crosses perspectives or currencies (spec.md, 'The £ seam')."
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 alphabetic code, e.g. 'GBP'."
+    }
+  },
   "properties": {
     "party": {
       "type": "string",
@@ -15,17 +32,17 @@
     "roles": {
       "type": "array",
       "minItems": 1,
-      "items": { "enum": ["publisher", "risk-bearer", "adopter"] },
-      "description": "CONTEXT.md's Role entry. Roles compose; this is not a partition."
+      "items": { "enum": ["publisher", "risk-bearer", "adopter", "platform", "insurer"] },
+      "description": "CONTEXT.md's Role entry. Roles compose; this is not a partition. `platform` is the substrate role -- only a platform-role party may declare the `infra` cage tier on a Namespace (ADR-0022). `insurer` quotes against another party's signed exposure."
     },
     "baseline": {
       "type": "string",
       "minLength": 1,
-      "description": "The named baseline this party selects from its controls parent, e.g. 'MODERATE'. May be widened by an overlay add, never narrowed (ADR-0013)."
+      "description": "The named baseline this party selects from its controls parent, e.g. 'MODERATE'. May be widened by an overlay add, never narrowed (ADR-0013). Required of a party whose roles include `adopter`; a pure publisher selects nothing."
     },
     "inherits": {
       "type": "array",
-      "description": "Every parent this party pins, as party+kind+version. The version is the tag this party already pins in its own Flux/Renovate files.",
+      "description": "Every parent this party pins, as party+kind+version. The version is the tag this party already pins in its own Flux/Renovate files. A `feed` parent also names the feed; the entry IS the subscription record (ADR-0019: no second record).",
       "items": {
         "type": "object",
         "required": ["party", "kind", "version"],
@@ -33,12 +50,78 @@
         "properties": {
           "party": { "type": "string", "minLength": 1 },
           "kind": {
-            "enum": ["controls", "implementations", "pricing", "threat"],
-            "description": "controls: a catalogue + named baselines. implementations: policy bodies + control claims. pricing: a penalty schema, no rules. threat: a feed, no rules."
+            "enum": ["controls", "implementations", "feed"],
+            "description": "controls: a catalogue + named baselines. implementations: policy bodies + control claims. feed: anything that prices and carries no rules. Closed, because the composer does three different things with a parent and nothing else; the feed `name` underneath is free, so a new publisher ships a new feed with no platform change (ADR-0019)."
           },
-          "version": { "type": "string", "minLength": 1 }
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The feed's name, e.g. 'penalty-schema'. Required when kind is feed; meaningless otherwise."
+          },
+          "version": { "type": "string", "minLength": 1 },
+          "since": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "description": "The date this party first pinned this parent. Optional; a subscription with no `since` is simply undated, never invalid."
+          }
+        },
+        "if": { "properties": { "kind": { "const": "feed" } }, "required": ["kind"] },
+        "then": { "required": ["name"] }
+      }
+    },
+    "publishes": {
+      "type": "array",
+      "description": "The discovery record (ADR-0019 point 5). What this party publishes, where it lives in this repo, and which versions it has withdrawn. There is no central catalogue: the set of signed publisher artefacts is the catalogue.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["controls", "implementations", "feed"] },
+          "name": { "type": "string", "minLength": 1 },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repo-relative directory this artefact is published from."
+          },
+          "payload_schema": {
+            "type": ["string", "null"],
+            "description": "Repo-relative path or URL of the payload schema a consumer validates against. Null or absent where the artefact is not a feed envelope."
+          },
+          "revoked": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Versions this party has withdrawn. Tags are never deleted; a pin to a revoked version is a priced hole, never a refusal (ADR-0019 point 6, ADR-0023)."
+          }
         }
       }
+    },
+    "size": {
+      "type": "object",
+      "required": ["turnover", "customers", "data_subjects", "headcount", "as_of"],
+      "additionalProperties": false,
+      "description": "The party's own signed size. The percent-of-turnover and per-subject formulas scale against these numbers, so the price is this party's and no fixture's (ticket 25, ADR-0020). A stale `as_of` widens to the cap; it never refuses.",
+      "properties": {
+        "turnover": { "$ref": "#/definitions/money" },
+        "customers": { "type": "integer", "minimum": 0 },
+        "data_subjects": { "type": "integer", "minimum": 0 },
+        "headcount": { "type": "integer", "minimum": 0 },
+        "as_of": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+      }
+    },
+    "appetite": {
+      "type": "object",
+      "required": ["tolerance"],
+      "additionalProperties": false,
+      "description": "The party's own risk tolerance, as a signed fact rather than a platform-held fixture (ticket 25). The tier selection reads this.",
+      "properties": {
+        "tolerance": { "$ref": "#/definitions/money" }
+      }
+    },
+    "reporting_currency": {
+      "$ref": "#/definitions/currency",
+      "description": "The currency this party's own balance sheet reports in. Defaults to USD where unstated; the UK parties declare GBP."
     },
     "overlay": {
       "type": "object",
@@ -57,8 +140,17 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
           "description": "Bare catalogue control ids (ticket 14; ADR-0013, ADR-0017) this party adds to its selected baseline, beyond what the baseline name already selects. May only grow: a composition refuses on any id that leaves the last signed composed artefact's selected set. Optional; defaults to none."
+        },
+        "floor": {
+          "enum": ["baseline", "restricted", "quarantine", "isolated"],
+          "description": "One tighten-only cage floor this party holds itself to, whatever the price selects (ticket 26, ADR-0022). Selection clamps up to it and never below it. Lowering it is priced as a delta, never refused. `infra` is deliberately absent: only a platform-role party declares infra, and it declares it on a Namespace manifest, not here."
         }
       }
     }
-  }
+  },
+  "if": {
+    "properties": { "roles": { "contains": { "const": "adopter" } } },
+    "required": ["roles"]
+  },
+  "then": { "required": ["baseline"] }
 }

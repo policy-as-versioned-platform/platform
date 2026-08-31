@@ -1,15 +1,37 @@
 # cage-tier — the graded enforcement envelope, at admission.
 #
 # EVERY pod that claims a policy version always carries a cage spec — there is
-# no uncaged state for that population (ticket 08). A behind-posture workload
-# carries a cage TIER on its pod (`posture.acme.io/tier`, one of
-# baseline|restricted|quarantine — the tier the £ picked, see ../cage.py); an
-# in-currency workload carries none, and DEFAULTS to `baseline`, the loosest
-# tier — the permissive floor, not an untouched state. This MUTATING policy
-# expands the (possibly defaulted) tier into the concrete DIALS and stamps them
-# onto the pod, so every claiming workload keeps running, caged by degree. Deny
-# is a separate, bottom-rung decision (cage.py emits it only when even
-# quarantine's residual is over-band); this policy never denies.
+# no uncaged state for that population (ticket 08). The TIER comes from the
+# pod's NAMESPACE, never from the pod (ADR-0022, ticket 26): a governed
+# Namespace declares `posture.acme.io/tier` next to
+# `policy-as-versioned.dev/governed: "true"` on the same signed manifest, this
+# policy reads it through `namespaceObject`, and it CLOBBERS the pod's own
+# `posture.acme.io/tier` label. The pod label is an OUTPUT only — a forged
+# label is overwritten at admission, which is what closes H8-03. This MUTATING
+# policy expands the tier into the concrete DIALS and stamps them onto the pod,
+# so every claiming workload keeps running, caged by degree. Nothing is ever
+# denied: the bottom rung is `isolated`, a running cage with no reach.
+#
+# FAIL CLOSED. A GOVERNED Namespace that declares no tier, or a tier this
+# policy does not know, renders `isolated` — the strictest running cage — never
+# `baseline`. Silence is never an exemption. A namespace that is NOT governed
+# still renders `baseline`: ADR-0022's ordering rule says the platform's own
+# `infra` declaration on kube-system/flux-system/kyverno must land, and the
+# truth surface must assert it, BEFORE the unlabelled default flips to
+# `isolated` — otherwise CoreDNS lands in `isolated` and the cluster stops.
+# That flip is a one-line edit to `variables.tier` below when the gate asserts
+# the infra declaration.
+#
+# `infra` is deliberately absent from the dial table. It is a role declaration
+# by a `platform`-role party on its OWN Namespace manifests, never a priced
+# cage, and those namespaces hold no version-claiming pods, so this policy
+# never reaches them. A GOVERNED (adopter) Namespace that writes
+# `posture.acme.io/tier: infra` is not a platform declaration: it is not in the
+# selectable ladder, so it falls closed to `isolated`, exactly as ADR-0022
+# says a declaration from a party without the role must render.
+# ponytail: admission cannot read a party's roles; the role check lives in the
+# composed render (ADR-0022 C8). Add an `infra` dial row here only if the
+# platform ever governs a Namespace of its own.
 #
 # SCOPE: only pods that claim a `policy-as-versioned.dev/policy-version` (the
 # matchConditions gate below, same convention as ../../posture/policies/
@@ -20,22 +42,90 @@
 # question, spun out to its own effort (ticket 02 answer #5); this gate is what
 # keeps that question actually open rather than silently decided by omission.
 #
+# TIGHTEN-ONLY (ADR-0022). The mutation never writes a security field LOOSER
+# than the pod declared: `readOnlyRootFilesystem` and `runAsNonRoot` are ORed
+# with what the container already asked for, so a pod that declared `true` keeps
+# `true` at every tier including baseline. `allowPrivilegeEscalation` and
+# `privileged` are written `false` unconditionally, which is the AND — `false`
+# is the tight end of both fields, so writing them can only ever tighten. Before
+# ticket 26 baseline wrote `false` over a pod's `true`; that was the loosening
+# ADR-0022 forbids.
+#
+# The cpu/memory ceilings are a MIN, not an overwrite: a container that declared
+# a ceiling TIGHTER than its tier's dial keeps its own. Reviewed 2026-08-28: the
+# cage used to raise a pod's declared 50m/32Mi to the baseline dial's 500m/256Mi
+# — a tenfold loosening of the one field the tier bites with. `quantity()` is the
+# Kubernetes CEL quantity library, so `100m` vs `0.1` compare as values.
+#
+# IDEMPOTENT ON UPDATE. The container map deliberately SKIPS a container named
+# `waf-sidecar` and the sidecar block re-declares it, so the cage writes exactly
+# the same spec whether the sidecar is being injected for the first time (CREATE)
+# or is already resident (every UPDATE to an already-caged pod). Before this the
+# sidecar was appended unconditionally, so the second admission produced
+# `.spec.containers: duplicate entries for key [name="waf-sidecar"]` and the API
+# server refused EVERY update — a `kubectl label` on a running restricted,
+# quarantine or isolated pod (observed live, 2026-08-28). A pod spec is nearly
+# immutable after creation, so a mutation that is not byte-identical on UPDATE is
+# a refusal by another name: that is why the sidecar carries the WAF's own dials
+# on both paths rather than falling through the tier map.
+#
+# NEVER REFUSE, EVEN BY MAKING THE POD INVALID. `privileged: false` is written in
+# the SAME container securityContext as `allowPrivilegeEscalation: false` because
+# the API server rejects a container that carries `privileged: true` with
+# `allowPrivilegeEscalation: false` — writing only one of the pair turned the
+# cage into a refusal (observed live on kind-driftwood, 2026-08-28).
+#
+# HOST NAMESPACES ARE CLOBBERED SHUT. `hostNetwork`, `hostPID` and `hostIPC` are
+# written `false` at every rung. Without that, `hostNetwork: true` walked straight
+# out of the `isolated` rung: NetworkPolicy does not apply to a host-network pod,
+# so the reach projection (cage-netpol.yaml) was no bar at all and the bottom rung
+# reached the API server and the internet (observed live, 2026-08-28). All three
+# are pure tightenings, so this is a clobber and not a refusal.
+# ponytail: a `hostPath` VOLUME cannot be clobbered the same way (SSA merges the
+# volume list by name and cannot remove an entry), so an isolated pod can still
+# mount the node filesystem. The cage's forced `runAsNonRoot` is the only bar on
+# it today. Upgrade path: price the mount as a hole in composition, or add a
+# validating half that moves the Namespace's tier when one is declared.
+#
+# THE PRIORITY PAIR. `spec.priorityClassName` alone is NOT admissible from a
+# mutating webhook: Kubernetes' built-in Priority admission plugin has already
+# stamped `spec.priority: 0` before any webhook runs, and its validating half
+# then recomputes the class's real value and refuses the pod —
+#   "the integer value of priority (0) must not be provided in pod spec;
+#    priority admission controller computed -10 from the given PriorityClass name"
+# (observed live on kind-driftwood, 2026-08-28). `preemptionPolicy` has exactly
+# the same problem one step later:
+#   "the string value of PreemptionPolicy (PreemptLowerPriority) must not be
+#    provided in pod spec; priority admission controller computed Never from the
+#    given PriorityClass name"
+# (also observed live, same day, once `priority` was fixed). So the mutation
+# writes ALL THREE fields the plugin derives from the class: `priorityClassName`,
+# `priority` set to that class's own integer, and `preemptionPolicy: Never`.
+# `prio` in the dial table below is that integer; verify-graded.sh asserts every
+# `prio` equals its PriorityClass's real `value:` in priorityclasses.yaml and
+# that every cage PriorityClass really is `preemptionPolicy: Never`, so the trio
+# can never drift apart. ponytail: `Never` is a literal rather than a fifth dial
+# column because every rung shares it; the assertion is what keeps that true.
+#
 # TIERS OVER DIALS. The `dial` variable is the SAME table cage.py holds
 # (verify-graded.sh cross-checks the two never drift). The tier -> dials expansion
 # is a pure CEL map lookup: deterministic, no surprises.
 #
 #   baseline    a nudge: cpu/mem limits + a low eviction PriorityClass. No caps
-#               dropped, no read-only-fs, no WAF. Still admits.
+#               dropped, no read-only-fs, no WAF. Still admits. Normal reach.
 #   restricted  tighter limits, drop ALL caps, read-only root fs, a light WAF
-#               sidecar, a lower eviction PriorityClass.
+#               sidecar, a lower eviction PriorityClass, DNS-only egress.
 #   quarantine  tightest limits, drop ALL caps, read-only root fs, a HEAVY WAF
-#               sidecar, the lowest eviction PriorityClass. The hardest cage short
-#               of Deny.
+#               sidecar, a lower still PriorityClass, DNS-only egress.
+#   isolated    the bottom rung: quarantine's dials, NO ingress and NO egress
+#               (cage-netpol), and FIRST eviction. It runs and reaches nothing.
+#               The £ returns it where it used to return Deny.
 #
 # Least-privilege is still the floor for everyone via the estate's other policies;
 # this cage only *tightens* a workload that fell behind. The `caged` label it
-# stamps is what a NetworkPolicy generate (cage-netpol.yaml) and the eviction
-# PriorityClasses (priorityclasses.yaml) key on.
+# stamps, plus the tier label it clobbers, are what the per-tier NetworkPolicy
+# generate (cage-netpol.yaml) and the eviction PriorityClasses
+# (priorityclasses.yaml) key on.
 apiVersion: policies.kyverno.io/v1alpha1
 kind: MutatingPolicy
 metadata:
@@ -54,51 +144,91 @@ spec:
     # Every pod that claims a version is caged; a claim-less pod is not matched
     # at all (system/COTS pods stay outside this policy's reach). Within the
     # claiming population there is no uncaged sub-population and no self-
-    # asserted skip: the tier is set upstream by the £ (cage.py) / the currency
-    # controller, never by the pod itself for a LOOSENING — a missing label or
-    # an unrecognized value both fall through to `baseline`, the loosest tier,
-    # never to a no-op skip, which would be the exemption this project bans.
+    # asserted skip: the tier comes from the NAMESPACE (ADR-0022), never from
+    # the pod, and a governed Namespace with no tier falls closed to
+    # `isolated`, never to a no-op skip, which would be the exemption this
+    # project bans.
     - name: claims-a-policy-version
       expression: >-
         object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
   variables:
-    - name: rawTier
-      expression: "object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')"
+    # The Namespace is the declaration. `namespaceObject` is null for a
+    # cluster-scoped request and, offline, for any `kyverno apply`/`test` run
+    # that did not supply the Namespace through a CLI values file
+    # (`namespaces:` list) — so every read is null-guarded.
+    - name: nsGoverned
+      expression: >-
+        namespaceObject != null &&
+        namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
+    - name: nsTier
+      expression: >-
+        namespaceObject != null
+          ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('')
+          : ''
+    # Fail closed: a governed Namespace with no tier, or an unknown tier value
+    # (`infra` included — see the header), renders `isolated`. A namespace that
+    # is not governed still renders `baseline` until the platform's `infra`
+    # declaration lands and the gate asserts it (ADR-0022's ordering rule).
     - name: tier
       expression: >-
-        variables.rawTier in ['baseline', 'restricted', 'quarantine'] ? variables.rawTier : 'baseline'
-    # The tier -> dials table. Mirror of cage.py TIERS (cpu/mem/priorityClass, the
-    # harden flag = dropAll && readOnlyRootFs, and the WAF sidecar sizing).
-    # `harden`/`wafCpu` are the '0'/'false' sentinels that keep the map homogeneous
-    # (CEL maps must be single-typed) while gating the optional dials below.
+        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']
+          ? variables.nsTier
+          : (variables.nsGoverned ? 'isolated' : 'baseline')
+    # The tier -> dials table. Mirror of cage.py TIERS (cpu/mem/priorityClass,
+    # the harden flag = dropAll && readOnlyRootFs, and the WAF sidecar sizing),
+    # plus `prio`, the PriorityClass's own integer value (see THE PRIORITY PAIR
+    # above). `harden`/`wafCpu` are the '0'/'false' sentinels that keep the map
+    # homogeneous (CEL maps must be single-typed) while gating the optional
+    # dials below.
     - name: dial
       expression: >-
-        {'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline',  'harden':'false','wafCpu':'0',   'wafMem':'0'},
-         'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted','harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},
-         'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]
+        {'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline',  'prio':'-10',   'harden':'false','wafCpu':'0',   'wafMem':'0'},
+         'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted','prio':'-100',  'harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},
+         'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine','prio':'-1000', 'harden':'true', 'wafCpu':'250m','wafMem':'256Mi'},
+         'isolated':  {'cpu':'100m','mem':'64Mi', 'pc':'cage-isolated',  'prio':'-10000','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]
   mutations:
-    # 1. Mergeable dials via server-side-apply: the caged label, the eviction
-    #    PriorityClass, per-container cpu/mem limits, the hardening securityContext
-    #    (read-only-fs + runAsNonRoot gated on the tier's harden flag), and — for
-    #    tiers that call for one — a WAF sidecar sized by tier. SSA merges the
-    #    containers list by name, so existing containers are tightened in place and
-    #    the sidecar is added.
+    # 1. Mergeable dials via server-side-apply: the caged label, the tier label
+    #    CLOBBERED from the Namespace, the eviction PriorityClass AND its
+    #    matching integer priority, per-container cpu/mem limits, the hardening
+    #    securityContext (read-only-fs + runAsNonRoot ORed with what the
+    #    container declared, so the cage only ever tightens) and — for tiers
+    #    that call for one — a WAF sidecar sized by tier. SSA merges the
+    #    containers list by name, so existing containers are tightened in place
+    #    and the sidecar is added.
     - patchType: ApplyConfiguration
       applyConfiguration:
         expression: >-
           Object{
-            metadata: Object.metadata{ labels: {"posture.acme.io/caged": "true"} },
+            metadata: Object.metadata{ labels: {
+              "posture.acme.io/caged": "true",
+              "posture.acme.io/tier": variables.tier
+            } },
             spec: Object.spec{
+              hostNetwork: false,
+              hostPID: false,
+              hostIPC: false,
               priorityClassName: variables.dial.pc,
-              containers: object.spec.containers.map(c, Object.spec.containers{
+              priority: int(variables.dial.prio),
+              preemptionPolicy: "Never",
+              containers: object.spec.containers.filter(c, c.name != "waf-sidecar").map(c, Object.spec.containers{
                 name: c.name,
                 resources: Object.spec.containers.resources{
-                  limits: {"cpu": variables.dial.cpu, "memory": variables.dial.mem}
+                  limits: {
+                    "cpu": (has(c.resources) && c.resources.?limits["cpu"].hasValue() &&
+                            quantity(string(c.resources.limits["cpu"])).isLessThan(quantity(variables.dial.cpu)))
+                             ? string(c.resources.limits["cpu"]) : variables.dial.cpu,
+                    "memory": (has(c.resources) && c.resources.?limits["memory"].hasValue() &&
+                            quantity(string(c.resources.limits["memory"])).isLessThan(quantity(variables.dial.mem)))
+                             ? string(c.resources.limits["memory"]) : variables.dial.mem
+                  }
                 },
                 securityContext: Object.spec.containers.securityContext{
-                  readOnlyRootFilesystem: variables.dial.harden == 'true',
-                  runAsNonRoot: variables.dial.harden == 'true',
-                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: variables.dial.harden == 'true' ||
+                    (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),
+                  runAsNonRoot: variables.dial.harden == 'true' ||
+                    (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),
+                  allowPrivilegeEscalation: false,
+                  privileged: false
                 }
               }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{
                 name: "waf-sidecar",
@@ -107,7 +237,8 @@ spec:
                   limits: {"cpu": variables.dial.wafCpu, "memory": variables.dial.wafMem}
                 },
                 securityContext: Object.spec.containers.securityContext{
-                  readOnlyRootFilesystem: true, runAsNonRoot: true, allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true, runAsNonRoot: true,
+                  allowPrivilegeEscalation: false, privileged: false
                 }
               }] : [])
             }
@@ -115,8 +246,9 @@ spec:
     # 2. Drop ALL capabilities on every container — but ONLY for the hardened tiers.
     #    capabilities.drop is an atomic list, which SSA (mutation 1) may not merge,
     #    so it goes through a JSONPatch. Baseline (harden=false) returns an empty
-    #    patch: a nudge keeps its caps. This mutation sees mutation 1's output, so
-    #    an injected WAF sidecar is hardened too.
+    #    patch: a nudge keeps its caps, and a pod that dropped its own caps at
+    #    baseline keeps that too (tighten-only). This mutation sees mutation 1's
+    #    output, so an injected WAF sidecar is hardened too.
     - patchType: JSONPatch
       jsonPatch:
         expression: >-

@@ -1,0 +1,23 @@
+# The rejection ledger's calibration knob (ADR-0024; ticket 28 answer item 5).
+#
+# The ledger is DERIVED at run time from closed-unmerged proposal PRs -- there is
+# no committed register of rejections and never will be again. What is committed
+# is only the shape of the forgetting curve, versioned so that a re-tune is a
+# reviewed change with a date on it rather than a literal buried in a script.
+#
+#   suppress while   sum(0.5 ** (age_days / half_life_days)) >= reject_suppress
+#
+# At 0.5, one rejection suppresses for just under one half-life and repeated
+# rejections suppress for longer (ticket 10 Q5: "one rejection suppresses for
+# under h days and repeated rejections suppress longer") -- two closes a week
+# apart hold the key quiet for about eight weeks. A key nobody has rejected is
+# never suppressed at all. A rejected PR whose recorded curve hash or
+# selection-policy version differs from today's does not count: a new GBP is a
+# new question, not the same one asked twice.
+#
+# Flat `key: value` only -- the same shape (and the same reason) as the feeds
+# repo's per-feed rule.yaml: a GitHub runner is not promised pyyaml.
+version: 1.0.0
+half_life_days: 30
+reject_suppress: 0.5
+tuned_against: "not yet tuned against real closes -- 30 days is one review cycle, and twin/decay.yaml's 180 is the estate's only other decay knob. Revisit trigger: a reviewer sees the same slug twice inside a month, or a rejection re-raises before its reason has changed."

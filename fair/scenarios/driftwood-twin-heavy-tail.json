@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "name": "driftwood: cart PII with the twin's heavy tail",
+  "note": "The same shock as driftwood-cart-pii, priced with the severity-spec SHAPE an ADR-0021 forward-intel payload may carry in `lm`, instead of a bounded triple (ticket 08 decision 7). This is a standalone fixture, NOT fed by driftwood's live twin/forward-intel feed: that feed emits a bounded triple derived from the overlay's own numbers (the overlay carries no own-data observations and no world-layer prior to fit mu/sigma/u/xi/beta from), so fair.py reports tail=bounded-pert for it. The parameters here are illustrative, chosen to exercise the spliced sampler. perspective driftwood, currency GBP, horizon 1y. Same LEF as the warn state; only the tail differs, so `summary` prints tail=lognormal-gpd.",
+  "perspective": "driftwood",
+  "currency": "GBP",
+  "lef": [2, 4, 9],
+  "lm": {
+    "model": "lognormal-gpd",
+    "mu": 8.0,
+    "sigma": 1.0,
+    "u": 20000,
+    "xi": 0.5,
+    "beta": 15000
+  }
+}

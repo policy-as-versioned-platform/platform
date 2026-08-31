@@ -1,0 +1,43 @@
+# The offline git server that lets gitsign-verifier's live tail fetch a real
+# signed tag. Not part of the shipped identity package (kustomization.yaml
+# does not reference this directory) -- this exists only so
+# verify-source-verification.sh section 10 has real material on a cluster,
+# the same way driftwood/tuppence/ludlow each build and kind-load their own
+# git-server image to give Flux something real to fetch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitsign-tag-server
+  namespace: flux-system
+  labels: { app: gitsign-tag-server }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: gitsign-tag-server } }
+  template:
+    metadata:
+      labels: { app: gitsign-tag-server }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: git-server
+          image: gitsign-tag-server:local
+          imagePullPolicy: Never   # image is kind-loaded, never pulled
+          ports: [{ containerPort: 8080 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          readinessProbe:
+            httpGet: { path: /cgi-bin/git/platform.git/HEAD, port: 8080 }
+            initialDelaySeconds: 1
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitsign-tag-server
+  namespace: flux-system
+spec:
+  selector: { app: gitsign-tag-server }
+  ports: [{ port: 80, targetPort: 8080 }]

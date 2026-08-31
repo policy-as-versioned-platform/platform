@@ -1,5 +1,21 @@
 # policy-as-versioned-platform / feeds
 
+> **Moved, 2026-08-28 (eco-system ticket 21, ADR-0019).** `threat-register`, `cve` and `eol`
+> now live in the **`feeds` repo**, one envelope each (`<feed-name>/v<MAJOR>/feed.json`,
+> validated by `schema.json` here), signed by that repo's gitsign tag `<feed-name>/vX.Y.Z`.
+> The copies below (and `keys/`, `wardley/intel/market-intel.json`) stay in place this phase
+> because their consumers still read these paths: `honesty/verify-honesty.sh`, `wargamer/`,
+> `wardley/wardley.py`, the hub's `verify/provenance`, the twin's fixtures and the composer's
+> `feed_file()` bridge. They are deleted, and market-intel moves, when those consumers are
+> repointed (£ seam, ticket 25; twin, ticket 29). Nothing new is signed with `keys/`
+> (ADR-0023 D3); `honesty/reflexive.py` now reports `verification_key_present` off the
+> release.yml identity pin, not this key.
+> New pins point at `{party: feeds, kind: feed, name: <feed-name>}`; `{party: platform,
+> kind: threat}` is a read-only alias the composer still resolves.
+>
+> `schema.json` -- the feed envelope: `kind`, `name`, `version`, `published_by`,
+> `published_at`, `payload_schema`, `payload`. No signature field.
+
 **The reactive feeds** — institution threat register · CVE (trivy/GHSA-shaped) · EOL
 (`endoflife.date`-shaped) — signed and versioned like the regulator feeds
 (`nist` OSCAL, `ico` penalty schema), consumed by `platform/fair/fair.py` as

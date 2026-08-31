@@ -1,129 +1,496 @@
-# Expected cages. Each behind-posture pod is MUTATED (admitted) into its tier's
-# cage — never denied. baseline is a nudge (limits + eviction PriorityClass, caps
-# intact); restricted/quarantine add drop-ALL caps, read-only-fs, and a WAF
-# sidecar sized by tier. The dials here are the deterministic expansion of the
-# named tier (cage.py holds the same table). The in-currency pod (no self-
-# asserted tier) gets the same baseline cage — the permissive default, not a
-# self-asserted label, so `posture.acme.io/tier` stays absent on it.
+# Expected cages — the deterministic expansion of the tier each pod's NAMESPACE
+# declares (cage.py holds the same table). Every pod is MUTATED (admitted) into
+# its cage, never denied.
+#
+# Read the cases ticket 26 exists for straight off this file:
+#   * `untiered-ns` sits in a governed namespace with NO tier and comes out
+#     `isolated` — the strictest running cage — not `baseline`. Fail closed.
+#   * `forged-tier` declared `baseline` on the pod and comes out `quarantine`,
+#     the tier its Namespace declares. The pod label is an OUTPUT.
+#   * `hardened-baseline` declared readOnlyRootFilesystem/runAsNonRoot TRUE at
+#     the LOOSEST rung and keeps both TRUE. Tighten-only: the cage never writes
+#     a security field looser than the workload asked for.
+# And the five the 2026-08-28 review added, each of which was a live escape or a
+# live refusal before this file grew a row for it:
+#   * `privileged-pod` comes out `privileged: false` next to
+#     `allowPrivilegeEscalation: false`, so the API server's own validation
+#     accepts the pair instead of rejecting the pod the cage just wrote.
+#   * `host-namespaces` comes out hostNetwork/hostPID/hostIPC ALL false at the
+#     bottom rung — the reach projection is a NetworkPolicy and a host-network
+#     pod is not subject to one.
+#   * `tighter-than-tier` KEEPS its declared 50m/32Mi at a rung whose dial is
+#     500m/256Mi. The ceilings are a MIN.
+#   * `sidecar-resident` already had a `waf-sidecar` and comes out with exactly
+#     ONE — the shape every UPDATE to a caged pod has.
+#   * `ungoverned-ns` comes out `baseline`: ADR-0022's ordering rule, decided.
+# And every pod carries all THREE fields the API server's own Priority admission
+# plugin derives from a PriorityClass — `priorityClassName`, the matching integer
+# `priority`, and `preemptionPolicy: Never` — without which it refuses the pod
+# outright, whatever the cage says.
+---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: behind-baseline
-  namespace: default
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
     posture.acme.io/tier: baseline
-    posture.acme.io/caged: "true"
+  name: at-baseline
+  namespace: cage-baseline
 spec:
-  priorityClassName: cage-baseline
   containers:
-    - name: app
-      image: nginx
-      resources:
-        limits:
-          cpu: 500m
-          memory: 256Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: false
-        runAsNonRoot: false
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: false
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10
+  priorityClassName: cage-baseline
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: behind-restricted
-  namespace: default
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
     posture.acme.io/tier: restricted
-    posture.acme.io/caged: "true"
+  name: at-restricted
+  namespace: cage-restricted
 spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 250m
+        memory: 128Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -100
   priorityClassName: cage-restricted
-  containers:
-    - name: app
-      image: nginx
-      resources:
-        limits:
-          cpu: 250m
-          memory: 128Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        capabilities:
-          drop:
-            - ALL
-    - name: waf-sidecar
-      image: ghcr.io/acme/coraza-waf:cage
-      resources:
-        limits:
-          cpu: 100m
-          memory: 128Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        capabilities:
-          drop:
-            - ALL
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: behind-quarantine
-  namespace: default
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
     posture.acme.io/tier: quarantine
-    posture.acme.io/caged: "true"
+  name: at-quarantine
+  namespace: cage-quarantine
 spec:
-  priorityClassName: cage-quarantine
   containers:
-    - name: app
-      image: nginx
-      resources:
-        limits:
-          cpu: 100m
-          memory: 64Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        capabilities:
-          drop:
-            - ALL
-    - name: waf-sidecar
-      image: ghcr.io/acme/coraza-waf:cage
-      resources:
-        limits:
-          cpu: 250m
-          memory: 256Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        capabilities:
-          drop:
-            - ALL
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -1000
+  priorityClassName: cage-quarantine
 ---
 apiVersion: v1
 kind: Pod
 metadata:
-  name: in-currency
-  namespace: default
   labels:
-    policy-as-versioned.dev/policy-version: "2.0.0"
-    posture.acme.io/caged: "true"
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: isolated
+  name: at-isolated
+  namespace: cage-isolated
 spec:
-  priorityClassName: cage-baseline
   containers:
-    - name: app
-      image: nginx
-      resources:
-        limits:
-          cpu: 500m
-          memory: 256Mi
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: false
-        runAsNonRoot: false
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10000
+  priorityClassName: cage-isolated
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 2.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: isolated
+  name: untiered-ns
+  namespace: cage-untiered
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10000
+  priorityClassName: cage-isolated
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: quarantine
+  name: forged-tier
+  namespace: cage-quarantine
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -1000
+  priorityClassName: cage-quarantine
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: baseline
+  name: hardened-baseline
+  namespace: cage-baseline
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10
+  priorityClassName: cage-baseline
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: baseline
+  name: privileged-pod
+  namespace: cage-baseline
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: false
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10
+  priorityClassName: cage-baseline
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: isolated
+  name: host-namespaces
+  namespace: cage-isolated
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10000
+  priorityClassName: cage-isolated
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: baseline
+  name: tighter-than-tier
+  namespace: cage-baseline
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: false
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10
+  priorityClassName: cage-baseline
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: quarantine
+  name: sidecar-resident
+  namespace: cage-quarantine
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - image: ghcr.io/acme/coraza-waf:cage
+    name: waf-sidecar
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -1000
+  priorityClassName: cage-quarantine
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+    posture.acme.io/caged: 'true'
+    posture.acme.io/tier: baseline
+  name: ungoverned-ns
+  namespace: cage-ungoverned
+spec:
+  containers:
+  - image: nginx
+    name: app
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    securityContext:
+      allowPrivilegeEscalation: false
+      privileged: false
+      readOnlyRootFilesystem: false
+      runAsNonRoot: false
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10
+  priorityClassName: cage-baseline

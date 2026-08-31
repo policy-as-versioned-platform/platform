@@ -7,7 +7,7 @@ Catches an Audit→Deny flip **before merge**, not at deploy. Runs the real
 
 1. Reads the workload's `policy-as-versioned.dev/policy-version` label — the
    version it targets.
-2. Resolves that version's **supported window (±1)** off `distribution/versions.yaml`'s
+2. Resolves that version's **supported window (±1 major line, by semver, not array position)** off `distribution/versions.yaml`'s
    array — the *same* array [`render-orphan-guard.py`](../distribution/render-orphan-guard.py)
    renders the live orphan-guard from. No second source of truth.
 3. Runs `kyverno apply` for every policy version in the window against the

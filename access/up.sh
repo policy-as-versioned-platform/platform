@@ -12,8 +12,24 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CTX="${CTX:-kind-driftwood}"
 KAPPLY() { kubectl --context "$CTX" apply -f "$@"; }
-RECON()  { timeout 300 flux --context "$CTX" reconcile helmrelease -n "$1" "$2" || \
-             echo "  (reconcile of $2 not finished within timeout — safe to re-run up.sh)"; }
+DEGRADED=0
+# Reconcile, then ASSERT the release actually went Ready and say so out loud.
+# A silent `|| echo` here is how a HelmRelease pinned to a non-existent chart
+# version sat un-reconciled for weeks while up.sh still printed "ok".
+RECON()  {
+  timeout 300 flux --context "$CTX" reconcile helmrelease -n "$1" "$2" >/dev/null 2>&1 || true
+  local ready msg
+  ready="$(kubectl --context "$CTX" -n "$1" get helmrelease "$2" \
+             -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+  msg="$(kubectl --context "$CTX" -n "$1" get helmrelease "$2" \
+             -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || true)"
+  if [ "$ready" = True ]; then
+    echo "  ok   helmrelease $1/$2 Ready"
+  else
+    echo "  NOT READY: helmrelease $1/$2 (Ready=${ready:-<none>}): ${msg:-no status yet}" >&2
+    DEGRADED=1
+  fi
+}
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 
 for c in kubectl flux; do command -v "$c" >/dev/null || { echo "MISSING cli: $c" >&2; exit 1; }; done
@@ -45,5 +61,10 @@ echo "    (needs a real/virtual TPM on the EUD — see device/secure-enclave.md)
 
 say "decision engine selfcheck (the graded human/device gate)"
 python3 "$HERE/access.py" selfcheck
+
+if [ "$DEGRADED" -ne 0 ]; then
+  echo "ACCESS PLANE DEGRADED — a HelmRelease above is not Ready. Re-run up.sh once (slow\n  chart pull), and if it stays not-Ready read the message: it is a real fault, not a timeout." >&2
+  exit 1
+fi
 
 say "done. verify with estate/platform/access/verify-access.sh"

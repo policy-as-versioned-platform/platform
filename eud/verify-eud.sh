@@ -8,7 +8,8 @@
 #     entries if the plane is already up. Never blocks; nothing waits.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CTX="${CTX:-kind-driftwood}"
+CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
+. "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 
 echo "== offline: VM specs =="
 python3 - "$HERE" <<'PY'
@@ -78,13 +79,15 @@ for c in qemu-img swtpm utmctl; do
 done
 
 echo "== live: driftwood device SVIDs (best-effort, bounded) =="
-if command -v kubectl >/dev/null && timeout 10 kubectl --context "$CTX" get ns spire-system >/dev/null 2>&1; then
+if ! substrate_ok "$CLUSTER"; then
+  live_tail_skip "$SUBSTRATE_REASON"
+elif ! timeout 10 kubectl --context "$CTX" get ns spire-system >/dev/null 2>&1; then
+  live_tail_skip "identity substrate not installed on $CTX (run identity/up.sh)"
+else
   for eud in windows11-eud linux-eud; do
     timeout 10 kubectl --context "$CTX" get clusterstaticentry "${eud}-device" >/dev/null 2>&1 \
       && echo "  ok   ${eud}-device SVID applied" \
       || echo "  (not applied yet — venue step: tpm-devid-enroll.sh $eud <fingerprint> | kubectl apply -f -)"
   done
-else
-  echo "  (identity substrate not reachable; skipped — offline checks above are the ones that must pass)"
 fi
-echo "verify-eud: done"
+pass_line "EUD vTPM specs and tpm-devid entries sit on the one estate root; WHfB alone is refused"

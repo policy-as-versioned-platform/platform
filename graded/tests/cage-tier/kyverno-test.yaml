@@ -1,15 +1,41 @@
-# Graded envelope, offline (`kyverno test`). The load-bearing assertion of ticket
-# 10 (extended by ticket 08): a behind-posture pod is MUTATED INTO ITS CAGE, not
-# denied. The result is `pass` (a mutation applied) with patchedResources proving
-# the cage is present (limits + eviction PriorityClass on every tier; drop-ALL
-# caps + read-only-fs + WAF sidecar on restricted/quarantine) — there is NO Deny
-# anywhere. A pod in currency (claims a version, no tier label) is ALSO mutated —
-# into baseline, the loosest tier — proving there is no untouched state *within
-# the claiming population*: every workload that claims a policy version always
-# carries a cage spec. `unclaimed-system` claims no version at all and is
-# `skip`ped — the matchConditions gate, not prose, is what keeps unversioned/
-# system/COTS pods out of scope (ticket 02 answer #5 stays a real open question,
-# not one the mutation has already answered).
+# The graded envelope, offline (`kyverno test`). The load-bearing assertion of
+# ticket 10 (extended by ticket 08, rebuilt by ticket 26): a pod is MUTATED INTO
+# THE CAGE ITS NAMESPACE DECLARES, not denied.
+#
+# `variables: values.yaml` is what makes this testable offline at all: kyverno
+# 1.18 populates `namespaceObject` for a MutatingPolicy only from a CLI values
+# file's `namespaces:` list — a `kind: Namespace` in `resources:` never reaches
+# the engine. See values.yaml and
+# .scratch/ecosystem/research/kyverno-1.18-cage-facts.md §2.
+#
+# The result is `pass` (a mutation applied) with patchedResources proving the
+# cage is present — there is NO Deny anywhere. Covered here:
+#   * one governed namespace per rung renders that rung's dials, baseline
+#     through isolated;
+#   * a governed namespace with NO tier renders `isolated`, never `baseline`
+#     (fail closed — silence is not an exemption);
+#   * a pod that forged `posture.acme.io/tier` has it CLOBBERED from the
+#     Namespace (the pod label is an output only);
+#   * a pod that declared readOnlyRootFilesystem TRUE keeps it at baseline
+#     (tighten-only — the loosening ADR-0022 forbids);
+#   * `privileged-pod` keeps running: `privileged` is clobbered false in the same
+#     securityContext as allowPrivilegeEscalation, so the API server's own
+#     validation of that pair accepts the pod the cage wrote (it rejected it
+#     before — the cage refusing a workload, live on kind-driftwood 2026-08-28);
+#   * `host-namespaces` has hostNetwork/hostPID/hostIPC clobbered shut at the
+#     bottom rung — a host-network pod is not subject to any NetworkPolicy, so
+#     the reach projection was no bar on it at all;
+#   * `tighter-than-tier` keeps its own 50m/32Mi ceiling at a rung whose dial is
+#     500m/256Mi — the ceilings are a MIN of declared and dial, not an overwrite;
+#   * `sidecar-resident` already carries a `waf-sidecar` (what every UPDATE to a
+#     caged pod looks like) and comes out with exactly one — appending a second
+#     made every update fail admission outright;
+#   * `ungoverned-ns` sits in a namespace nobody governs and renders `baseline`
+#     by ADR-0022's ordering rule — a decision with a fixture, not a fall-through;
+#   * `unclaimed-system` claims no version at all and is `skip`ped — the
+#     matchConditions gate, not prose, is what keeps unversioned/system/COTS
+#     pods out of scope (ticket 02 answer #5 stays a real open question, not one
+#     the mutation has already answered).
 apiVersion: cli.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -18,11 +44,24 @@ policies:
   - ../../policies/cage-tier.yaml
 resources:
   - resources.yaml
+variables: values.yaml
 results:
   - policy: cage-tier
     rule: cage-tier
     kind: Pod
-    resources: [behind-baseline, behind-restricted, behind-quarantine, in-currency]
+    resources:
+      - at-baseline
+      - at-restricted
+      - at-quarantine
+      - at-isolated
+      - untiered-ns
+      - forged-tier
+      - hardened-baseline
+      - privileged-pod
+      - host-namespaces
+      - tighter-than-tier
+      - sidecar-resident
+      - ungoverned-ns
     patchedResources: patched.yaml
     result: pass
   - policy: cage-tier

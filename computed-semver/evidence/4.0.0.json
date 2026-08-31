@@ -1,0 +1,59 @@
+{
+  "outcome": {
+    "result": "passed",
+    "reason": null
+  },
+  "bump": {
+    "declared": "major",
+    "computed": "major"
+  },
+  "movement": [
+    {
+      "policy": "<supported-version-array>",
+      "verdict": "major",
+      "entries": [],
+      "expressions": [],
+      "detail": "version 3.0.0 retired from the supported window between the before-this-release window and the after -- an array-only change, no policy body diff, still breaks every cluster still pinned to it"
+    }
+  ],
+  "counts": {
+    "old": 153,
+    "new": 152,
+    "union": 164
+  },
+  "generator_version": "0.2.0",
+  "corpus_checksum": "sha256:ae12308f64efddb0b99e7f452c372b70a6d42d920954df7f1f7f40dbeff82c0a",
+  "wall_clock": 0.28637754172086716,
+  "coverage": {
+    "cells": 39,
+    "pairs": 164,
+    "pairwise_gap": "axes were combined pairwise (predicate-expression x version-pin, predicate-expression x tier-label, and every pair among version-pin, tier-label, namespace and workload-declares), so no three-way interaction was built; predicate-expression x namespace was not built because no subject predicate reads a Namespace (corpus_generator fails generation the day one does), and predicate-expression x workload-declares was not built because the declared-hardening axis writes the same container securityContext fields the expression axis's own probes already write"
+  },
+  "not_looked_at": [],
+  "limits": [
+    {
+      "name": "cage-ratchet-one-way",
+      "description": "the cage only ever tightens or holds under this rule -- nothing widens it back automatically once a workload's posture recovers, a structural one-way ratchet (cage_engine.py's RANK table). Kept open by decision, not by this count reaching zero.",
+      "count": 0,
+      "status": "open"
+    },
+    {
+      "name": "cage-removal-scores-patch",
+      "description": "the rule reads only the workload's own side of the comparison, so removing or loosening enforcement classifies no higher than patch even though it widens what is admitted. Kept open by decision.",
+      "count": 0,
+      "status": "open"
+    },
+    {
+      "name": "cage-not-priced-residual",
+      "description": "nothing in this corpus maps a pod to a priced residual -- the tier axis is synthetic (corpus_generator.TIER_VALUES), so the cage half of Track 2 is proved on synthetic input, never a real infrastructure capture. The check that would remove it: witness_set's real-infrastructure witnesses.",
+      "count": 6,
+      "status": "open"
+    }
+  ],
+  "matrix": {},
+  "matrix_note": "empty at the publisher, on purpose (ticket 18 Answer 4): each institution fills its own row by running this published computed-semver package inside its own adopter-gate.py, against its own claimed policy versions with its own workloads as extra corpus entries, and lands the row in its own composed evidence. The publisher never reads an adopter repository (NORTH-STAR \u00a72).",
+  "declared": "4.0.0",
+  "subject_dir": "distribution/policies/v4.0.0",
+  "old_subject_dir": "distribution/policies/v3.0.0",
+  "computed_bump": "major"
+}

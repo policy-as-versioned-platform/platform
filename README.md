@@ -29,7 +29,8 @@ The platform governs **itself** under the same risk model (Kyverno/Flux/platform
 in scope) — it passes its own test. This is the **reflexive** part of the role
 composition: `platform` is a **publisher** to the five other parties, and also
 a **risk-bearer** in its own right, carrying a strict £10k appetite band
-(`risk/appetite.json`, org `platform`, `root_of_trust: true`) rather than
+(signed on its own `party.yaml` `appetite:`, next to `size` — the platform-held
+`risk/appetite.json` fixture is retired, ADR-0021) rather than
 standing outside the apparatus it ships.
 
 ## Releases (ticket mo-10)

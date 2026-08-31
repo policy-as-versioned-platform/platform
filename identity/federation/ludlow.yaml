@@ -1,0 +1,85 @@
+# Federation: the ClusterFederatedTrustDomain objects the **ludlow** cluster
+# applies, one per peer. Generated shape, hand-committed: with four cluster-
+# running parties there are six pairs and twelve objects, two per pair, one on
+# each side. Federation is symmetric only because both sides declare it; a
+# party stops trusting a counterparty by DELETING its line here and from its
+# own party artefact, not by asking anyone's permission (ticket 12 answer 1).
+#
+# WHY THESE FOUR AND NOT SEVEN. A trust domain is an attestation root for
+# workloads. `nist`, `ico`, `feeds` and `insurer` run no workloads and no
+# cluster, so they get no trust domain: they publish signed artefacts and are
+# consumed through a pinned tag, which needs no SVID (ticket 12 answer 1).
+#
+# WHAT IS NOT TRUE YET, and why the verifier says so rather than passing:
+#   * driftwood's live SPIRE still runs the single estate-wide trust domain
+#     `acme.internal`, not `driftwood.acme.internal`. Renaming it re-mints
+#     every SVID and rewrites every literal that hardcodes the old name
+#     (istio meshConfig, the demo AuthorizationPolicy principals,
+#     tuppence/reset/reach.py, tuppence/reset/openbao-role.yaml). That
+#     migration is not this ticket's, and none of those files are this
+#     ticket's to edit.
+#   * tuppence and ludlow run KinD clusters with no SPIRE on them at all, so
+#     no bundle endpoint answers on either side.
+#   * `spire-server.federation.enabled` is off in spire/helmrelease.yaml, so
+#     this cluster serves no bundle endpoint either. Turning it on restarts
+#     spire-server, which re-mints the X.509 CA and crashloops the agent on a
+#     stale cached bundle (see identity/up.sh) — a deliberate not-now.
+# verify-federation.sh reports all three and exits 3 (could-not-look). It
+# never turns that absence into a pass.
+#
+# `className` is load-bearing and was learned the hard way on the two
+# ClusterSPIFFEIDs: the spire chart scopes its controller-manager to
+# `<release-namespace>-<release-name>` and runs with "handle crs without class
+# name: false", so an object with no className is never reconciled at all —
+# not denied, not errored, silently absent forever.
+#
+# `bundleEndpointURL` is the peer's `bundle_endpoint`; `trustDomain` is its
+# `trust_domain`. Both belong on the peer's signed party.yaml (ticket 12
+# answer 1) and are literals here only because party/schema.json does not yet
+# accept those keys — see identity/README.md, "The three party-artefact fields
+# this package still hardcodes".
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: platform
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: identity-substrate
+spec:
+  className: spire-system-spire
+  trustDomain: platform.acme.internal
+  bundleEndpointURL: https://spire.platform.acme.internal:8443
+  bundleEndpointProfile:
+    type: https_spiffe
+    endpointSPIFFEID: spiffe://platform.acme.internal/spire/server
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: driftwood
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: identity-substrate
+spec:
+  className: spire-system-spire
+  trustDomain: driftwood.acme.internal
+  bundleEndpointURL: https://spire.driftwood.acme.internal:8443
+  bundleEndpointProfile:
+    type: https_spiffe
+    endpointSPIFFEID: spiffe://driftwood.acme.internal/spire/server
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: tuppence
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: identity-substrate
+spec:
+  className: spire-system-spire
+  trustDomain: tuppence.acme.internal
+  bundleEndpointURL: https://spire.tuppence.acme.internal:8443
+  bundleEndpointProfile:
+    type: https_spiffe
+    endpointSPIFFEID: spiffe://tuppence.acme.internal/spire/server

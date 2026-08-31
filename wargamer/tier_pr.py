@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""tier_pr.py -- the proposer's last step (ticket 17; ADR-0015). Turns a
-bounded cage-tier proposal (wargamer.py + proposer_bounds.py) into a REAL,
-opened artefact: a pull request editing `posture.acme.io/tier` on the
-adopter's committed workload manifest, or -- for a proposed `deny`, which
-the `cage-tier` MutatingPolicy would coerce to `baseline` if it ever landed
-as a label -- an issue instead. Never both, for the same proposal.
+"""tier_pr.py -- the proposer's last step (ticket 17; ADR-0015, ADR-0022).
+Turns a bounded cage-tier proposal (wargamer.py + proposer_bounds.py) into a
+REAL, opened artefact: a pull request editing `posture.acme.io/tier` on the
+adopter's GOVERNED NAMESPACE MANIFEST -- the manifest carrying
+`policy-as-versioned.dev/governed: "true"`, found by reading the adopter's
+own repo, never by a path this module knows.
+
+ADR-0022 moved the declaration: the tier is declared on the governed
+Namespace and `cage-tier` renders it onto every pod through
+`namespaceObject`. The pod label is an OUTPUT, clobbered at every
+admission. A proposal against `deploy/pod.yaml` therefore changed NOTHING
+once merged, which is what this module used to open (fixed 2026-08-28).
+
+**There is no issue branch any more.** ADR-0015's "a proposed `deny` opens
+an issue instead of a label PR" is dead: under ADR-0022 the bottom rung is
+`isolated` -- a real, running, unreachable cage -- so there is no tier that
+cannot travel as a declaration, nothing is ever denied, and EVERY proposal
+this module lands is a pull request a human merges.
 
 Unlike propose-policy-pr.sh and driftwood/scripts/bump-nist-pin.sh -- which
 render the diff and stop, propose-never-dispose, on purpose -- this script
@@ -23,20 +35,21 @@ for the version cross-check gate (ADR-0015: "same-repo credential").
 Dedupe: `wargamer.propose()`'s own branch name IS the key. A second run
 resets that branch to the current base and force-pushes a single fresh
 commit reflecting the current £ (never accumulates history), then updates
-the already-open PR in place rather than opening a second one. An issue
-proposal dedupes the same way, keyed by an HTML-comment marker in the issue
-body (the same span-marker pattern driftwood's adopter-gate.py already uses
-for the PR body).
+the already-open PR in place rather than opening a second one. A rejection
+is that PR closed unmerged: the ledger is DERIVED from it (ADR-0024), and
+the HTML-comment marker in the PR body carries the curve hash and the
+selection-policy version the proposal was priced under.
 
 Usage:
     tier_pr.py run --adopter-dir <path> --evidence <evidence.json> \\
-        --workload <workload.yaml> --org <party> [--base main] \\
-        [--rejections <rejections.json>] [--dry-run]
+        --org <party> [--base main] \\
+        [--rejections <derived-ledger.json>] [--dry-run]
     tier_pr.py selfcheck
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -49,55 +62,177 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "honesty"))
 import wargamer          # noqa: E402  propose() shapes what gets landed
 import proposer_bounds   # noqa: E402  decides WHETHER to land it
+import rejection_ledger  # noqa: E402  derives the ledger those bounds read
 
-# The exact matchCondition ../graded/policies/cage-tier.yaml itself gates
-# on -- only a labels block that already claims a policy version is this
-# policy's population, so only that block is a legal place to add the tier.
-CLAIMS_LABEL = "policy-as-versioned.dev/policy-version"
+# ADR-0022: the tier is declared on the governed Namespace, next to the
+# governed label, on the same signed object. `cage-tier` reads it through
+# `namespaceObject`; the pod label is that render's output.
+GOVERNED_LABEL = "policy-as-versioned.dev/governed"
 TIER_LABEL = "posture.acme.io/tier"
 
-# One flow-style `labels: { ... }` map, as driftwood/deploy/pod.yaml (and
-# every other workload manifest fixture in this estate) writes it. A block-
-# style workload manifest is out of scope here -- see apply_tier_label's own
-# docstring for the upgrade path.
-_LABELS_BLOCK = re.compile(r"labels:\s*\{([^{}]*)\}")
-_TIER_KV = re.compile(r'"posture\.acme\.io/tier"\s*:\s*"[^"]*"')
+_KIND_NAMESPACE = re.compile(r"""^kind:\s*["']?Namespace["']?\s*$""")
+_GOVERNED_TRUE = re.compile(
+    r"""^(\s*)policy-as-versioned\.dev/governed:\s*["']?true["']?\s*$""")
+_TIER_LINE = re.compile(r"""^(\s*)posture\.acme\.io/tier:\s*\S.*$""")
 
-ISSUE_MARKER = "<!-- wargamer:tier:{slug} -->"
+
+# --------------------------------------------------------------------------
+# finding the declaration -- by the governed label, never by a path
+# --------------------------------------------------------------------------
+def governed_namespace_span(text: str) -> tuple[int, int] | None:
+    """The (start, end) line span of the YAML document in `text` that is a
+    Namespace AND carries `governed: "true"`, or None. Document-scoped so a
+    multi-document file (tuppence/reset/workloads.yaml declares an
+    ungoverned Namespace beside its workloads) is read a document at a
+    time, not as one blob."""
+    lines = text.splitlines(keepends=True)
+    starts, ends, cur = [], [], 0
+    for i, line in enumerate(lines):
+        if line.rstrip() == "---":
+            starts.append(cur)
+            ends.append(i)
+            cur = i + 1
+    starts.append(cur)
+    ends.append(len(lines))
+    for start, end in zip(starts, ends):
+        doc = lines[start:end]
+        if any(_KIND_NAMESPACE.match(x) for x in doc) and \
+                any(_GOVERNED_TRUE.match(x) for x in doc):
+            return start, end
+    return None
+
+
+def _candidate_manifests(adopter_dir: Path) -> list[Path]:
+    """The manifests a declaration could live in: the COMMITTED ones where the
+    adopter directory is a git clone -- an ignored scratch tree (`.work/`) is
+    not a signed declaration and a PR could not carry it -- and everything on
+    disk where it is not, which is the `--dry-run`-against-a-throwaway-copy
+    case verify/e2e/step3 runs."""
+    listed = _git("ls-files", "-z", "--", "*.yaml", "*.yml",
+                  cwd=adopter_dir, check=False, capture=True)
+    if listed.returncode == 0:
+        return [adopter_dir / rel for rel in listed.stdout.split("\0") if rel]
+    return [p for p in sorted(adopter_dir.rglob("*.y*ml"))
+            if not {".git", "__pycache__"} & set(p.parts)]
+
+
+def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
+    """Every manifest in the adopter's own repo that declares a governed
+    Namespace. The proposer knows no path: `gitops/apps/namespace.yaml` is
+    where all three adopters happen to keep it today, and an adopter that
+    moves it is still proposed against.
+
+    ponytail: a line-level read, not a YAML parse -- a GitHub runner is not
+    promised pyyaml (the same reason rejection-decay.yaml is read by hand).
+    Upgrade to yaml.safe_load_all if a declaration ever needs anchors."""
+    hits = []
+    for path in _candidate_manifests(adopter_dir):
+        try:
+            text = path.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if governed_namespace_span(text):
+            hits.append(path)
+    return hits
+
+
+# --------------------------------------------------------------------------
+# propose-never-dispose, read off the argv this module BUILDS
+# --------------------------------------------------------------------------
+# An attribute name is not what disposes of a pull request; a `gh` verb is. The
+# selfcheck used to assert only that no `merge`/`approve`/`dispose` attribute
+# existed on this module, and a single
+# `_gh("pr", "merge", "--squash", "--admin", branch, repo=repo)` appended to
+# `_open_or_update_pr` passed every one of those assertions and printed "The
+# war-gamer proposes; a human disposes." underneath it (found 2026-08-29).
+# propose-tier.yml already grants the `contents: write` + `pull-requests: write`
+# that call needs, so nothing else would have stopped it either.
+#
+# ponytail: string constants in positional arguments and in a list/tuple
+# literal, plus the one REST shape (`.../merge`) that carries the verb in a URL
+# rather than in an argument. A verb assembled at run time --
+# `_gh("pr", verb)` -- is not matched, and a credential that cannot merge is the
+# upgrade path (a GitHub App token with `pull_requests: write` and no
+# `contents: write` makes the refusal the server's). What is bought here is that
+# the ordinary way to write the call -- literally, the way the plant below
+# writes it -- is refused at selfcheck rather than at review.
+DISPOSING_ARGS = frozenset({
+    "merge", "--merge", "--squash", "--rebase", "--admin", "--auto",
+    "approve", "--approve", "close", "--delete-branch",
+})
+# Matched against string CONSTANTS in the tree, never against the raw text: a
+# comment saying the words is not a call making them, and a text-level scan
+# flagged this file's own explanation of itself.
+_MERGE_ENDPOINT = re.compile(r"/merges?/?$")
+
+
+def disposing_calls(source: str) -> list[str]:
+    """Every call in `source` that would dispose of a pull request rather than
+    propose one, as `line N: [argv]` strings. Empty is the property."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and _MERGE_ENDPOINT.search(node.value):
+            found.append(f"line {node.lineno} names a /merge REST endpoint: {node.value!r}")
+        if not isinstance(node, ast.Call):
+            continue
+        argv = [a.value for a in node.args
+                if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+        argv += [e.value for a in node.args if isinstance(a, (ast.List, ast.Tuple))
+                 for e in a.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if not argv:
+            continue
+        # The verb is usually its own argument (`"pr", "merge"`), and in the REST shape it is the
+        # last segment of a path (`"repos/o/r/pulls/1/merge"`), which is the same disposal wearing
+        # a URL.
+        verbs = set(argv) | {a.rsplit("/", 1)[-1] for a in argv if "/" in a}
+        if (DISPOSING_ARGS & verbs) and ({"pr", "api", "review"} & set(argv)):
+            found.append(f"line {node.lineno} builds a disposing gh command: {argv}")
+    return found
+
+
+# The plant. Kept beside the scanner rather than in a fixture file, so that
+# "the guard bites" is asserted by the same commit that could weaken it, and so
+# that a reader can see exactly what shape is being refused.
+PLANTED_DISPOSAL = '''
+def _open_or_update_pr(p, base, repo):
+    number = _gh("pr", "create", "--head", p["branch"], "--base", base, repo=repo)
+    _gh("pr", "merge", "--squash", "--admin", p["branch"], repo=repo)
+    _gh("api", "--method", "PUT", "repos/o/r/pulls/1/merge")
+    return number
+'''
 
 
 # --------------------------------------------------------------------------
 # the text edit -- a line edit, not a YAML re-dump (render-faithfulness
-# ethos, applied to a workload manifest instead of a composed policy)
+# ethos, applied to the Namespace declaration instead of a composed policy)
 # --------------------------------------------------------------------------
-def apply_tier_label(text: str, tier: str) -> tuple[str, bool]:
-    """For every `labels: { ... }` flow map in `text` that already claims a
-    policy version, set `posture.acme.io/tier` inside that SAME map --
-    updated if present, inserted if absent. Every other byte of the file is
-    untouched.
+def apply_tier_declaration(text: str, tier: str) -> tuple[str, bool]:
+    """Set `posture.acme.io/tier` inside the governed Namespace document of
+    `text` -- updated where it is already declared, inserted right after the
+    governed label where it is not. Every other byte of the file, comments
+    included, is untouched.
 
-    ponytail: flow-style maps only (this estate's own convention, and the
-    exact shape driftwood/deploy/pod.yaml, ludlow/deploy/pod.yaml and
-    tuppence/deploy/pod.yaml all use). Upgrade to a block-style `labels:`
-    walker if an adopter workload manifest ever ships that shape instead."""
-    changed = False
-
-    def _sub(m: re.Match) -> str:
-        nonlocal changed
-        body = m.group(1)
-        if CLAIMS_LABEL not in body:
-            return m.group(0)
-        changed = True
-        if _TIER_KV.search(body):
-            new_body = _TIER_KV.sub(f'"{TIER_LABEL}": "{tier}"', body)
-        else:
-            trimmed = body.rstrip()
-            sep = "" if trimmed.endswith(",") else ","
-            new_body = f'{trimmed}{sep} "{TIER_LABEL}": "{tier}"'
-        return f"labels: {{{new_body}}}"
-
-    new_text = _LABELS_BLOCK.sub(_sub, text)
-    return new_text, changed
+    ponytail: a line edit inside the governed document's span, so the
+    Namespace's own commentary survives a re-tune. A trailing `# comment` on
+    the tier line itself does not. Upgrade to a round-tripping YAML editor
+    (ruamel) only if an adopter ever needs one."""
+    span = governed_namespace_span(text)
+    if span is None:
+        return text, False
+    start, end = span
+    lines = text.splitlines(keepends=True)
+    for i in range(start, end):
+        found = _TIER_LINE.match(lines[i])
+        if found:
+            lines[i] = f'{found.group(1)}{TIER_LABEL}: "{tier}"\n'
+            return "".join(lines), True
+    for i in range(start, end):
+        found = _GOVERNED_TRUE.match(lines[i])
+        if found:
+            lines.insert(i + 1, f'{found.group(1)}{TIER_LABEL}: "{tier}"\n')
+            return "".join(lines), True
+    return text, False
 
 
 # --------------------------------------------------------------------------
@@ -138,71 +273,55 @@ def _open_or_update_pr(p: dict, base: str, repo: str | None) -> dict:
     return {"action": "created", "url": out.stdout.strip()}
 
 
+def _money(price: dict, field: str) -> str:
+    value = price.get(field)
+    if not isinstance(value, (int, float)):
+        return "unpriced"
+    return f"{value:,.2f} {price.get('currency') or '???'}"
+
+
 def _pr_body(p: dict) -> str:
     c = p["change"]
+    price = p.get("price") or {}
     return (
-        f"Proposed by the war-gamer's cage-tier drift (ADR-0015). "
-        f"`{c['label']}`: `{c['from']}` -> `{c['to']}`.\n\n"
+        f"{p.get('ledger_marker', '')}\n\n"
+        f"Proposed by the war-gamer's cage-tier drift (ADR-0015, ADR-0022). "
+        f"**What moved:** `{c['label']}` on `{p.get('manifest', 'the governed Namespace')}` "
+        f"-- the governed Namespace declaration, not a pod label -- "
+        f"`{c['from']}` -> `{c['to']}`. `cage-tier` renders that onto every pod in the "
+        f"namespace through `namespaceObject`, so the pod label follows this merge and "
+        f"cannot be set anywhere else.\n\n"
+        f"**The price that moved it:** {price.get('source', '?')}/{price.get('kind', '?')} "
+        f"{_money(price, 'from')} -> {_money(price, 'to')} "
+        f"under the `{price.get('perspective', p.get('org', '?'))}` perspective.\n\n"
+        f"**Priced under:** selection policy `{p.get('policy_version') or 'none published'}`, "
+        f"curve `{p.get('curve_hash') or 'none published'}`.\n\n"
         f"Evidence: {json.dumps(p['from_evidence'], sort_keys=True)}\n\n"
+        f"{p.get('as_of_note', '')}\n\n"
+        f"Closing this PR without merging is the rejection: the ledger is DERIVED "
+        f"from closed-unmerged PRs on this branch, so no file records your no "
+        f"(ADR-0024). The marker at the top carries the curve hash and the "
+        f"selection-policy version this proposal was priced under -- a later "
+        f"proposal priced under a different one is a NEW question and will be "
+        f"raised again.\n\n"
         f"Never merged by this proposer -- opened for human review only."
-    )
-
-
-def _existing_issue_number(marker: str, repo: str | None) -> str:
-    out = _gh("issue", "list", "--search", f'"{marker}" in:body', "--state", "open",
-              "--json", "number", "-q", ".[0].number", repo=repo).stdout.strip()
-    return out
-
-
-def _issue_body(p: dict, marker: str) -> str:
-    return (
-        f"{marker}\n\n"
-        f"The war-gamer's cage-tier drift (ADR-0015) proposes `deny` for "
-        f"{p['from_evidence']['source']}/{p['from_evidence']['kind']}. "
-        f"`TIERS` holds only `baseline`/`restricted`/`quarantine`, and the "
-        f"`cage-tier` MutatingPolicy coerces any unrecognised label value to "
-        f"`baseline` -- so a merged `{TIER_LABEL}: deny` label would silently "
-        f"INVERT this proposal. Opened as an issue instead of a label pull "
-        f"request, on purpose.\n\n"
-        f"Evidence: {json.dumps(p['from_evidence'], sort_keys=True)}\n\n"
-        f"Never merged/closed by this proposer -- a human disposes."
-    )
-
-
-def _open_or_update_issue(p: dict, repo: str | None) -> dict:
-    slug = p["branch"].rsplit("retune-tier-", 1)[-1]
-    marker = ISSUE_MARKER.format(slug=slug)
-    body = _issue_body(p, marker)
-    number = _existing_issue_number(marker, repo)
-    if number:
-        _gh("issue", "edit", number, "--body", body, repo=repo)
-        return {"action": "updated", "number": number}
-    out = _gh("issue", "create", "--title", p["title"], "--body", body, repo=repo)
-    return {"action": "created", "url": out.stdout.strip()}
+    ).strip()
 
 
 # --------------------------------------------------------------------------
 # landing one proposal
 # --------------------------------------------------------------------------
-def _land(p: dict, adopter_dir: Path, workload_path: Path, base: str, dry_run: bool,
+def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
           repo: str | None) -> dict:
-    result = {"branch": p["branch"], "proposal_kind": p["proposal_kind"]}
+    result = {"branch": p["branch"], "proposal_kind": p["proposal_kind"],
+              "manifest": str(ns_path.relative_to(adopter_dir))}
+    p["manifest"] = result["manifest"]
 
-    if p["proposal_kind"] == "issue":
-        if dry_run:
-            result["landed"] = "dry-run"
-        else:
-            result["landed"] = _open_or_update_issue(p, repo)
-        return result
-
-    if not workload_path.exists():
-        result["error"] = f"workload manifest {workload_path} not found -- nothing to land"
-        return result
-    text = workload_path.read_text()
-    new_text, changed = apply_tier_label(text, p["change"]["to"])
+    text = ns_path.read_text()
+    new_text, changed = apply_tier_declaration(text, p["change"]["to"])
     if not changed:
-        result["error"] = (f"no {CLAIMS_LABEL!r} labels block found in "
-                            f"{workload_path} -- nothing to land")
+        result["error"] = (f"{ns_path} no longer declares a governed Namespace "
+                            f"-- nothing to land")
         return result
     if dry_run:
         result["landed"] = "dry-run"
@@ -215,8 +334,16 @@ def _land(p: dict, adopter_dir: Path, workload_path: Path, base: str, dry_run: b
     # the current price, not an accumulating diff (spec.md: "a second run
     # force-pushes the same branch, so the reviewer sees the current £").
     _git("checkout", "-q", "-B", p["branch"], f"origin/{base}", cwd=adopter_dir)
-    rel = workload_path.relative_to(adopter_dir)
-    workload_path.write_text(new_text)
+    # Re-read AFTER the checkout: the edit must land on what `base` declares
+    # today, not on whatever the working tree happened to be on.
+    new_text, changed = apply_tier_declaration(ns_path.read_text(), p["change"]["to"])
+    if not changed:
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result["error"] = (f"{ns_path} declares no governed Namespace on origin/{base} "
+                            f"-- nothing to land")
+        return result
+    rel = ns_path.relative_to(adopter_dir)
+    ns_path.write_text(new_text)
     _git("add", str(rel), cwd=adopter_dir)
     diff = _git("diff", "--cached", "--quiet", cwd=adopter_dir, check=False)
     if diff.returncode != 0:
@@ -227,13 +354,14 @@ def _land(p: dict, adopter_dir: Path, workload_path: Path, base: str, dry_run: b
     return result
 
 
-def run(adopter_dir: Path, evidence_path: Path, workload_path: Path, org: str,
+def run(adopter_dir: Path, evidence_path: Path, org: str,
         rejections_path: Path | None, base: str = "main", dry_run: bool = False,
-        repo: str | None = None) -> list[dict]:
+        repo: str | None = None, as_of: str | None = None) -> list[dict]:
     """The whole beat: load ticket 16's prices[] from the adopter's own
     committed evidence.json, bound them (proposer_bounds.py, unchanged),
-    and land whatever survives -- a PR or an issue, never both, per
-    proposal. Nothing here decides WHETHER to propose. `repo` defaults to
+    and land whatever survives -- always a pull request against the
+    adopter's own governed Namespace declaration, found by its governed
+    label. Nothing here decides WHETHER to propose. `repo` defaults to
     the `GITHUB_REPOSITORY` Actions gives every run for free; pass it
     explicitly for a local/offline run (selfcheck does).
 
@@ -251,21 +379,69 @@ def run(adopter_dir: Path, evidence_path: Path, workload_path: Path, org: str,
         # there is nothing yet for this proposer to read. Not an error --
         # the same "nothing to propose" shape propose-policy-pr.sh already
         # prints when a run finds no drift.
-        print(f"note: {evidence_path} not found -- nothing composed yet, nothing to propose")
+        print(f"note: {evidence_path} not found -- nothing composed yet, nothing to propose",
+              file=sys.stderr)
         return []
     evidence = json.loads(evidence_path.read_text())
     prices = evidence.get("prices", [])
-    rejections = (json.loads(rejections_path.read_text()) if rejections_path
-                  else proposer_bounds._load_rejections(proposer_bounds.DEFAULT_REJECTIONS))
     repo = repo or os.environ.get("GITHUB_REPOSITORY")
     rows = wargamer.wargame_cage_tier(prices, org) if prices else []
+
+    # The ledger is DERIVED from closed-unmerged PRs on this repo's own dedupe
+    # branches (ADR-0024). Offline it comes back empty AND SAYS SO on STDERR.
+    # stdout is the proposal-document stream `--dry-run` writes and readers
+    # json.loads, so a human note there breaks the contract (caught live by
+    # verify/e2e/step3, 2026-08-28). --
+    # a proposer that cannot see the rejections must not silently suppress and
+    # must not silently propose. `--rejections` stays as an override for a
+    # ledger derived once and reused (the workflow derives it inline instead).
+    shape = rejection_ledger.fingerprint(prices)
+    today = {proposer_bounds._key(row): shape for row in rows}
+    if rejections_path:
+        rejections = json.loads(rejections_path.read_text())
+        print(f"note: rejection ledger read from {rejections_path}", file=sys.stderr)
+    else:
+        rejections, ledger_note = rejection_ledger.derive(repo, today)
+        print(f"note: {ledger_note}", file=sys.stderr)
+
+    # The declaration is found, never known: the manifest carrying
+    # `policy-as-versioned.dev/governed: "true"` on a Namespace, wherever the
+    # adopter keeps it (ADR-0022). Two of them is an ambiguity this proposer
+    # refuses to guess at -- it says which two and lands nothing.
+    ns_hits = find_governed_namespaces(adopter_dir)
+    ns_error = None
+    if not ns_hits:
+        ns_error = (f"no manifest under {adopter_dir} declares a Namespace with "
+                    f'{GOVERNED_LABEL}: "true" -- there is no tier declaration to propose against')
+    elif len(ns_hits) > 1:
+        ns_error = (f"{len(ns_hits)} governed Namespace manifests under {adopter_dir} "
+                    f"({', '.join(str(h.relative_to(adopter_dir)) for h in ns_hits)}) -- "
+                    f"which one carries this party's tier is not this proposer's guess to make")
+
     disp = proposer_bounds.bound(rows, rejections)
     landed = []
     for d in disp:
         p = d["proposal"]
         if not p:
             continue
-        landed.append(_land(p, adopter_dir, workload_path, base, dry_run, repo))
+        p["ledger_marker"] = rejection_ledger.marker(d["key"], shape["curve_hash"],
+                                                     shape["policy_version"])
+        price = p.get("price") or {}
+        p["org"] = org
+        # The marker (the dedupe key's shape) stays the fingerprint and only the
+        # fingerprint. These two are the human-readable half of the body, so they
+        # fall back to the priced entry's own fields when no twin line published.
+        p["curve_hash"] = shape["curve_hash"] or price.get("curve_hash") or ""
+        p["policy_version"] = shape["policy_version"] or price.get("policy_version") or ""
+        if ns_error:
+            landed.append({"branch": p["branch"], "proposal_kind": p["proposal_kind"],
+                           "error": ns_error})
+            continue
+        if as_of:
+            p["as_of_note"] = (f"Re-composed and priced at **{as_of}** by the daily clock "
+                               f"(ADR-0024): a date-driven band crossing with no new tag is "
+                               f"a proposal trigger, and the clock committed nothing.")
+        landed.append(_land(p, adopter_dir, ns_hits[0], base, dry_run, repo))
     return landed
 
 
@@ -286,6 +462,24 @@ def selfcheck() -> None:
         _git("config", "user.email", "test@example.invalid", cwd=work)
         _git("config", "user.name", "test", cwd=work)
         _git("remote", "add", "origin", str(remote), cwd=work)
+        # The declaration: the governed Namespace manifest, in the exact shape
+        # (block labels, comments, an already-declared tier) the three adopters
+        # keep in gitops/apps/namespace.yaml.
+        ns = work / "gitops" / "apps" / "namespace.yaml"
+        ns.parent.mkdir(parents=True)
+        ns.write_text(
+            'apiVersion: v1\n'
+            'kind: Namespace\n'
+            'metadata:\n'
+            '  name: driftwood\n'
+            '  labels:\n'
+            '    app.kubernetes.io/part-of: driftwood\n'
+            '    # the governed declaration -- the tier is declared next to it\n'
+            '    policy-as-versioned.dev/governed: "true"\n'
+            '    posture.acme.io/tier: "baseline"\n'
+        )
+        # The pod manifest the proposer USED to edit: still here, and it must
+        # come out byte-identical -- the pod label is cage-tier's output.
         workload = work / "deploy" / "pod.yaml"
         workload.parent.mkdir(parents=True)
         workload.write_text(
@@ -294,6 +488,17 @@ def selfcheck() -> None:
             'metadata: { name: checkout-svc, labels: '
             '{ "policy-as-versioned.dev/policy-version": "2.0.0" } }\n'
         )
+        # An ungoverned Namespace in a multi-document file: the discovery must
+        # not mistake it for the declaration (tuppence/reset/workloads.yaml).
+        (work / "reset.yaml").write_text(
+            'apiVersion: v1\n'
+            'kind: Namespace\n'
+            'metadata: { name: driftwood-reset }\n'
+            '---\n'
+            'apiVersion: v1\n'
+            'kind: ConfigMap\n'
+            'metadata: { name: notes, labels: { "policy-as-versioned.dev/governed": "true" } }\n'
+        )
         (work / "other.txt").write_text("untouched\n")
         _git("add", "-A", cwd=work)
         _git("commit", "-q", "-m", "seed", cwd=work)
@@ -301,7 +506,7 @@ def selfcheck() -> None:
 
         gh_log = tmp / "gh.log"
         gh_state = tmp / "gh_state.json"
-        gh_state.write_text(json.dumps({"pr": None, "issue": None}))
+        gh_state.write_text(json.dumps({"pr": None, "issue": None, "closed": []}))
         stub_dir = tmp / "bin"
         stub_dir.mkdir()
         _write_gh_stub(stub_dir / "gh", gh_log, gh_state)
@@ -311,39 +516,64 @@ def selfcheck() -> None:
         evidence = tmp / "evidence.json"
         label_proposal_prices = [{
             "source": "ico", "kind": "pricing", "old_version": "v1", "new_version": "v2",
-            "old_price": 1_000, "new_price": 90_000,
+            "old_price": 1_000, "new_price": 90_000, "currency": "GBP",
+            "perspective": "driftwood", "policy_version": "1.2.0",
+            "curve_hash": "sha256:a-curve",
             "old_tier": "baseline", "proposed_tier": "quarantine",
             "changed": True, "proposed_as": "label",
         }]
-        deny_proposal_prices = [{
+        # A price still carrying the retired `proposed_as: "issue"` flag AND a
+        # tier that used to be `deny`: ADR-0022 killed both, and this must land
+        # as an ordinary pull request against the declaration like any other.
+        legacy_issue_prices = [{
             "source": "platform", "kind": "threat", "old_version": "v1", "new_version": "v2",
-            "old_price": 1_000, "new_price": 9_000_000,
-            "old_tier": "quarantine", "proposed_tier": "deny",
+            "old_price": 1_000, "new_price": 9_000_000, "currency": "GBP",
+            "perspective": "driftwood",
+            "old_tier": "quarantine", "proposed_tier": "isolated",
             "changed": True, "proposed_as": "issue",
         }]
+        branch = "wargamer/retune-tier-driftwood-cage-tier-ico-pricing"
 
-        # --- 1. a label proposal opens a PR editing the workload manifest line ---
+        # --- 1. a proposal opens a PR editing the GOVERNED NAMESPACE
+        #     declaration -- and never the pod label, which is an output ---
         evidence.write_text(json.dumps({"prices": label_proposal_prices}))
         landed = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
-                                workload_path=workload, org="driftwood",
+                                org="driftwood",
                                 rejections_path=None, base="main", dry_run=False)
         assert len(landed) == 1, landed
         assert landed[0]["proposal_kind"] == "pull_request", landed
+        assert landed[0]["manifest"] == "gitops/apps/namespace.yaml", \
+            ("the proposal must target the manifest carrying the governed label, "
+             "found by reading it", landed)
         assert landed[0]["landed"]["action"] == "created", landed
         calls = _read_log(gh_log)
         assert any(c[:2] == ["pr", "create"] for c in calls), calls
-        assert not any(c[:2] == ["issue", "create"] for c in calls), \
-            ("a label proposal must never open an issue", calls)
-        text_on_branch = _git("show", "wargamer/retune-tier-driftwood-cage-tier-ico-pricing:deploy/pod.yaml",
-                               cwd=work, capture=True).stdout
-        assert '"posture.acme.io/tier": "quarantine"' in text_on_branch, text_on_branch
-        assert CLAIMS_LABEL in text_on_branch, "the original claim label must survive the edit"
-        main_text = _git("show", "main:deploy/pod.yaml", cwd=work, capture=True).stdout
-        assert "posture.acme.io/tier" not in main_text, \
-            ("main must be untouched -- the edit lands only on the branch", main_text)
-        other_on_branch = _git("show", "wargamer/retune-tier-driftwood-cage-tier-ico-pricing:other.txt",
-                                cwd=work, capture=True).stdout
-        assert other_on_branch == "untouched\n", "only the workload manifest may change"
+        assert not any(c[0] == "issue" for c in calls), \
+            ("the issue branch is dead -- no proposal may touch an issue", calls)
+        body = next(c for c in calls if c[:2] == ["pr", "create"])
+        body = body[body.index("--body") + 1]
+        for expected in ("gitops/apps/namespace.yaml", "baseline", "quarantine",
+                         "1,000.00 GBP", "90,000.00 GBP", "1.2.0", "sha256:a-curve"):
+            assert expected in body, ("the PR body must say what moved, the price that "
+                                      "moved it, the selection-policy version and the "
+                                      f"curve hash -- {expected!r} missing", body)
+        ns_on_branch = _git("show", f"{branch}:gitops/apps/namespace.yaml",
+                             cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "quarantine"' in ns_on_branch, ns_on_branch
+        assert 'policy-as-versioned.dev/governed: "true"' in ns_on_branch, \
+            "the governed label must survive the edit"
+        assert "# the governed declaration" in ns_on_branch, \
+            "the Namespace's own commentary must survive the edit"
+        pod_on_branch = _git("show", f"{branch}:deploy/pod.yaml",
+                              cwd=work, capture=True).stdout
+        assert "posture.acme.io/tier" not in pod_on_branch, \
+            ("the pod label is cage-tier's OUTPUT -- the proposer must never "
+             "edit it (ADR-0022)", pod_on_branch)
+        main_ns = _git("show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "baseline"' in main_ns, \
+            ("main must be untouched -- the edit lands only on the branch", main_ns)
+        other_on_branch = _git("show", f"{branch}:other.txt", cwd=work, capture=True).stdout
+        assert other_on_branch == "untouched\n", "only the declaration may change"
 
         # --- 2. a second run (price moved further) force-pushes the SAME
         #     branch and UPDATES the open PR, never opens a second one ---
@@ -351,7 +581,7 @@ def selfcheck() -> None:
         label_proposal_prices[0]["new_price"] = 200_000
         evidence.write_text(json.dumps({"prices": label_proposal_prices}))
         landed2 = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
-                                 workload_path=workload, org="driftwood",
+                                 org="driftwood",
                                  rejections_path=None, base="main", dry_run=False)
         assert landed2[0]["branch"] == landed[0]["branch"], "dedupe key must be the branch name"
         assert landed2[0]["landed"]["action"] == "updated", landed2
@@ -364,31 +594,109 @@ def selfcheck() -> None:
         assert rev_count == "2", ("the branch must carry ONE fresh commit atop main "
                                    "every run, never an accumulating history", rev_count)
 
-        # --- 3. a proposed deny opens an issue, never a pull request ---
+        # --- 3. the retired issue branch: a price still flagged
+        #     `proposed_as: "issue"` opens a PULL REQUEST against the
+        #     declaration, and no issue exists to open (ADR-0022) ---
         gh_log.write_text("")
-        evidence.write_text(json.dumps({"prices": deny_proposal_prices}))
+        # a fresh question: the stub's "open PR" is the one from 1 and 2
+        gh_state.write_text(json.dumps({**json.loads(gh_state.read_text()), "pr": None}))
+        evidence.write_text(json.dumps({"prices": legacy_issue_prices}))
         landed3 = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
-                                 workload_path=workload, org="driftwood",
+                                 org="driftwood",
                                  rejections_path=None, base="main", dry_run=False)
         assert len(landed3) == 1, landed3
-        assert landed3[0]["proposal_kind"] == "issue", landed3
+        assert landed3[0]["proposal_kind"] == "pull_request", landed3
+        assert landed3[0]["manifest"] == "gitops/apps/namespace.yaml", landed3
         calls3 = _read_log(gh_log)
-        assert any(c[:2] == ["issue", "create"] for c in calls3), calls3
-        assert not any(c[:2] == ["pr", "create"] for c in calls3), \
-            ("a deny proposal must never open a pull request", calls3)
+        assert any(c[:2] == ["pr", "create"] for c in calls3), calls3
+        assert not any(c[0] == "issue" for c in calls3), \
+            ("ADR-0015's issue branch is removed: every proposal is a PR", calls3)
+        ns3 = _git("show", f"{landed3[0]['branch']}:gitops/apps/namespace.yaml",
+                    cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "isolated"' in ns3, ns3
 
-        # --- 4. structural safety: this module has no way to merge/dispose ---
+        # --- 4. the DERIVED rejection ledger (ADR-0024): a PR a human closed
+        #     without merging suppresses the same question, and only that
+        #     question. Nothing is committed anywhere that records the no ---
+        import datetime as _dt
+        ledger_key = "driftwood/cage-tier/ico-pricing"
+        shape = rejection_ledger.fingerprint(label_proposal_prices)
+        closed_yesterday = (_dt.datetime.now(_dt.timezone.utc)
+                            - _dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+
+        def _closed(curve, policy):
+            return [{"number": 7, "headRefName": "wargamer/retune-tier-driftwood-cage-tier-ico-pricing",
+                      "mergedAt": None, "closedAt": closed_yesterday,
+                      "body": rejection_ledger.marker(ledger_key, curve, policy)}]
+
+        state = json.loads(gh_state.read_text())
+        state["closed"] = _closed(shape["curve_hash"], shape["policy_version"])
+        state["pr"] = None
+        gh_state.write_text(json.dumps(state))
+        gh_log.write_text("")
+        evidence.write_text(json.dumps({"prices": label_proposal_prices}))
+        suppressed = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                    org="driftwood",
+                                    rejections_path=None, base="main", dry_run=False)
+        assert suppressed == [], ("yesterday's rejection must suppress today's "
+                                   "identical proposal", suppressed)
+        assert not _read_log(gh_log) or not any(
+            c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+
+        # ...and a rejection priced under a DIFFERENT curve does not count: a
+        # new GBP is a new question (ticket 10 Q5).
+        state["closed"] = _closed("sha256:a-different-curve", shape["policy_version"])
+        gh_state.write_text(json.dumps(state))
+        gh_log.write_text("")
+        reraised = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  org="driftwood",
+                                  rejections_path=None, base="main", dry_run=False)
+        assert len(reraised) == 1, ("a rejection under another curve must not "
+                                     "silence this one", reraised)
+        assert any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+
+        # --- 5. structural safety: this module has no way to merge/dispose,
+        #     and no way to open an issue either ---
         me = sys.modules[__name__]
-        for banned in ("merge", "approve", "dispose", "auto_merge"):
+        for banned in ("merge", "approve", "dispose", "auto_merge",
+                       "_open_or_update_issue", "_issue_body"):
             assert not callable(getattr(me, banned, None)), \
                 f"tier_pr must expose no {banned}()"
 
+        # Attribute names are not what disposes of a pull request; `gh` verbs are. So read the
+        # argv this module BUILDS (see `disposing_calls` above for what that does and does not
+        # buy), and -- because a scanner that has only ever seen clean source cannot tell
+        # "correct" from "always says nothing" -- PLANT the disposal and require it to be caught.
+        source = Path(__file__).read_text()
+        # The plant lives in this module's own text as a string constant, so it must not be
+        # parsed as if it were code: check it separately, then check the rest.
+        assert PLANTED_DISPOSAL in source, "the planted-disposal fixture is not in this file"
+        planted = disposing_calls(PLANTED_DISPOSAL)
+        assert len(planted) == 3, ("the plant must be caught -- twice on argv, once on the "
+                                   "REST endpoint it names", planted)
+        assert any("--squash" in hit for hit in planted), planted
+        assert any("/merge REST endpoint" in hit for hit in planted), planted
+        # A pr CREATE in the same plant is not a disposal, so the scanner is not just shouting
+        # at every gh call it sees.
+        assert not disposing_calls('_gh("pr", "create", "--head", b, "--base", base)')
+
+        real = disposing_calls(source.replace(PLANTED_DISPOSAL, ""))
+        assert not real, (real, "the war-gamer proposes and a human disposes (ADR-0015)")
+
     print(
-        "ok  a label proposal opens a PR editing posture.acme.io/tier on the workload "
-        "manifest line (main untouched, everything else byte-identical); a second run "
-        "force-pushes the SAME branch (1 fresh commit, not 2) and UPDATES the open PR, "
-        "never opens a second one; a proposed deny opens an issue and never a PR; "
-        "no merge()/approve()/dispose() anywhere in this module."
+        "ok  a proposal opens a PR editing posture.acme.io/tier on the GOVERNED NAMESPACE "
+        "manifest found by its governed label (comments and the governed label survive; the "
+        "pod label, an output, is untouched; main untouched; everything else byte-identical), "
+        "and its body names the manifest, the move, the price that moved it, the "
+        "selection-policy version and the curve hash; a second run force-pushes the SAME "
+        "branch (1 fresh commit, not 2) and UPDATES the open PR, never opens a second one; "
+        "a price still flagged proposed_as=issue opens a PULL REQUEST -- no issue path "
+        "exists any more (ADR-0022); yesterday's closed-unmerged PR SUPPRESSES the identical "
+        "proposal while one priced under another curve does not (the ledger is derived, "
+        "nothing records the no); no merge()/approve()/dispose() anywhere in this module, and "
+        "no DISPOSING GH CALL either -- the argv this module builds is read, a planted "
+        "`_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and a planted /merge REST path "
+        "are both caught, and a `gh pr create` is not."
     )
 
 
@@ -424,7 +732,9 @@ with open(log_path, "a") as fh:
     fh.write(json.dumps(argv) + "\\n")
 state = json.load(open(state_path))
 kind = argv[0] if argv else ""
-if kind == "pr" and argv[1] == "list":
+if kind == "pr" and argv[1] == "list" and "closed" in argv:
+    print(json.dumps(state.get("closed", [])))
+elif kind == "pr" and argv[1] == "list":
     print(state["pr"] or "")
 elif kind == "pr" and argv[1] == "create":
     state["pr"] = "1"
@@ -457,10 +767,12 @@ def main(argv: list[str]) -> int:
     r = sub.add_parser("run")
     r.add_argument("--adopter-dir", type=Path, required=True)
     r.add_argument("--evidence", type=Path, required=True)
-    r.add_argument("--workload", type=Path, required=True)
     r.add_argument("--org", required=True)
     r.add_argument("--base", default="main")
-    r.add_argument("--rejections", type=Path, default=None)
+    r.add_argument("--rejections", type=Path, default=None,
+                   help="a pre-derived ledger; omit to derive it from closed PRs")
+    r.add_argument("--as-of", default=None,
+                   help="the date this run re-composed at, recorded in the PR body")
     r.add_argument("--dry-run", action="store_true")
     r.add_argument("--repo", default=None, help="owner/repo; defaults to $GITHUB_REPOSITORY")
     sub.add_parser("selfcheck")
@@ -469,8 +781,9 @@ def main(argv: list[str]) -> int:
     if args.cmd == "selfcheck":
         selfcheck()
         return 0
-    landed = run(args.adopter_dir, args.evidence, args.workload, args.org,
-                 args.rejections, base=args.base, dry_run=args.dry_run, repo=args.repo)
+    landed = run(args.adopter_dir, args.evidence, args.org,
+                 args.rejections, base=args.base, dry_run=args.dry_run, repo=args.repo,
+                 as_of=args.as_of)
     print(json.dumps(landed, indent=2))
     return 0
 

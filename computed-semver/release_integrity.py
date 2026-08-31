@@ -23,7 +23,7 @@ the release is refused.
      hand-maintained list) must be present in that version's tree. Fires
      even when rule 2 would not catch it standalone (e.g. run against this
      module directly, or a caller that only wants the cheap existence
-     check) -- one of the seven mandatory members quietly deleted, but
+     check) -- one of the eight mandatory members quietly deleted, but
      everything else byte-identical, is exactly the case a pure diff
      buries in the noise of "there IS a difference" without naming which
      enforcement surface vanished.
@@ -170,7 +170,7 @@ def rerender_refusal(declared: str, tree_dir: Path) -> str | None:
 
 def mandatory_members_refusal(declared: str, tree_dir: Path) -> str | None:
     """Rule 3. A literal set comparison: every member name
-    `render_tree(declared)` would emit (ticket 12's seven mandatory members
+    `render_tree(declared)` would emit (ticket 12's eight mandatory members
     -- never a second, hand-maintained list) must be present, by
     `metadata.name`, somewhere in `tree_dir`. Independent of rule 2's byte
     diff: this fires even when a document is missing but every OTHER byte on
@@ -195,7 +195,7 @@ def mandatory_members_refusal(declared: str, tree_dir: Path) -> str | None:
         return (
             f"enforcement-surface check refused: version {declared} is missing "
             f"mandatory member(s) {missing} -- a release cannot drop any of "
-            f"ticket 12's seven mandatory members from a version"
+            f"ticket 12's eight mandatory members from a version"
         )
     return None
 
@@ -212,6 +212,19 @@ def empty_commit_refusal(version_array: list[dict]) -> str | None:
     return None
 
 
+def _declared_tag(release: ReleaseIntegrity, declared: str) -> str | None:
+    """The tag this repo has ALREADY cut for `declared`, or None if it has
+    not been cut yet. Read from the version array's own `tag` field (never a
+    second naming convention), then confirmed against real git tags."""
+    tag = next((e.get("tag") for e in release.version_array
+                if e.get("version") == declared and e.get("tag")), None)
+    if not tag:
+        return None
+    r = subprocess.run(["git", "-C", str(release.git_repo), "tag", "-l", tag],
+                       capture_output=True, text=True)
+    return tag if r.returncode == 0 and r.stdout.strip() else None
+
+
 def refusal(release: ReleaseIntegrity, declared: str) -> str | None:
     """Runs all four rules, in order, against `declared`. Returns the first
     refusal reason, or None when all four pass. The order carries no
@@ -223,12 +236,29 @@ def refusal(release: ReleaseIntegrity, declared: str) -> str | None:
             return r
 
     declared_tree = release.policies_dir / f"v{declared}"
-    r = rerender_refusal(declared, declared_tree)
-    if r is not None:
-        return r
-    r = mandatory_members_refusal(declared, declared_tree)
-    if r is not None:
-        return r
+    already_cut = _declared_tag(release, declared)
+    if already_cut:
+        # `declared` has ALREADY been tagged, so its tree is FROZEN and rules 2
+        # and 3 -- which regenerate the tree being cut from TODAY's authoring
+        # copies -- are the wrong question for it (rule 2's own docstring: "an
+        # already-released tree is never re-rendered here (rule 1's job)"). The
+        # authoring copies move forward on every real policy change (a changed
+        # body is a NEW version, never an edit to a released one -- ticket 26
+        # moved them for the first time), so re-rendering a released version
+        # against them refuses a release that already happened. Rule 1 is the
+        # question for a frozen tree, and `declared` is never in
+        # `prior_versions` (that map is the versions BEFORE the one being cut),
+        # so it is asked here.
+        r = frozen_tree_refusal(release.git_repo, declared, already_cut, declared_tree)
+        if r is not None:
+            return r
+    else:
+        r = rerender_refusal(declared, declared_tree)
+        if r is not None:
+            return r
+        r = mandatory_members_refusal(declared, declared_tree)
+        if r is not None:
+            return r
 
     return empty_commit_refusal(release.version_array)
 
@@ -299,13 +329,14 @@ def selfcheck() -> None:
             (full / fname).write_text(text)
         assert mandatory_members_refusal("8.8.8", full) is None
 
-        # delete one of the three PriorityClass documents FROM WITHIN the
-        # file (not the whole file) -- proves this is a document-level set
-        # comparison, not just "does the file exist"
+        # delete one of the PriorityClass documents FROM WITHIN the file (not
+        # the whole file) -- proves this is a document-level set comparison,
+        # not just "does the file exist". Four of them since ticket 26 added
+        # the `isolated` rung's cage-isolated class.
         docs = [d for d in yaml.safe_load_all((full / "priorityclasses.yaml").read_text()) if d]
-        assert len(docs) == 3
-        (full / "priorityclasses.yaml").write_text(yaml.safe_dump_all(docs[:2], sort_keys=False))
-        removed_name = docs[2]["metadata"]["name"]
+        assert len(docs) == 4, [d["metadata"]["name"] for d in docs]
+        (full / "priorityclasses.yaml").write_text(yaml.safe_dump_all(docs[:-1], sort_keys=False))
+        removed_name = docs[-1]["metadata"]["name"]
         r = mandatory_members_refusal("8.8.8", full)
         assert r is not None and removed_name in r, (r, removed_name)
 

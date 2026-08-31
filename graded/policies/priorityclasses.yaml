@@ -40,3 +40,15 @@ value: -1000
 preemptionPolicy: Never
 globalDefault: false
 description: "Graded cage — quarantine tier: first to be evicted, the hardest cage short of Deny."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-isolated
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+value: -10000
+preemptionPolicy: Never
+globalDefault: false
+description: "Graded cage — isolated tier, the bottom rung: FIRST to be evicted under node pressure, and no reach at all (cage-netpol generates a deny-all NetworkPolicy). It still runs; nothing is ever denied (ADR-0022)."

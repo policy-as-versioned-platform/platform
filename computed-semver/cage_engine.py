@@ -33,17 +33,38 @@ patch come from verdict movement. Minor comes from presence plus
   `validationActions` and no pass/fail of its own -- `kyverno apply` always
   mutates, never fails -- so Track 1's admitted/refused vocabulary does not
   apply to it. For each corpus pod that claims a policy version, this
-  computes the dial VALUES the pod would receive under the old body and the
-  new body (a pure map lookup on the pod's `posture.acme.io/tier` label,
-  defaulted to 'baseline' exactly as cage-tier.yaml's own CEL does -- see
-  `effective_tier`) and classifies major when the new spec is not AT LEAST
-  AS PERMISSIVE as the old one, at the SPEC level: a permissiveness partial
+  computes the cage each pod would really receive under the old body and
+  under the new one, by EVALUATING each body's own expressions (`tier_for`,
+  `effective_security`, and the CEL-subset evaluator they share) rather than
+  assuming them, and classifies major when the new cage is not AT LEAST AS
+  PERMISSIVE as the old one, at the SPEC level: a permissiveness partial
   order across the same fields graded/cage.py's TIERS table names (cpu, mem,
   priorityClass, dropAll, readOnlyRootFs, waf) -- never an enumerated list
   of surfaces. A tier policy that appends a sidecar, sets a priority class,
   flips two securityContext fields and drops capabilities all in one release
   still classifies from ONE spec-level comparison, not four separate dial
   checks that rot on the next mutation added.
+
+  Two things the dial table alone cannot see, both named by ticket 09 item 2
+  and ADR-0022, and both closed here (they were the reason the ticket-26
+  cage release computed "none"):
+
+    * the tier's SOURCE. 3.0.0 reads the tier from the pod's own label;
+      4.0.0 reads it from `namespaceObject` and clobbers the label, and a
+      governed Namespace with no tier falls closed to `isolated`. Each side
+      is asked its OWN question (`tier_for`), against the Namespace the
+      corpus entry really lands in (`namespace_for`), so a pod that forged a
+      tier -- honoured by one body, overwritten by the other -- registers as
+      the real move it is.
+
+    * "writes false over true". A cage that stamps `readOnlyRootFilesystem:
+      false` over a workload that set `true` un-hardens that workload. The
+      dial table is identical either way, so a dial-table comparison saw
+      nothing at all. `_security_move` reads the security fields each body's
+      own mutation really leaves on the pod and classifies BOTH directions
+      major: starting to write over a declared value is a loosening of the
+      guarantee (the cage is a floor on the workload, not a ceiling), and
+      stopping is a narrowing.
 
   "There is no uncaged state" (spec.md) is modelled as the TOP of the
   permissiveness lattice: a pod cage-tier does not reach at all (the file
@@ -136,7 +157,11 @@ REPO = HERE.parent
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
-TIER_ORDER = ["baseline", "restricted", "quarantine"]  # loosest -> tightest
+# Loosest -> tightest. `isolated` is the bottom rung ticket 26/ADR-0022 added:
+# quarantine's dials plus no reach and first eviction. Mirrors graded/cage.py's
+# own ORDER; `infra` is deliberately absent there and here, being a role
+# declaration rather than a priced cage.
+TIER_ORDER = ["baseline", "restricted", "quarantine", "isolated"]
 
 # rederive_bumps.RANK has no entry for "removed" (no PAIRS case ever drops a
 # policy) -- removing a validating gate can only ever admit MORE than before
@@ -144,6 +169,445 @@ TIER_ORDER = ["baseline", "restricted", "quarantine"]  # loosest -> tightest
 # no higher than "patch". The raw "removed" verdict string is still kept on
 # the Movement record itself, for a reviewer.
 RANK = {**rederive_bumps.RANK, "removed": rederive_bumps.RANK["patch"]}
+
+
+# ---------------------------------------------------------------------------
+# A CEL-subset evaluator -- the engine READS the body's own expressions
+# ---------------------------------------------------------------------------
+#
+# Ticket 09 item 2 (ADR-0022) asked for two things this engine could not see:
+# that "writes false over true" on a security field is a LOOSENING, and that
+# 4.0.0 takes the tier from `namespaceObject` where 3.0.0 took it from the
+# pod's own label. Both are properties of the BODY's expressions, not of the
+# dial table, so guessing them from the dial table is what produced the
+# honest-looking "none" the ticket-26 report named.
+#
+# Rather than hard-code "4.0.0 reads the namespace", this evaluates the
+# body's OWN `tier` variable and its OWN securityContext write expressions
+# against a corpus pod and its Namespace. A future body that moves the tier
+# somewhere else again is read, not re-guessed.
+#
+# ponytail: a CEL subset, not CEL -- ternary, ||, &&, !, ==, !=, `in`,
+# parenthesised groups, string/int/bool/null/list literals, field access
+# with `.`/`.?`/`['k']`, `.orValue()`, `.hasValue()`, and the `has()`,
+# `int()`, `string()` functions. That is exactly the vocabulary every served
+# cage-tier body uses for its tier and securityContext expressions (checked
+# by `selfcheck`, which evaluates the REAL committed v3.0.0 and v4.0.0
+# bodies). An expression outside it raises rather than guessing a value.
+# Upgrade path if a body ever needs more: run the real `kyverno apply`
+# mutation per side and diff the mutated pods, the way Track 1 already
+# shells out per fixture -- correct, and about 100x the wall clock.
+
+class _Absent:
+    """CEL's "no such field" -- distinct from a field that is present and
+    null, which is what `.orValue()` and `has()` have to tell apart."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "ABSENT"
+
+
+ABSENT = _Absent()
+
+_CEL_TOKEN = re.compile(
+    r"""\s*(?:
+          (?P<str>'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")
+        | (?P<num>\d+)
+        | (?P<op>\.\?|&&|\|\||==|!=|[?:!().,\[\]])
+        | (?P<name>[A-Za-z_][A-Za-z0-9_]*)
+        )""",
+    re.X,
+)
+
+
+def _cel_tokens(src: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    i = 0
+    while i < len(src):
+        if src[i].isspace():
+            i += 1
+            continue
+        m = _CEL_TOKEN.match(src, i)
+        if not m:
+            raise ValueError(f"cage_engine cannot tokenize CEL at {src[i:i + 40]!r}")
+        out.append((m.lastgroup, m.group(m.lastgroup)))
+        i = m.end()
+    return out
+
+
+class _CelParser:
+    """Recursive descent over the token list, evaluating as it goes -- there
+    is no AST because nothing here needs one twice."""
+
+    def __init__(self, src: str, env: dict):
+        self.toks = _cel_tokens(src)
+        self.i = 0
+        self.env = env
+        self.src = src
+
+    def peek(self) -> tuple[str | None, str | None]:
+        return self.toks[self.i] if self.i < len(self.toks) else (None, None)
+
+    def eat(self, want: str | None = None) -> str:
+        kind, val = self.peek()
+        if want is not None and val != want:
+            raise ValueError(f"cage_engine CEL: expected {want!r}, got {val!r} in {self.src!r}")
+        self.i += 1
+        return val
+
+    def run(self):
+        value = self.ternary()
+        if self.i != len(self.toks):
+            raise ValueError(f"cage_engine CEL: trailing tokens {self.toks[self.i:]} in {self.src!r}")
+        return value
+
+    def ternary(self):
+        cond = self.or_()
+        if self.peek()[1] == "?":
+            self.eat("?")
+            a = self.ternary()
+            self.eat(":")
+            b = self.ternary()
+            return a if bool(cond) else b
+        return cond
+
+    def or_(self):
+        value = self.and_()
+        while self.peek()[1] == "||":
+            self.eat()
+            value = bool(self.and_()) or bool(value)
+        return value
+
+    def and_(self):
+        value = self.rel()
+        while self.peek()[1] == "&&":
+            self.eat()
+            value = bool(self.rel()) and bool(value)
+        return value
+
+    def rel(self):
+        left = self.unary()
+        op = self.peek()[1]
+        if op in ("==", "!="):
+            self.eat()
+            equal = _cel_eq(left, self.unary())
+            return equal if op == "==" else not equal
+        if op == "in":
+            self.eat()
+            return left in self.unary()
+        return left
+
+    def unary(self):
+        if self.peek()[1] == "!":
+            self.eat()
+            return not bool(self.unary())
+        return self.postfix(self.primary())
+
+    def primary(self):
+        kind, val = self.peek()
+        if kind == "str":
+            self.eat()
+            return val[1:-1]
+        if kind == "num":
+            self.eat()
+            return int(val)
+        if val == "(":
+            self.eat("(")
+            inner = self.ternary()
+            self.eat(")")
+            return inner
+        if val == "[":
+            self.eat("[")
+            items = []
+            while self.peek()[1] != "]":
+                items.append(self.ternary())
+                if self.peek()[1] == ",":
+                    self.eat(",")
+            self.eat("]")
+            return items
+        if kind == "name":
+            self.eat()
+            if val in ("true", "false"):
+                return val == "true"
+            if val == "null":
+                return None
+            if self.peek()[1] == "(":
+                return self.function(val)
+            if val in self.env:
+                return self.env[val]
+            raise ValueError(f"cage_engine CEL: unknown identifier {val!r} in {self.src!r}")
+        raise ValueError(f"cage_engine CEL: unexpected token {val!r} in {self.src!r}")
+
+    def args(self) -> list:
+        self.eat("(")
+        out = []
+        while self.peek()[1] != ")":
+            out.append(self.ternary())
+            if self.peek()[1] == ",":
+                self.eat(",")
+        self.eat(")")
+        return out
+
+    def function(self, name: str):
+        args = self.args()
+        if name == "has":
+            return args[0] is not ABSENT and args[0] is not None
+        if name == "int":
+            return int(args[0])
+        if name == "string":
+            return str(args[0])
+        raise ValueError(f"cage_engine CEL: unsupported function {name!r} in {self.src!r}")
+
+    def method(self, receiver, name: str):
+        args = self.args()
+        if name == "orValue":
+            return args[0] if receiver is ABSENT or receiver is None else receiver
+        if name == "hasValue":
+            return receiver is not ABSENT and receiver is not None
+        raise ValueError(f"cage_engine CEL: unsupported method {name!r} in {self.src!r}")
+
+    def postfix(self, value):
+        while True:
+            op = self.peek()[1]
+            if op in (".", ".?"):
+                self.eat()
+                name = self.eat()
+                if self.peek()[1] == "(":
+                    value = self.method(value, name)
+                else:
+                    value = _cel_field(value, name)
+            elif op == "[":
+                self.eat("[")
+                key = self.ternary()
+                self.eat("]")
+                value = _cel_field(value, key)
+            else:
+                return value
+
+
+def _cel_field(value, name):
+    if isinstance(value, dict):
+        return value.get(name, ABSENT)
+    return ABSENT  # absent, null, or a scalar -- no such field, never a crash
+
+
+def _cel_eq(a, b) -> bool:
+    if a is ABSENT or b is ABSENT:
+        return a is b
+    return a == b
+
+
+def cel_eval(expr: str, env: dict):
+    """Evaluate one CEL-subset expression against `env` ({'object': pod,
+    'namespaceObject': ns|None, 'variables': {...}, 'c': container})."""
+    return _CelParser(expr, env).run()
+
+
+# ---------------------------------------------------------------------------
+# Reading a MutatingPolicy body: the tier it resolves, the fields it writes
+# ---------------------------------------------------------------------------
+
+# The security fields ticket 09 item 2 names, each with the value that is
+# SAFE for the workload. "Writes the unsafe value over the workload's own
+# safe value" is the loosening the ticket asks this engine to classify --
+# for readOnlyRootFilesystem and runAsNonRoot that is literally "writes
+# false over true".
+SAFE_VALUE = {
+    "readOnlyRootFilesystem": True,
+    "runAsNonRoot": True,
+    "allowPrivilegeEscalation": False,
+    "privileged": False,
+    "hostNetwork": False,
+    "hostPID": False,
+    "hostIPC": False,
+}
+POD_LEVEL_FIELDS = ("hostNetwork", "hostPID", "hostIPC")
+# Kubernetes' own default when the workload sets nothing -- not "the safe
+# value". allowPrivilegeEscalation defaults to true, which is the UNSAFE one.
+UNSET_DEFAULT = {
+    "readOnlyRootFilesystem": False, "runAsNonRoot": False,
+    "allowPrivilegeEscalation": True, "privileged": False,
+    "hostNetwork": False, "hostPID": False, "hostIPC": False,
+}
+
+_CONTAINER_SC_MARKER = "securityContext: Object.spec.containers.securityContext{"
+_POD_SPEC_MARKER = "spec: Object.spec{"
+
+
+def _block_after(text: str, marker: str) -> str | None:
+    """The text inside the `{...}` the (brace-terminated) `marker` opens.
+    None if the marker is not there at all -- a body that simply does not
+    write these fields, which is a real case (3.0.0 writes no `privileged`
+    and no host* fields) and not an error."""
+    i = text.find(marker)
+    if i < 0:
+        return None
+    open_at = i + len(marker) - 1
+    depth = 0
+    for k in range(open_at, len(text)):
+        if text[k] in "{[(":
+            depth += 1
+        elif text[k] in "}])":
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1:k]
+    raise ValueError(f"unbalanced CEL block after {marker!r}")
+
+
+def _top_level_fields(block: str) -> dict[str, str]:
+    """`{a: X, b: Y}` -> {'a': 'X', 'b': 'Y'}, splitting only at depth 0 and
+    never inside a string literal."""
+    out: dict[str, str] = {}
+    depth, key, start, in_str, i = 0, None, 0, None, 0
+    while i < len(block):
+        ch = block[i]
+        if in_str is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == in_str:
+                in_str = None
+        elif ch in "'\"":
+            in_str = ch
+        elif ch in "{[(":
+            depth += 1
+        elif ch in "}])":
+            depth -= 1
+        elif depth == 0 and ch == ":" and key is None:
+            key = block[start:i].strip()
+        elif depth == 0 and ch == "," and key is not None:
+            out[key] = block[block.index(":", start) + 1:i].strip()
+            key, start = None, i + 1
+        i += 1
+    if key is not None:
+        out[key] = block[block.index(":", start) + 1:].strip()
+    return out
+
+
+def _apply_configuration(body: dict) -> str:
+    for mutation in (body.get("spec") or {}).get("mutations") or []:
+        expr = (mutation.get("applyConfiguration") or {}).get("expression")
+        if expr:
+            return expr
+    return ""
+
+
+def security_writes(body: dict) -> dict[str, str]:
+    """{security field: the CEL expression this body writes into it}. Only
+    the FIRST container securityContext block is read -- that is the one the
+    workload's own containers are mapped through; the second is the cage's
+    own injected waf sidecar, which is not a workload the cage can loosen."""
+    expr = _apply_configuration(body)
+    out: dict[str, str] = {}
+    if not expr:
+        return out
+    container_block = _block_after(expr, _CONTAINER_SC_MARKER)
+    if container_block:
+        out.update({k: v for k, v in _top_level_fields(container_block).items() if k in SAFE_VALUE})
+    pod_block = _block_after(expr, _POD_SPEC_MARKER)
+    if pod_block:
+        out.update({k: v for k, v in _top_level_fields(pod_block).items() if k in POD_LEVEL_FIELDS})
+    return out
+
+
+def declared_security(pod: dict) -> dict[str, bool]:
+    """What the WORKLOAD itself asked for, before any mutation. A pod is
+    only as hardened as its least-hardened container, so a container-level
+    field resolves to the unsafe value if ANY container resolves unsafe."""
+    spec = pod.get("spec") or {}
+    containers = spec.get("containers") or [{}]
+    out: dict[str, bool] = {}
+    for field, safe in SAFE_VALUE.items():
+        if field in POD_LEVEL_FIELDS:
+            out[field] = bool(spec.get(field, UNSET_DEFAULT[field]))
+            continue
+        values = [bool((c.get("securityContext") or {}).get(field, UNSET_DEFAULT[field]))
+                  for c in containers]
+        out[field] = safe if all(v == safe for v in values) else (not safe)
+    return out
+
+
+def effective_security(body: dict, dial: dict | None, pod: dict) -> dict[str, bool]:
+    """The security fields the pod is left carrying AFTER this body's own
+    mutation runs -- the body's real expressions evaluated against the real
+    pod, per container. A field the body never writes keeps the workload's
+    own declared value.
+
+    ponytail: BOOLEAN security fields only, the seven ticket 09 item 2
+    names. 4.0.0's cpu/memory writes are tighten-only too (they keep a
+    workload's own LOWER limit), and that is still modelled from the dial
+    table alone -- no corpus entry declares a resource limit, so the two
+    readings agree for every entry today, and this is stated rather than
+    hidden. Closing it needs `quantity()`/`isLessThan()` in the evaluator
+    and a resource-limit value on the workload-declares axis."""
+    out = declared_security(pod)
+    if dial is None:
+        return out  # no tier reached this pod: nothing overwrites anything
+    containers = (pod.get("spec") or {}).get("containers") or [{}]
+    for field, expr in security_writes(body).items():
+        if field in POD_LEVEL_FIELDS:
+            out[field] = bool(cel_eval(expr, {"object": pod, "variables": {"dial": dial}}))
+            continue
+        safe = SAFE_VALUE[field]
+        values = [bool(cel_eval(expr, {"object": pod, "c": c, "variables": {"dial": dial}}))
+                  for c in containers]
+        out[field] = safe if all(v == safe for v in values) else (not safe)
+    return out
+
+
+def tier_expression(body: dict) -> str | None:
+    for v in (body.get("spec") or {}).get("variables") or []:
+        if v["name"] == "tier":
+            return v["expression"]
+    return None
+
+
+def tier_expressions(body: dict) -> list[str]:
+    """The `tier` variable's expression AND every variable expression it
+    transitively reads, in declaration order.
+
+    The SOURCE of the tier is never in the `tier` expression itself -- 3.0.0
+    reads the pod label through `rawTier`, 4.0.0 reads `namespaceObject`
+    through `nsTier`/`nsGoverned` -- so naming only `tier` as the expression
+    responsible for a tier-source move would name the one line that did not
+    change."""
+    by_name = {v["name"]: v["expression"]
+               for v in (body.get("spec") or {}).get("variables") or []}
+    wanted: list[str] = []
+
+    def walk(name: str) -> None:
+        if name not in by_name or name in wanted:
+            return
+        wanted.append(name)
+        for ref in re.findall(r"variables\.(\w+)", by_name[name]):
+            walk(ref)
+
+    walk("tier")
+    order = [v["name"] for v in (body.get("spec") or {}).get("variables") or []]
+    return [by_name[n] for n in order if n in wanted and n != "dial"]
+
+
+def tier_for(body: dict, pod: dict, ns: dict | None) -> str:
+    """The tier THIS body's own CEL resolves for this pod in this Namespace.
+
+    This is the half of ticket 09 item 2 the old `effective_tier(pod)` could
+    not see: 3.0.0's `tier` variable reads the pod's own label, 4.0.0's
+    reads `namespaceObject` and clobbers the label (ADR-0022), and a
+    governed Namespace with no tier falls closed to `isolated`. Reading the
+    label on BOTH sides made a pod that forged a tier look unmoved when the
+    real cage moved it. Now each side is asked its own question."""
+    env: dict = {"object": pod, "namespaceObject": ns, "variables": {}}
+    for var in (body.get("spec") or {}).get("variables") or []:
+        if var["name"] == "dial":
+            continue  # a map literal; `dial_map` reads it, this evaluator does not
+        env["variables"][var["name"]] = cel_eval(var["expression"], env)
+    tier = env["variables"].get("tier")
+    if not isinstance(tier, str):
+        raise ValueError(
+            f"cage-tier body resolved no string `tier` variable (got {tier!r}) -- "
+            f"an unreadable tier source is a gap in this engine, not a tier of 'baseline'"
+        )
+    return tier
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +680,18 @@ def _mem_bytes(v: str) -> float:
     return float(v)
 
 
+def dial_map(cage_tier_body: dict) -> tuple[dict, str]:
+    """The `dial` variable's raw CEL map literal, {tier: {dial: value}},
+    plus the raw expression text. Split out of `dial_table` because
+    `effective_security` needs the RAW dial (its `harden` string is what the
+    mutation's own expressions read), not the CageSpec derived from it."""
+    variables = cage_tier_body["spec"]["variables"]
+    dial_var = next(v for v in variables if v["name"] == "dial")
+    expr = dial_var["expression"]
+    literal = expr.rsplit("[variables.tier]", 1)[0].strip()
+    return ast.literal_eval(literal), expr
+
+
 def dial_table(cage_tier_body: dict) -> tuple[dict[str, CageSpec], str]:
     """Parses the `dial` variable's CEL map literal into {tier: CageSpec},
     plus the raw expression text (for movement reporting). Deterministic, no
@@ -225,11 +701,7 @@ def dial_table(cage_tier_body: dict) -> tuple[dict[str, CageSpec], str]:
     single-quoted string literals and braces are valid Python literal syntax
     once the trailing `[variables.tier]` index is stripped, so
     `ast.literal_eval` reads it directly -- no separate CEL parser needed."""
-    variables = cage_tier_body["spec"]["variables"]
-    dial_var = next(v for v in variables if v["name"] == "dial")
-    expr = dial_var["expression"]
-    literal = expr.rsplit("[variables.tier]", 1)[0].strip()
-    raw = ast.literal_eval(literal)
+    raw, expr = dial_map(cage_tier_body)
     out: dict[str, CageSpec] = {}
     for tier, dial in raw.items():
         harden = dial["harden"] == "true"
@@ -285,11 +757,42 @@ def claims_version(pod: dict) -> bool:
     return bool((pod.get("metadata") or {}).get("labels", {}).get(PIN_LABEL, ""))
 
 
-def effective_tier(pod: dict) -> str:
-    """Mirrors cage-tier.yaml's own CEL: an absent or unrecognized tier
-    label defaults to 'baseline', the loosest tier -- never a no-op skip."""
-    raw = (pod.get("metadata") or {}).get("labels", {}).get(TIER_LABEL, "baseline")
-    return raw if raw in TIER_ORDER else "baseline"
+UNCAGED_TIER = "(uncaged)"  # cage-tier does not reach this pod on this side
+
+
+@dataclass(frozen=True)
+class PodCage:
+    """What ONE corpus pod really receives from ONE cage-tier body: the tier
+    that body's own CEL resolves for it, that tier's dial spec, and the
+    security fields the body's own mutation leaves it carrying."""
+    tier: str
+    spec: CageSpec
+    security: dict[str, bool]
+
+
+def pod_cage(body: dict | None, pod: dict, ns: dict | None) -> PodCage:
+    """`body` None = cage-tier absent on this side: the top of the lattice,
+    and every security field is whatever the workload itself declared,
+    because nothing overwrites it."""
+    if body is None:
+        return PodCage(tier=UNCAGED_TIER, spec=UNCAGED, security=declared_security(pod))
+    table, _ = dial_table(body)
+    raw, _ = dial_map(body)
+    tier = tier_for(body, pod, ns)
+    return PodCage(
+        tier=tier,
+        spec=table.get(tier, UNCAGED),
+        security=effective_security(body, raw.get(tier), pod),
+    )
+
+
+def namespace_for(pod_file: Path) -> dict | None:
+    """The Namespace object a corpus entry lands in, written by
+    corpus_generator's `namespace` axis as a sibling `<entry>.ns.yaml`. None
+    is a real case, not a missing file: it is CEL's `namespaceObject == null`,
+    which every served cage-tier body guards for explicitly."""
+    ns_file = pod_file.with_name(pod_file.stem + ".ns.yaml")
+    return yaml.safe_load(ns_file.read_text()) if ns_file.exists() else None
 
 
 # ---------------------------------------------------------------------------
@@ -391,44 +894,93 @@ def classify_validating(name: str, old_file: Path | None, new_file: Path | None,
 # Track 2
 # ---------------------------------------------------------------------------
 
+def _security_move(declared: dict[str, bool], old: dict[str, bool],
+                    new: dict[str, bool]) -> tuple[list[str], list[str]]:
+    """(fields the new body starts writing OVER the workload's own safe
+    value, fields it stops writing over it) -- scoped, on purpose, to fields
+    where the WORKLOAD ITSELF declared the safe value.
+
+    That scope is ticket 09 item 2's own sentence: "writes false over true".
+    A workload that declared `readOnlyRootFilesystem: true` and gets `false`
+    stamped on it has been un-hardened by the platform; a workload that
+    declared nothing has not (it is merely no longer receiving hardening it
+    never asked for, which is an ordinary permissiveness widening and stays
+    on the lattice -- that is why "cage-tier removed" is still a patch).
+
+    Both directions are MAJOR. Starting to write over a declared value is a
+    loosening of the guarantee the version promised, and the cage is a floor
+    on the workload, not a ceiling (ADR-0022), so it is a break rather than
+    a relaxation. Stopping is a narrowing -- the workload's own stricter
+    value now survives -- which the same partial order every dial field uses
+    already classifies major."""
+    loosened, tightened = [], []
+    for field, safe in SAFE_VALUE.items():
+        if declared[field] != safe or old[field] == new[field]:
+            continue  # nothing declared to write over, or nothing moved
+        (tightened if new[field] == safe else loosened).append(field)
+    return loosened, tightened
+
+
 def classify_cage_tier(name: str, old_file: Path | None, new_file: Path | None,
                         pods: list[Path]) -> Movement:
-    old_table, old_expr = dial_table(yaml.safe_load(old_file.read_text())) if old_file else ({}, None)
-    new_table, new_expr = dial_table(yaml.safe_load(new_file.read_text())) if new_file else ({}, None)
+    old_body = yaml.safe_load(old_file.read_text()) if old_file else None
+    new_body = yaml.safe_load(new_file.read_text()) if new_file else None
+    old_expr = dial_map(old_body)[1] if old_body else None
+    new_expr = dial_map(new_body)[1] if new_body else None
 
-    regressed_entries: list[str] = []
+    major_entries: list[str] = []
     widened_entries: list[str] = []
     detail_parts: list[str] = []
+    tier_moved = False
     for pod_file in pods:
         pod = yaml.safe_load(pod_file.read_text())
         if not claims_version(pod):
             continue  # not matched by cage-tier at all, either side -- no spec to compare
-        tier = effective_tier(pod)
-        old_spec = old_table.get(tier, UNCAGED)
-        new_spec = new_table.get(tier, UNCAGED)
-        ok, regressed, widened = at_least_as_permissive(old_spec, new_spec)
+        ns = namespace_for(pod_file)
+        old_cage = pod_cage(old_body, pod, ns)
+        new_cage = pod_cage(new_body, pod, ns)
+        ok, regressed, widened = at_least_as_permissive(old_cage.spec, new_cage.spec)
+        loosened, tightened = _security_move(declared_security(pod), old_cage.security, new_cage.security)
+        if old_cage.tier != new_cage.tier:
+            tier_moved = True
+
+        reasons = []
         if not ok:
-            regressed_entries.append(pod_file.stem)
-            detail_parts.append(f"{pod_file.stem} (tier={tier}): {', '.join(regressed)} narrowed")
+            reasons.append(f"{', '.join(regressed)} narrowed")
+        if loosened:
+            reasons.append(f"{', '.join(loosened)} now written over the workload's own value")
+        if tightened:
+            reasons.append(f"{', '.join(tightened)} no longer written over the workload's own value")
+        if reasons:
+            major_entries.append(pod_file.stem)
+            where = (f"tier {old_cage.tier}->{new_cage.tier}" if old_cage.tier != new_cage.tier
+                     else f"tier={new_cage.tier}")
+            detail_parts.append(f"{pod_file.stem} ({where}): {', '.join(reasons)}")
         elif widened:
             widened_entries.append(pod_file.stem)
 
-    expr = new_expr or old_expr
-    if regressed_entries:
-        verdict = "major"
+    if major_entries:
+        verdict, entries = "major", major_entries
         detail = "; ".join(detail_parts)
-        entries = regressed_entries
     elif widened_entries:
-        verdict = "patch"
+        verdict, entries = "patch", widened_entries
         detail = f"{len(widened_entries)} corpus entr{'y' if len(widened_entries) == 1 else 'ies'} widened"
-        entries = widened_entries
     else:
-        verdict = "none"
+        verdict, entries = "none", []
         detail = "no corpus entry's cage spec moved"
-        entries = []
+
+    # The dial map is the one expression that encodes every tier's values.
+    # The `tier` variable joins it only when a corpus entry's resolved tier
+    # actually MOVED -- that is the expression responsible for a tier-source
+    # change (ADR-0022's move from the pod label to `namespaceObject`), and
+    # naming it unconditionally would report an unmoved expression as the
+    # reason for movement.
+    expressions = [e for e in (new_expr or old_expr,) if e]
+    if tier_moved:
+        expressions.extend(tier_expressions(new_body or {}) or tier_expressions(old_body or {}))
 
     return Movement(policy=name, verdict=verdict, entries=entries,
-                     expressions=[expr] if expr else [], detail=detail)
+                     expressions=expressions, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +990,7 @@ def classify_cage_tier(name: str, old_file: Path | None, new_file: Path | None,
 def classify_pair(name: str, old_file: Path | None, new_file: Path | None,
                    pods: list[Path]) -> Movement | None:
     sample = old_file or new_file
-    # A multi-document file (e.g. priorityclasses.yaml, three PriorityClass
+    # A multi-document file (e.g. priorityclasses.yaml, four PriorityClass
     # docs in one file) is never a policy this engine models -- peek at the
     # first document's `kind` only, rather than choking on the stream shape.
     body = next(yaml.safe_load_all(sample.read_text()), {}) or {}
@@ -509,9 +1061,19 @@ spec:
       expression: >-
         object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
   variables:
+    - name: rawTier
+      expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')
+    - name: tier
+      expression: >-
+        variables.rawTier in ['baseline', 'restricted', 'quarantine']
+        ? variables.rawTier : 'baseline'
     - name: dial
       expression: >-
         {DIAL}[variables.tier]
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: "Object{{\n  spec: Object.spec{{\n    priorityClassName: variables.dial.pc,\n    containers: object.spec.containers.map(c, Object.spec.containers{{\n      name: c.name,\n      securityContext: Object.spec.containers.securityContext{{\n        readOnlyRootFilesystem: {ROFS},\n        runAsNonRoot: variables.dial.harden == 'true',\n        allowPrivilegeEscalation: false\n      }}\n    }})\n  }}\n}}"
 """
 
 
@@ -528,22 +1090,49 @@ def _dial_literal(baseline_cpu="500m", baseline_mem="256Mi", baseline_waf="0",
     )
 
 
-def _write_cage_tier(path: Path, **dial_kwargs) -> None:
-    path.write_text(_CAGE_TIER_TMPL.format(DIAL=_dial_literal(**dial_kwargs)))
+# The two shapes ticket 09 item 2 is about, as the real served bodies write
+# them: 3.0.0 stamps the dial's `harden` straight over whatever the workload
+# declared; 4.0.0 ORs the workload's own value in, so the cage can only ever
+# tighten. Everything else in the template is held identical between them.
+_CLOBBER_ROFS = "variables.dial.harden == 'true'"
+_TIGHTEN_ONLY_ROFS = (
+    "variables.dial.harden == 'true' || "
+    "(has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false))"
+)
 
 
-def _write_pod(path: Path, name: str, tier: str | None, claims: bool = True) -> None:
+def _write_cage_tier(path: Path, tighten_only: bool = False, **dial_kwargs) -> None:
+    path.write_text(_CAGE_TIER_TMPL.format(
+        DIAL=_dial_literal(**dial_kwargs),
+        ROFS=_TIGHTEN_ONLY_ROFS if tighten_only else _CLOBBER_ROFS,
+    ))
+
+
+def _write_pod(path: Path, name: str, tier: str | None, claims: bool = True,
+                declares_hardened: bool = False) -> None:
     labels = {}
     if claims:
         labels[PIN_LABEL] = "1.0.0"
     if tier is not None:
         labels[TIER_LABEL] = tier
+    container = {"name": "app", "image": "nginx:1.25"}
+    if declares_hardened:
+        container["securityContext"] = {"readOnlyRootFilesystem": True, "runAsNonRoot": True}
     yaml_doc = {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": {"name": name, "labels": labels},
-        "spec": {"containers": [{"name": "app", "image": "nginx:1.25"}]},
+        "spec": {"containers": [container]},
     }
     path.write_text(yaml.safe_dump(yaml_doc))
+
+
+def _write_namespace(pod_path: Path, labels: dict[str, str]) -> None:
+    """The sibling Namespace file `namespace_for` reads -- the same shape
+    corpus_generator's `namespace` axis writes."""
+    pod_path.with_name(pod_path.stem + ".ns.yaml").write_text(yaml.safe_dump({
+        "apiVersion": "v1", "kind": "Namespace",
+        "metadata": {"name": "corpus-ns", "labels": labels},
+    }))
 
 
 def selfcheck() -> None:
@@ -555,7 +1144,7 @@ def selfcheck() -> None:
     repo = Path(__file__).resolve().parent.parent
     real_body = yaml.safe_load((repo / "graded" / "policies" / "cage-tier.yaml").read_text())
     real_table, real_expr = dial_table(real_body)
-    assert set(real_table) == {"baseline", "restricted", "quarantine"}, real_table
+    assert set(real_table) == set(TIER_ORDER), real_table
     assert real_table["baseline"].cpu == 500 and real_table["quarantine"].cpu == 100, real_table
     assert real_table["baseline"].drop_all is False and real_table["quarantine"].drop_all is True
     assert "variables.tier" in real_expr
@@ -563,7 +1152,7 @@ def selfcheck() -> None:
     # 2. the permissiveness lattice: UNCAGED is at least as permissive as
     #    every real tier, and no real tier is at least as permissive as
     #    UNCAGED (going from unrestricted to any real cage always narrows).
-    for t in ("baseline", "restricted", "quarantine"):
+    for t in TIER_ORDER:
         ok, regressed, _ = at_least_as_permissive(UNCAGED, real_table[t])
         assert not ok and regressed, (t, regressed)
         ok2, _, _ = at_least_as_permissive(real_table[t], UNCAGED)
@@ -571,8 +1160,8 @@ def selfcheck() -> None:
 
     # 3. tighter tiers are strictly less permissive than looser ones, on
     #    every field the ticket names.
-    b, r, q = real_table["baseline"], real_table["restricted"], real_table["quarantine"]
-    for tighter, looser in ((r, b), (q, r), (q, b)):
+    b, r, q, i = (real_table[t] for t in TIER_ORDER)
+    for tighter, looser in ((r, b), (q, r), (q, b), (i, q), (i, b)):
         ok, regressed, _ = at_least_as_permissive(looser, tighter)
         assert not ok and regressed, (looser, tighter, regressed)
 
@@ -802,6 +1391,64 @@ def selfcheck() -> None:
         assert mv15b.verdict == "major", mv15b
         assert mv15b.entries, "a major narrowing must name the corpus entries that moved"
 
+    # 16. ticket 09 item 2 / ADR-0022, against the REAL committed bodies and
+    #     the REAL committed generated corpus -- Track 2 only, so no kyverno
+    #     and no wall clock worth naming.
+    #
+    #     16a. the real v3.0.0 -> v4.0.0 cage release computes major, and
+    #     names BOTH real reasons: the tier's SOURCE moved from the pod's
+    #     own label to `namespaceObject` (so a pod in a governed Namespace
+    #     with no tier falls closed to `isolated`, and a pod whose label
+    #     forged a looser tier than its Namespace gets clobbered), and the
+    #     cage became tighten-only (so it stops writing false over a
+    #     workload's own true). Before this ticket the engine modelled the
+    #     dial TABLE only and computed "none" for both.
+    corpus_dir = HERE / "generated-corpus"
+    corpus_manifest = yaml.safe_load((corpus_dir / "manifest.yaml").read_text())
+    real_pods = [corpus_dir / rec["file"]
+                  for rec in corpus_manifest["populations"]["generated-spine"]["entries"]]
+    policies = REPO / "distribution" / "policies"
+    v3, v4 = policies / "v3.0.0" / "cage-tier.yaml", policies / "v4.0.0" / "cage-tier.yaml"
+    m16 = classify_cage_tier("cage-tier.yaml", v3, v4, real_pods)
+    assert m16.verdict == "major", m16
+    assert "->isolated" in m16.detail, ("the fail-closed tier move is not named", m16.detail)
+    assert "->quarantine" in m16.detail, ("the forged-tier clobber is not named", m16.detail)
+    assert "readOnlyRootFilesystem no longer written over the workload's own value" in m16.detail, m16.detail
+    assert any("namespaceObject" in e for e in m16.expressions), (
+        "a tier-source move must name the tier expression responsible", m16.expressions)
+
+    #     16b. the defect this engine exists to catch, injected: the SAME
+    #     real 4.0.0 body with its tighten-only securityContext writes
+    #     replaced by 3.0.0's unconditional clobber, and nothing else
+    #     touched -- same dial table, same tier expression, same everything
+    #     a dial-table comparison can see. A cage that starts stamping
+    #     `false` over a workload's own `true` un-hardens real workloads,
+    #     and must classify major, naming the direction. Proven by
+    #     construction here rather than asserted: the two bodies' dial maps
+    #     are compared and must be identical first.
+    v4_body = yaml.safe_load(v4.read_text())
+    clobbered_body = yaml.safe_load(v4.read_text())
+    mutation = clobbered_body["spec"]["mutations"][0]["applyConfiguration"]
+    intact = mutation["expression"]
+    mutation["expression"] = re.sub(
+        r"variables\.dial\.harden == 'true' \|\|\s*\(has\(c\.securityContext\) && "
+        r"c\.securityContext\.\?\w+\.orValue\(false\)\)",
+        "variables.dial.harden == 'true'", intact)
+    assert mutation["expression"] != intact, (
+        "the tighten-only idiom is no longer in v4.0.0's real applyConfiguration -- "
+        "this injection has stopped injecting anything and proves nothing")
+    assert dial_map(clobbered_body) == dial_map(v4_body), (
+        "the injected defect changed the dial table -- it must be invisible to a "
+        "dial-table comparison, or it does not prove anything")
+    assert tier_expressions(clobbered_body) == tier_expressions(v4_body)
+    with tempfile.TemporaryDirectory() as td:
+        clobbered = Path(td) / "cage-tier.yaml"
+        clobbered.write_text(yaml.safe_dump(clobbered_body, sort_keys=False))
+        m16b = classify_cage_tier("cage-tier.yaml", v4, clobbered, real_pods)
+    assert m16b.verdict == "major", m16b
+    assert "now written over the workload's own value" in m16b.detail, m16b.detail
+    assert "readOnlyRootFilesystem" in m16b.detail and "runAsNonRoot" in m16b.detail, m16b.detail
+
     print(
         "selfcheck ok: dial_table parses the real cage-tier.yaml; UNCAGED sits at "
         "the top of the permissiveness lattice, every real tier below it, tighter "
@@ -822,7 +1469,14 @@ def selfcheck() -> None:
         "classifies 'none', never the old spurious 'major' the vacuous self-scope "
         "match used to produce, and a real narrowing bundled with the same version "
         "bump still classifies 'major' -- the fix removes the artifact without "
-        "suppressing real movement"
+        "suppressing real movement; ticket 09 item 2: the real v3.0.0 -> v4.0.0 "
+        "cage release computes major against the real committed corpus and names "
+        "both real reasons (the tier source moved to namespaceObject, so a "
+        "governed Namespace with no tier falls closed to isolated and a forged "
+        "pod label is clobbered; and the cage became tighten-only), and a body "
+        "that starts writing false over a workload's own true -- invisible to a "
+        "dial-table comparison, proven identical first -- classifies major as a "
+        "loosening"
     )
 
 

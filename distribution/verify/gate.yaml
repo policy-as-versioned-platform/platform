@@ -1,0 +1,72 @@
+# THE SOURCE-BOUNDARY CONTRACT, as one worked example.
+#
+# This is the shape an org copies into its own `gitops/` to have the
+# gitsign-verifying controller stand at its Flux source boundary. It is an
+# EXAMPLE, not a delivered object: `distribution/verify/` carries no
+# kustomization.yaml and nothing reconciles this file. Copy the two
+# annotations onto your real GitRepository and the `gitsign-gates` value onto
+# whichever Kustomizations must not apply from an unverified source.
+#
+# HOW THE GATE ACTUALLY BITES. The controller does not fake a Flux condition
+# and does not touch the source's Ready state (source-controller owns that and
+# would clobber it on the next reconcile). It patches `spec.suspend` on the
+# Kustomizations named in `gitsign-gates`: unverified means suspended, and it
+# releases the suspension it took, marked by its own
+# `policy-as-versioned.dev/gitsign-suspended` annotation, so a human who
+# suspends a Kustomization for their own reasons is never overruled.
+#
+#   ceiling, stated: suspend stops the NEXT apply, not one already made. A
+#   source that verified yesterday and is tampered today is caught at the next
+#   verification, not at admission. Closing that means moving the decision to
+#   admission (a Kyverno rule on the kustomize-controller's applies) or, far
+#   better, Flux #1068 landing and this whole mechanism being deleted.
+#
+# THE PINS ARE NOT LITERALS. The two values below are the two the publisher's
+# own `.github/workflows/release.yml` already pins -- EXPECTED_IDENTITY_REGEXP
+# and EXPECTED_ISSUER -- so the cluster accepts exactly the identity CI
+# accepts and cannot drift into accepting more.
+# `platform/verify-source-verification.sh` reads release.yml and asserts these
+# two strings still equal it; change one and the truth surface goes red.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: platform-policy
+  namespace: flux-system
+  annotations:
+    # who may have signed the tag, and which OIDC issuer vouched for them
+    policy-as-versioned.dev/gitsign-identity-regexp: ^https://github\.com/policy-as-versioned-platform/platform/\.github/workflows/cut-release\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\.x)$
+    policy-as-versioned.dev/gitsign-issuer: https://token.actions.githubusercontent.com
+    # what must not apply while that is unverified
+    policy-as-versioned.dev/gitsign-gates: flux-system/platform-policy
+spec:
+  interval: 1m
+  url: https://github.com/policy-as-versioned-platform/platform
+  ref:
+    # A TAG AND NOTHING ELSE. `spec.ref.commit` must stay unset on any source
+    # this controller verifies: with a commit pinned, Flux checks out the
+    # commit and never fetches the tag object, so there is no signature at the
+    # boundary at all (observed live -- PRECONDITION-h6-12.md, probe p3). The
+    # ancestor-pin habit that `cut-release-update-array-commit.sh` writes into
+    # distribution/versions.yaml is exactly the shape that silently removes
+    # this check. The controller fetches the tag ref itself and reports what
+    # it signed, so the {tag, commit} pair Renovate maintains stays honest
+    # without the commit ever entering spec.ref.
+    tag: "policy/v4.0.0"
+  # spec.verify is deliberately ABSENT. Flux 2.9 speaks OpenPGP and SSH only;
+  # pointing it at a gitsign tag fails with `unsupported signature type: x509`
+  # and takes the source down. No key re-signs this ref (ADR-0023 D3).
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-policy
+  namespace: flux-system
+spec:
+  interval: 5m
+  retryInterval: 1m
+  timeout: 3m
+  sourceRef: { kind: GitRepository, name: platform-policy }
+  path: ./distribution/policies/v4.0.0
+  prune: true
+  wait: true

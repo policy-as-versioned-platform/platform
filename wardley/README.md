@@ -55,7 +55,8 @@ a *trajectory*, not a static position.
 **attacker-capability**, `forward_signal(intel, org)` collapses the attack cost into a
 forward LEF bump on its linked risk (`factor = 1 + K × movement`) and emits a scenario
 library in the *exact* shape the war-gamer already consumes, labelled for one of the three
-risk-bearing institutions (`driftwood`, `tuppence`, `ludlow` — see `../risk/appetite.json`).
+risk-bearing parties (`driftwood`, `tuppence`, `ludlow`, `platform` — every sibling that
+signs an `appetite` on its own `party.yaml`; `../risk/appetite.json` is retired, ADR-0021).
 `forward_into_wargamer(intel, org)` hands it straight to `wargamer.wargame_scenarios()`
 unmodified; `forward_into_wargamer_all()` runs the seam for all three. The same market
 movement, judged against each institution's *own* band, does not always agree: driftwood's

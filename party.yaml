@@ -1,0 +1,92 @@
+# The platform's own party artefact (eco-system ticket 21; ADR-0019). The
+# platform is a party like any other -- it does not sit outside the model it
+# ships. Before this file existed, `platform/party/` held only the schema and
+# the checker: a library that declared every other party and never itself, so
+# the platform had no signed size, appetite or reporting currency to be
+# priced under, and no discovery record for what it publishes (ticket 18's
+# own finding; ticket 04 Answer 4 requires one).
+#
+# Signed under the same gitsign tag as every other artefact this repo
+# publishes -- no second mechanism (ADR-0012, ADR-0023 D3).
+#
+# Checked by party/party_artefact.py:
+#   python3 party/party_artefact.py check party.yaml --adopter-dir .
+party: platform
+
+# `publisher` because this repo cuts signed tags others pin; `platform`
+# because it holds the substrate. The `platform` role is the ONLY role that
+# may declare the `infra` cage tier (ADR-0022), and it declares it on its own
+# Namespace manifests (ticket 26) -- never here, and never as an allowlist.
+# No `adopter`: the platform selects no baseline from anyone, which is why
+# this file carries no `baseline` key.
+roles: [publisher, platform]
+
+# The discovery record (ADR-0019 point 5). There is no central catalogue: the
+# set of signed publisher party artefacts IS the catalogue. `policy` is the
+# implementations line -- policy bodies plus their control claims, released on
+# the `policy/vX.Y.Z` tag by .github/workflows/cut-release.yml and pinned by
+# each adopter's gitops/platform/platform-pin.yaml.
+#
+# No `payload_schema`: an implementations package is a directory of Kyverno
+# policy bodies, not a feed envelope, so there is no payload to validate
+# against one (schema.json allows the key to be null or absent for exactly
+# this case). The feeds this repo used to carry -- threat-register, cve, eol,
+# market-intel -- move to the `feeds` party and are declared on ITS artefact.
+#
+# `revoked` is empty: no published version has been withdrawn. A withdrawal
+# is a new version plus the old one listed here, never a deleted tag; a pin
+# to a revoked version is a priced hole, never a refusal (ADR-0019 point 6).
+publishes:
+  - kind: implementations
+    name: policy
+    path: distribution/policies
+    revoked: []
+  # The identity substrate (eco-system ticket 32; ticket 12 answer 5). A
+  # SECOND implementations line, not a second kind: SPIRE, Istio, OpenBao,
+  # Pomerium and the two ClusterSPIFFEIDs are policy bodies' peers -- runnable
+  # machinery with control claims -- so they wear the kind the parent enum
+  # already has (ADR-0019 keeps the kind closed; the NAME underneath is free).
+  #
+  # It versions on its own tag, `identity-substrate/vX.Y.Z`, because a SPIRE
+  # chart bump has nothing to do with a Kyverno policy change and the two must
+  # not drag each other's version. `identity/VERSION` is the number; an org
+  # pins the tag with the shape in `identity/flux-pin.yaml` and Renovate bumps
+  # it. Before this line, the substrate arrived by `kubectl apply` from
+  # identity/up.sh and posture/up.sh, which is the build defect H8-14 names:
+  # Flux is the distribution arm, and a layer delivered by kubectl is outside
+  # it.
+  #
+  # No `payload_schema`: like the policy line, this is a directory of
+  # manifests, not a feed envelope. `revoked` empty: nothing withdrawn.
+  - kind: implementations
+    name: identity-substrate
+    path: identity
+    revoked: []
+
+# The platform band, moved here from risk/appetite.json's `platform` entry
+# (tolerance 10000, root_of_trust) so the tier selection reads a signed fact
+# on the party artefact rather than a platform-held fixture (ticket 25). The
+# number and its reason are unchanged: the apparatus is the estate's root of
+# trust, so a compromise mis-prices the whole estate, and honesty/reflexive.py
+# scores it with the same engine that scores everyone else. The fixture in
+# risk/appetite.json is retired by the £-seam ticket, not by this file.
+appetite:
+  tolerance: { amount: 10000, currency: GBP }
+
+# GBP, not the USD default: this is a UK party and every price it carries is
+# a GBP price. No sum crosses a currency or a perspective.
+reporting_currency: GBP
+
+# The platform pins nobody. It is the root of trust: it publishes what others
+# pin, and inheriting from a party that inherits from it would close a loop.
+inherits: []
+
+# Nothing to add or restate: the platform ships the policy bodies themselves,
+# so there is no inherited member to widen and no inherited action to hold
+# itself stricter than. No `floor` either -- a floor clamps the tier the price
+# selects for a governed workload Namespace, and the platform declares its
+# Namespaces at `infra` by role (ticket 26) rather than being selected into a
+# tier at all.
+overlay:
+  add: []
+  restate: []

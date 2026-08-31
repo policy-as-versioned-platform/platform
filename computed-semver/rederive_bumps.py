@@ -29,8 +29,11 @@ computed here, not read off kyverno's exit code directly.
 """
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,15 +46,31 @@ FIXTURES = CORPUS / "fixtures"
 ALL_FIXTURES = sorted(FIXTURES.glob("*.yaml"))
 
 
+_SUMMARY = re.compile(r"pass: (\d+), fail: (\d+), warn: (\d+), error: (\d+), skip: (\d+)")
+
+
 def cel_pass(policy_file: Path, fixture_file: Path) -> bool:
     """True if the real `kyverno apply` says this fixture satisfies this
-    policy's CEL body -- independent of validationActions (Audit/Deny)."""
+    policy's CEL body -- independent of validationActions (Audit/Deny).
+
+    Reads kyverno's own verdict summary, never its exit code. A non-zero
+    exit is also what kyverno returns when it could not evaluate at all
+    (a load error, a crash, a transient CLI failure); reading that as
+    "refused" turns an execution error into a false admitted->refused
+    movement on a byte-identical body. An evaluation that did not happen
+    is an error here, not a verdict."""
     proc = subprocess.run(
         ["kyverno", "apply", str(policy_file), "--resource", str(fixture_file)],
         capture_output=True,
         text=True,
     )
-    return proc.returncode == 0
+    m = _SUMMARY.search(proc.stdout)
+    if m is None or int(m.group(4)):
+        raise RuntimeError(
+            f"kyverno apply did not evaluate {policy_file.name} against {fixture_file.name} "
+            f"(exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()}"
+        )
+    return int(m.group(2)) == 0
 
 
 def action_of(policy_file: Path) -> str:
@@ -89,9 +108,21 @@ def classify_policy(
     action_old, action_new = action_of(old_file), action_of(new_file)
     narrowed = widened = False
     moves = []
-    for fx in fixtures:
-        adm_old = admitted(action_old, cel_pass(old_file, fx))
-        adm_new = admitted(action_new, cel_pass(new_file, fx))
+    # One `kyverno apply` per (side, fixture) is one process, and the generated
+    # corpus is now 164 pods -- serial, that is six minutes and the gate's
+    # 300s timeout reads a slow check as a failed one. The calls are
+    # independent subprocesses, `pool.map` keeps them in fixture order, and any
+    # RuntimeError still surfaces on the first result read, so the verdict and
+    # its `moves` sentence are byte-identical to the serial loop.
+    # ponytail: threads because the work is all subprocess wait; if kyverno
+    # ever grows a batch mode, one call per side beats any pool.
+    with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 2))) as pool:
+        olds = pool.map(lambda fx: cel_pass(old_file, fx), fixtures)
+        news = pool.map(lambda fx: cel_pass(new_file, fx), fixtures)
+        pairs = list(zip(fixtures, list(olds), list(news)))
+    for fx, passed_old, passed_new in pairs:
+        adm_old = admitted(action_old, passed_old)
+        adm_new = admitted(action_new, passed_new)
         if adm_old and not adm_new:
             narrowed = True
             moves.append(f"{fx.stem}: admitted -> REFUSED")
