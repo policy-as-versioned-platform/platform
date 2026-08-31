@@ -74,7 +74,7 @@ spec:
         # bump was derived from the tag arithmetic, so it could never disagree
         # with itself. major: the cage tier moved to the governed Namespace and
         # the pod label became an output -- every 3.0.0 consumer must act.
-        - { version: "4.0.0", tag: "policy/v4.0.0", bump: "major" }
+        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
