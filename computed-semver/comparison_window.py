@@ -147,6 +147,18 @@ class ComparisonWindow:
     subject_tree_for: Callable[[str], Path]
     backport: bool = False
     institution_pins: dict[str, str] = field(default_factory=dict)
+    #: Versions present in `old_window` ONLY as a comparison basis, never
+    #: because the array declared them. When the declared array holds one line
+    #: there is nothing below the version being cut, so cut-release-gate falls
+    #: back to the real tag history for something to diff the body against.
+    #: Such a version is not "in the window and now gone", so the retirement
+    #: rule must not fire for it: on 2026-08-31 it did, and a release that
+    #: moved nothing was classified major, naming the retirement of a version
+    #: the array never declared. Dropping it from `old_window` instead lost the
+    #: comparison altogether and let a real release through carrying
+    #: "no predecessor" -- no body diff at all. It has to be in the window AND
+    #: exempt from the retirement rule, which is what this field says.
+    basis_only: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -181,7 +193,9 @@ def evaluate(window: ComparisonWindow, declared: str, new_subject_dir: Path,
         if not check.ok:
             return WindowEvaluation(", ".join(below), [], None, {}, f"{v}: {check.reason}")
 
-        retired = v not in window.new_window
+        # A basis-only version was never declared, so its absence from the new
+        # window is not a retirement -- see ComparisonWindow.basis_only.
+        retired = v not in window.new_window and v not in window.basis_only
         if retired:
             classification = cage_engine.ClassificationResult(
                 computed_bump="major", movement=[_retirement_movement(v)])

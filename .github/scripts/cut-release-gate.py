@@ -185,6 +185,7 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
     is_backport = any(comparison_window.parse_semver(v) > comparison_window.parse_semver(version)
                        for v in old_window)
     below_declared = comparison_window.window_below(old_window, version, backport=is_backport)
+    basis_only: list[str] = []
     # 2026-08-29: the declared array can legitimately hold ONE line. The whole
     # 2.x/3.x fan-out was retired (unable to admit a pod, and reading the tier
     # from the pod's own label), so cutting 4.0.0 left `old_window` empty and
@@ -200,17 +201,22 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         released_trees = [v for v in legal_history
                           if (DISTRIBUTION / "policies" / f"v{v}").is_dir()]
         below_declared = comparison_window.window_below(released_trees, version)[-1:]
-        # `old_window` is deliberately NOT reassigned here. It is the window as
+        # The fallback IS put into `old_window`, because without it `evaluate`
+        # has nothing below the declared version and returns "no predecessor" --
+        # a release cut with no body diff at all, which is what happened to
+        # policy/v4.0.0 on 2026-08-31. It is also recorded in `basis_only`, so
+        # the retirement rule does not read it as a version the array declared
+        # and then dropped. Both halves are needed: the first restores the
+        # comparison, the second stops it inventing a retirement. It is the window as
         # DECLARED before this release, and the retirement rule reads it: any
         # version in it and not in `new_window` is reported retired, a major.
         # Writing the fallback into it fabricates a retirement of a version the
         # array never declared -- a release that moves nothing then classifies
-        # major, naming a "retirement" that never happened (observed 2026-08-29
-        # in tuppence's adopter-gate Scenario A). The fallback exists to give
-        # the BODY diff a basis when the declared window is empty, and
-        # `old_for_corpus` below is the only thing that should read it. A real
-        # retirement still surfaces: the adopter gate compares the arrays at
-        # the two pins it is given, which is where a consumer actually feels it.
+        # A real retirement still surfaces where a consumer feels it: the
+        # adopter gate compares the arrays at the two pins it is given.
+        if below_declared:
+            old_window = below_declared
+            basis_only = list(below_declared)
     old_for_corpus = below_declared[-1] if below_declared else version
     old_tree = DISTRIBUTION / "policies" / f"v{old_for_corpus}"
     new_tree = DISTRIBUTION / "policies" / f"v{version}"
@@ -230,6 +236,7 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         new_window=new_window,
         subject_tree_for=lambda v: DISTRIBUTION / "policies" / f"v{v}",
         backport=is_backport,
+        basis_only=basis_only,
     )
     # release_integrity's four rules are about RELEASED versions: rule 1 reads a
     # prior version's frozen tree from its git TAG, and rule 4 refuses a released
