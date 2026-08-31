@@ -5,17 +5,9 @@
   },
   "bump": {
     "declared": "major",
-    "computed": "major"
+    "computed": "no predecessor"
   },
-  "movement": [
-    {
-      "policy": "<supported-version-array>",
-      "verdict": "major",
-      "entries": [],
-      "expressions": [],
-      "detail": "version 3.0.0 retired from the supported window between the before-this-release window and the after -- an array-only change, no policy body diff, still breaks every cluster still pinned to it"
-    }
-  ],
+  "movement": [],
   "counts": {
     "old": 153,
     "new": 152,
@@ -23,7 +15,7 @@
   },
   "generator_version": "0.2.0",
   "corpus_checksum": "sha256:ae12308f64efddb0b99e7f452c372b70a6d42d920954df7f1f7f40dbeff82c0a",
-  "wall_clock": 0.28637754172086716,
+  "wall_clock": 0.4223488330000009,
   "coverage": {
     "cells": 39,
     "pairs": 164,
@@ -55,5 +47,5 @@
   "declared": "4.0.0",
   "subject_dir": "distribution/policies/v4.0.0",
   "old_subject_dir": "distribution/policies/v3.0.0",
-  "computed_bump": "major"
+  "computed_bump": "no predecessor"
 }
