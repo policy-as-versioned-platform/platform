@@ -200,8 +200,17 @@ def gate_one(version: str, cut_versions: list[str], array: list[dict], legal_his
         released_trees = [v for v in legal_history
                           if (DISTRIBUTION / "policies" / f"v{v}").is_dir()]
         below_declared = comparison_window.window_below(released_trees, version)[-1:]
-        if below_declared:
-            old_window = below_declared
+        # `old_window` is deliberately NOT reassigned here. It is the window as
+        # DECLARED before this release, and the retirement rule reads it: any
+        # version in it and not in `new_window` is reported retired, a major.
+        # Writing the fallback into it fabricates a retirement of a version the
+        # array never declared -- a release that moves nothing then classifies
+        # major, naming a "retirement" that never happened (observed 2026-08-29
+        # in tuppence's adopter-gate Scenario A). The fallback exists to give
+        # the BODY diff a basis when the declared window is empty, and
+        # `old_for_corpus` below is the only thing that should read it. A real
+        # retirement still surfaces: the adopter gate compares the arrays at
+        # the two pins it is given, which is where a consumer actually feels it.
     old_for_corpus = below_declared[-1] if below_declared else version
     old_tree = DISTRIBUTION / "policies" / f"v{old_for_corpus}"
     new_tree = DISTRIBUTION / "policies" / f"v{version}"
