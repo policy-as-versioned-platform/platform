@@ -84,6 +84,12 @@ class Rejected(Exception):
     reason is what the controller records on the object."""
 
 
+class CouldNotLook(Exception):
+    """The instrument is missing, not the signature. Raised when the pinned trust material
+    is absent, so no verdict is possible. A could-not-look is never a rejection: grading an
+    absent root as "the tag is bad" reports the observer's own gap as the estate's fault."""
+
+
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=kw.pop("text", True), **kw)
 
@@ -168,22 +174,44 @@ def verify_tag_object(raw: bytes, identity_regexp: str, issuer: str,
     at = tagger_epoch(payload)
     der = signature_der(block)
     if not roots.exists():
-        raise Rejected(f"no pinned Fulcio root at {roots}; refusing to verify against nothing")
+        raise CouldNotLook(f"no pinned Fulcio root at {roots}; refusing to verify against nothing")
+    if not intermediates.exists():
+        # The Fulcio leaf embeds no intermediate, so without this file no chain can be built
+        # to the root at all. That is the instrument missing, not a bad signature.
+        raise CouldNotLook(f"no pinned Fulcio intermediate at {intermediates}; the signing "
+                           f"certificate chains to the root only through it")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         (td / "payload").write_bytes(payload)
         (td / "sig.der").write_bytes(der)
-        cmd = ["openssl", "cms", "-verify", "-inform", "DER", "-in", str(td / "sig.der"),
-               "-content", str(td / "payload"), "-binary", "-purpose", "any",
-               "-CAfile", str(roots), "-attime", str(at), "-out", os.devnull]
-        if intermediates.exists():
-            cmd += ["-certfile", str(intermediates)]
-        p = _run(cmd)
+        # Two explicit steps, not one. `openssl cms -verify -certfile` feeds the chain
+        # builder on OpenSSL 3.6 but NOT on 3.0, which the CI runner ships: the same genuine
+        # tag verified locally and was reported REJECTED on the clock for two recorded runs
+        # ("unable to get local issuer certificate"). The Fulcio leaf embeds no intermediate,
+        # so the chain can only be built from the pinned file. Splitting the check makes it
+        # portable AND more auditable, and it keeps the ROOT as the only trust anchor:
+        # `openssl verify` takes the intermediate as UNTRUSTED chain material, so a leaf that
+        # chains only to the intermediate is still refused. Proved against 3.0.13 and 3.6.3:
+        # a tampered payload exits 4, a chain outside the certificate's validity window exits
+        # 2, and anchoring on the intermediate alone exits 2.
+        leaf_pem = signer_certificate(td / "sig.der")
+        (td / "leaf.pem").write_text(leaf_pem)
+        chain = _run(["openssl", "verify", "-CAfile", str(roots),
+                      "-untrusted", str(intermediates), "-purpose", "any",
+                      "-attime", str(at), str(td / "leaf.pem")])
+        if chain.returncode != 0:
+            why = (chain.stderr.strip() or chain.stdout.strip() or "openssl gave no reason").splitlines()[-1]
+            raise Rejected(f"certificate chain did not verify at tagger time {at}: {why}")
+        # -noverify skips the certificate chain (step one above did it) but still verifies the
+        # signature OVER THE CONTENT. Never add -no_content_verify here: that would drop the
+        # payload binding and accept any content under a valid signature.
+        p = _run(["openssl", "cms", "-verify", "-inform", "DER", "-in", str(td / "sig.der"),
+                  "-content", str(td / "payload"), "-binary", "-noverify", "-out", os.devnull])
         if p.returncode != 0:
             why = (p.stderr.strip().splitlines() or ["openssl gave no reason"])[-1]
-            raise Rejected(f"signature or certificate chain did not verify at tagger time {at}: {why}")
-        claims = certificate_claims(signer_certificate(td / "sig.der"))
+            raise Rejected(f"signature did not verify over the tag payload: {why}")
+        claims = certificate_claims(leaf_pem)
 
     # An unanchored pattern matches a SUBSTRING of any identity, so `.*` and
     # `platform` both "pin" everything. The regexp arrives on the object, so a
@@ -375,6 +403,9 @@ def main(argv: list[str] | None = None) -> int:
             raw = read_tag_object(repo, args.tag)
         facts = verify_tag_object(raw, args.identity_regexp, args.issuer,
                                   args.roots, args.intermediates)
+    except CouldNotLook as e:
+        print(f"COULD-NOT-LOOK: {e}")
+        return 3
     except Rejected as e:
         print(f"REJECTED: {e}")
         return 1

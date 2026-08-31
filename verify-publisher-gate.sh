@@ -562,6 +562,23 @@ part_b         > "$scratch/b.log"         2>&1 & b_pid=$!
 part_c         > "$scratch/c.log"         2>&1 & c_pid=$!
 part_d         > "$scratch/d.log"         2>&1 & d_pid=$!
 
+# A timeout must still leave evidence. Every part writes to its own log and nothing is
+# printed until `wait` returns, so when verify-all.sh's `timeout` sent SIGTERM at 300s the
+# committed capture held two header lines and the red could not be diagnosed from the truth
+# surface at all. On TERM/INT, print whatever each part has written so far and say plainly
+# that the run was cut short -- a truncated observation is still an observation.
+_dump_partial() {
+  echo
+  echo "TIMED OUT or interrupted -- the parts had written this much when the run was cut short:"
+  for part in a-pass a-refused b c d; do
+    echo "---- part $part ----"
+    if [ -s "$scratch/$part.log" ]; then cat "$scratch/$part.log"; else echo "(no output yet)"; fi
+  done
+  echo "FAIL: verify-publisher-gate was cut short before its parts finished; the partial output above is what it saw"
+  exit 1
+}
+trap _dump_partial TERM INT
+
 rc=0; skipped=""
 for spec in "a-pass:$a_pass" "a-refused:$a_refused" "b:$b_pid" "c:$c_pid" "d:$d_pid"; do
   part="${spec%%:*}"
