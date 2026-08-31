@@ -32,7 +32,17 @@ CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
 versions="$(cd "$HERE" && python3 -c 'import sys; sys.path.insert(0, "."); from pathlib import Path
 import importlib.util; s = importlib.util.spec_from_file_location("g", "render-orphan-guard.py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
 print(*m.versions(Path("versions.yaml")))')"
-if ! substrate_ok "$CLUSTER"; then
+n_versions=$(wc -w <<<"$versions")
+if [ "$n_versions" -lt 2 ]; then
+  # Same retirement verify-retirement.sh already names: 2.0.0, 2.0.1 and 3.0.0
+  # retired 2026-08-29 (none could admit a pod), leaving versions.yaml declaring
+  # one version. "Two versions coexist side by side, no shared-webhook collision"
+  # has no second subject to prove against with one -- reconciling the fan-out
+  # would install exactly one ValidatingPolicy, and looping a one-element array
+  # to claim coexistence would be the false pass this project forbids. Do not
+  # invent a second version to keep the beat alive.
+  live_tail_skip "distribution/versions.yaml declares one version (${versions}); coexistence needs two declared versions to show side by side, and retirement left one -- there is no second version for this beat to prove against"
+elif ! substrate_ok "$CLUSTER"; then
   live_tail_skip "$SUBSTRATE_REASON"
 elif ! timeout 10 kubectl --context "$CTX" -n flux-system get resourceset policy-versions >/dev/null 2>&1; then
   live_tail_skip "policy-versions ResourceSet not reconciled on $CTX (fan-out not installed there; see README live bring-up)"
