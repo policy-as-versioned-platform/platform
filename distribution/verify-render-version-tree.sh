@@ -21,8 +21,11 @@ say "1. offline: render-version-tree.py --selfcheck"
 python3 "$HERE/render-version-tree.py" --selfcheck || fail "render-version-tree.py --selfcheck failed"
 
 if ! command -v kyverno >/dev/null 2>&1; then
+  # exit 3, not 0. verify-all.sh grades 0 as PASS, so exiting 0 here reported "the
+  # coexistence proof holds" on any runner without the CLI -- a check that passes on
+  # absence, the exact class the 2026-08-25 incident came from.
   echo "SKIP: kyverno CLI not found -- the coexistence proof needs it (offline, no cluster)"
-  exit 0
+  exit 3
 fi
 
 say "2. offline: two rendered versions' cage-tier copies coexist -- each judges only its own claim"

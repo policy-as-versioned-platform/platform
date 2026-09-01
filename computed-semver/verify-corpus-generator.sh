@@ -37,7 +37,13 @@ if ! command -v kyverno >/dev/null; then
 fi
 
 echo "== 3. a sample generated entry is a real Pod kyverno can evaluate =="
-sample=$(ls generated-corpus/spine/*.yaml | head -1)
+# A glob, not `ls | head -1`: under `set -o pipefail` head closes the pipe on the first
+# line, ls dies of SIGPIPE, and the script exited 2 with "ls: write error: Broken pipe" on
+# the CI runner for two recorded runs while the generator itself was healthy. The shell
+# sorts a glob, so the sample is the same file the pipeline picked.
+set -- generated-corpus/spine/*.yaml
+sample="$1"
+[ -e "$sample" ] || { echo "FAIL: the generator produced no spine entries to sample"; exit 1; }
 # ../distribution, not distribution -- computed-semver/ and distribution/ are
 # siblings under the repo root, not parent/child. A wrong path here still
 # exits 0 with "Applying 0 policy rule(s)" and no "Error:" line, which is why
