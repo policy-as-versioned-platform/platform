@@ -178,7 +178,7 @@ PY
 )"
 [ -n "$bound" ] && [ "$bound" -gt 0 ] 2>/dev/null \
   || fail "deployment.yaml declares no positive GITSIGN_TAGGER_SKEW_SECONDS; the tolerance must live in the verifier's own config"
-[ "$bound" -le 600 ] || fail "GITSIGN_TAGGER_SKEW_SECONDS=$bound is not smaller than a Fulcio certificate's own ten-minute life; that is no bound"
+[ "$bound" -lt 600 ] || fail "GITSIGN_TAGGER_SKEW_SECONDS=$bound is not smaller than a Fulcio certificate's own ten-minute life; that is no bound"
 ok "deployment.yaml declares GITSIGN_TAGGER_SKEW_SECONDS=$bound"
 
 # the fixture must actually exercise the race, or this section proves nothing

@@ -129,7 +129,7 @@
         "uuid": "b0c2f0d0-0000-4000-8000-6964656e7411",
         "type": "software",
         "title": "gitsign-verifying source controller",
-        "description": "Identity-pinned verification of the gitsign tag at the Flux source boundary (ticket 41, ADR-0023 D3). Flux 2.9 cannot verify an x509/CMS tag signature, so this reads the tag object itself, checks the CMS signature over the tag's own payload, chains the signer certificate to the pinned Fulcio root at the tagger timestamp inside the signed payload, and matches the certificate's URI SAN and Fulcio issuer extension against the pins the publisher's release.yml already carries. It signs nothing. TIME-BOXED until fluxcd/source-controller#1068 lands.",
+        "description": "Identity-pinned verification of the gitsign tag at the Flux source boundary (ticket 41, ADR-0023 D3). Flux 2.9 cannot verify an x509/CMS tag signature, so this reads the tag object itself, checks the CMS signature over the tag's own payload, chains the signer certificate to the pinned Fulcio root at the later of the tagger timestamp inside the signed payload and the certificate's own notBefore, within a declared bound (ADR-0027), and matches the certificate's URI SAN and Fulcio issuer extension against the pins the publisher's release.yml already carries. It signs nothing. TIME-BOXED until fluxcd/source-controller#1068 lands.",
         "control-implementations": [
           {
             "uuid": "b0c2f0d0-0000-4000-8000-6964656e7412",
