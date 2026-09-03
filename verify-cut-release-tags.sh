@@ -193,7 +193,12 @@ if "$scripts/cut-release-push.sh" tags.json origin 2>push.err; then
 fi
 git checkout -q main
 grep -q "detached HEAD" push.err || fail "wrong refusal for a detached HEAD: $(cat push.err)"
-echo "ok: a detached HEAD is refused, nothing pushed"
+# "nothing pushed" is read off the remote, not off the message: v11.0.0 is
+# still only local, and the branch is where the rejected push left it.
+remote_tags | grep -qx "v11.0.0" && fail "v11.0.0 landed from a detached HEAD: the refusal came after the push, not before it"
+[ "$(remote_main)" = "$head" ] ||
+  fail "remote refs/heads/main moved to $(remote_main) from a detached HEAD: the refusal came after the push, not before it"
+echo "ok: a detached HEAD is refused; the remote holds neither v11.0.0 nor a moved refs/heads/main (still $head)"
 
 echo
 echo "PASS: single-tag legacy form works, multi-tag dispatch cuts every tag"
