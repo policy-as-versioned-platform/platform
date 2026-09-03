@@ -20,10 +20,17 @@ THE FOUR CHECKS, all of which must pass:
      own payload (the tag object with the signature block removed -- exactly
      what `git verify-tag` signs);
   2. the signer certificate chains to the pinned Fulcio root, evaluated at the
-     tag's OWN tagger timestamp, which is inside the signed payload and so
-     cannot be moved without breaking check 1. A Fulcio cert lives ten
-     minutes, so "valid now" is never the question; "valid when this tag says
-     it was made" is;
+     LATER of the tag's own tagger timestamp and the certificate's notBefore,
+     and only while notBefore is at most GITSIGN_TAGGER_SKEW_SECONDS after the
+     tagger time (ticket 73, ADR-0027). The tagger timestamp is inside the
+     signed payload and so cannot be moved without breaking check 1; but git
+     writes it BEFORE gitsign asks Fulcio for the certificate, so notBefore is
+     one second later on about half of correctly signed tags, and chaining at
+     the raw tagger time rejected those by construction. A Fulcio cert lives
+     ten minutes, so "valid now" is never the question; "valid when this tag
+     says it was made, or as soon after as its certificate existed" is. The
+     bound is declared in deployment.yaml with its reason; the default with no
+     declaration is 0, the strict form;
   3. the certificate's URI SAN matches the pinned identity regexp;
   4. the certificate's Fulcio issuer extension equals the pinned issuer.
 
@@ -36,16 +43,22 @@ equals what release.yml carries.
 ponytail: the ceiling is the transparency log. This does NOT verify the Rekor
 signed entry timestamp or an inclusion proof, so a signer who obtained a
 Fulcio certificate for the pinned identity and never logged it would pass here
-and fail `gitsign verify-tag`. Closing it means either shelling out to the
+and fail `gitsign verify-tag`. The Rekor integrated time is also the instant
+check 2 would ideally chain at (it is the log's clock at the moment the
+signature was uploaded, seconds after signing); reading it means verifying the
+signed entry timestamp against a pinned Rekor key, which is the transparency
+check itself, so it belongs to the identity lane (ticket 90) and not to the
+bounded tolerance above. Closing it means either shelling out to the
 pinned gitsign binary (which needs a built image, and this controller is
 time-boxed to die before it earns one) or Flux #1068 landing and this whole
 directory being deleted. verify-source-verification.sh runs `gitsign
-verify-tag` against the same fixture as a differential whenever gitsign is on
+verify-tag` against the same fixtures as a differential whenever gitsign is on
 PATH, which is how the gap gets watched rather than merely written down.
 """
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
 import re
@@ -90,6 +103,24 @@ class CouldNotLook(Exception):
     absent root as "the tag is bad" reports the observer's own gap as the estate's fault."""
 
 
+# How far the certificate's notBefore may fall AFTER the tagger time and still chain (check 2,
+# ADR-0027). Declared with its reason in deployment.yaml; absent, the strict form: 0.
+ENV_TAGGER_SKEW = "GITSIGN_TAGGER_SKEW_SECONDS"
+
+
+def declared_tagger_skew() -> int:
+    raw = os.environ.get(ENV_TAGGER_SKEW, "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        raise CouldNotLook(f"{ENV_TAGGER_SKEW}={raw!r} is not a whole number of seconds")
+    if value < 0:
+        raise CouldNotLook(f"{ENV_TAGGER_SKEW}={raw!r} is negative; a tolerance cannot be")
+    return value
+
+
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=kw.pop("text", True), **kw)
 
@@ -106,8 +137,8 @@ def split_tag_object(raw: bytes) -> tuple[bytes, bytes]:
 
 def tagger_epoch(payload: bytes) -> int:
     """The tagger line's unix timestamp, read out of the SIGNED payload. This
-    is the instant the chain is evaluated at (check 2). It is inside the
-    signature, so moving it invalidates check 1."""
+    is the floor of the instant the chain is evaluated at (check 2). It is
+    inside the signature, so moving it invalidates check 1."""
     m = re.search(rb"^tagger .*? (\d{9,11}) [+-]\d{4}$", payload, re.M)
     if not m:
         raise Rejected("tag object has no tagger timestamp to evaluate the certificate at")
@@ -131,6 +162,33 @@ def signer_certificate(der: Path) -> str:
     start = p.stdout.index("-----BEGIN CERTIFICATE-----")
     end = p.stdout.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----\n")
     return p.stdout[start:end]
+
+
+def certificate_not_before(cert_pem: str) -> int:
+    """The certificate's notBefore as a unix epoch: Fulcio's clock at the instant it issued
+    the certificate, which is after git wrote the tagger line."""
+    p = _run(["openssl", "x509", "-noout", "-startdate"], input=cert_pem)
+    if p.returncode != 0 or "=" not in p.stdout:
+        raise Rejected("signer certificate has no readable notBefore")
+    stamp = p.stdout.strip().split("=", 1)[1]
+    try:
+        return calendar.timegm(time.strptime(stamp, "%b %d %H:%M:%S %Y GMT"))
+    except ValueError:
+        raise Rejected(f"signer certificate notBefore {stamp!r} is not a date this verifier can read")
+
+
+def trust_instant(tagger: int, not_before: int, skew: int) -> int:
+    """Check 2's instant: the later of the tagger time and the certificate's notBefore, allowed
+    only while notBefore trails the tagger time by at most `skew` seconds. Pure, so the gate can
+    prove the arithmetic without a certificate."""
+    gap = not_before - tagger
+    if gap <= 0:
+        return tagger
+    if gap > skew:
+        raise Rejected(f"certificate notBefore is {gap}s after the tagger time {tagger}, over the "
+                       f"declared tolerance of {skew}s ({ENV_TAGGER_SKEW}); the tag claims to "
+                       f"predate the certificate that signs it by more than the bound allows")
+    return not_before
 
 
 def certificate_claims(cert_pem: str) -> dict:
@@ -167,12 +225,15 @@ def certificate_claims(cert_pem: str) -> dict:
 
 
 def verify_tag_object(raw: bytes, identity_regexp: str, issuer: str,
-                      roots: Path = ROOTS, intermediates: Path = INTERMEDIATES) -> dict:
+                      roots: Path = ROOTS, intermediates: Path = INTERMEDIATES,
+                      tagger_skew: int | None = None) -> dict:
     """The whole check. Returns the observed facts, or raises Rejected with
-    the one reason it failed on."""
+    the one reason it failed on. `tagger_skew` is the check-2 tolerance in
+    seconds; None reads the declared GITSIGN_TAGGER_SKEW_SECONDS."""
     payload, block = split_tag_object(raw)
-    at = tagger_epoch(payload)
+    tagger = tagger_epoch(payload)
     der = signature_der(block)
+    skew = declared_tagger_skew() if tagger_skew is None else tagger_skew
     if not roots.exists():
         raise CouldNotLook(f"no pinned Fulcio root at {roots}; refusing to verify against nothing")
     if not intermediates.exists():
@@ -197,12 +258,18 @@ def verify_tag_object(raw: bytes, identity_regexp: str, issuer: str,
         # 2, and anchoring on the intermediate alone exits 2.
         leaf_pem = signer_certificate(td / "sig.der")
         (td / "leaf.pem").write_text(leaf_pem)
+        # The instant: the later of the tagger time and the certificate's notBefore, within the
+        # declared bound (ADR-0027). Read from the leaf BEFORE the chain is built, so a gap over
+        # the bound is refused with its own reason rather than openssl's "not yet valid".
+        not_before = certificate_not_before(leaf_pem)
+        at = trust_instant(tagger, not_before, skew)
         chain = _run(["openssl", "verify", "-CAfile", str(roots),
                       "-untrusted", str(intermediates), "-purpose", "any",
                       "-attime", str(at), str(td / "leaf.pem")])
         if chain.returncode != 0:
             why = (chain.stderr.strip() or chain.stdout.strip() or "openssl gave no reason").splitlines()[-1]
-            raise Rejected(f"certificate chain did not verify at tagger time {at}: {why}")
+            raise Rejected(f"certificate chain did not verify at {at} (tagger time {tagger}, "
+                           f"certificate notBefore {not_before}): {why}")
         # -noverify skips the certificate chain (step one above did it) but still verifies the
         # signature OVER THE CONTENT. Never add -no_content_verify here: that would drop the
         # payload binding and accept any content under a valid signature.
@@ -225,7 +292,20 @@ def verify_tag_object(raw: bytes, identity_regexp: str, issuer: str,
                        f"regexp {identity_regexp!r}")
     if claims["issuer"] != issuer:
         raise Rejected(f"signer issuer {claims['issuer']!r} is not the pinned issuer {issuer!r}")
-    return {"identity": claims["identity"], "issuer": claims["issuer"], "signed_at": at}
+    # signed_at stays the tagger time: what the tag itself says. chained_at is the instant check
+    # 2 was evaluated at, and cert_not_before is why it differs when it does.
+    return {"identity": claims["identity"], "issuer": claims["issuer"], "signed_at": tagger,
+            "chained_at": at, "cert_not_before": not_before}
+
+
+def instants(facts: dict) -> str:
+    """The instant for a verdict line: the tagger time, and the certificate's later issue when
+    the two differ, so a reader of the annotation sees both."""
+    gap = facts["chained_at"] - facts["signed_at"]
+    if gap <= 0:
+        return "%d" % facts["signed_at"]
+    return "%d (certificate issued %ds later; chained at %d)" % (facts["signed_at"], gap,
+                                                                    facts["chained_at"])
 
 
 def read_tag_object(repo: Path, tag: str) -> bytes:
@@ -296,9 +376,13 @@ def reconcile_one(k8s: K8s, obj: dict, cache_root: Path) -> tuple[bool | None, s
         repo = fetch_tag(spec["url"], tag, cache_root / f"{ns}_{name}.git")
         facts = verify_tag_object(read_tag_object(repo, tag),
                                   ann[ANN_IDENTITY], ann[ANN_ISSUER])
-        ok, reason = True, "%s signed by %s at %d" % (tag, facts["identity"], facts["signed_at"])
+        ok, reason = True, "%s signed by %s at %s" % (tag, facts["identity"], instants(facts))
     except Rejected as e:
         ok, reason = False, f"{tag}: {e}"
+    except CouldNotLook as e:
+        # The instrument is mis-declared (a pin file missing, a tolerance that is not a number).
+        # That is this controller's own gap, never a verdict on the tag.
+        ok, reason = None, f"could not look at {tag}: {e}"
     except subprocess.CalledProcessError as e:
         # Could not look: an unreachable remote, a DNS failure, a deleted ref. This is NOT a
         # verdict, and it must not read as one -- returning True here printed
@@ -376,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--issuer", required=True)
         p.add_argument("--roots", type=Path, default=ROOTS)
         p.add_argument("--intermediates", type=Path, default=INTERMEDIATES)
+        p.add_argument("--tagger-skew-seconds", type=int, default=None,
+                       help=f"check-2 tolerance; default reads {ENV_TAGGER_SKEW}, else 0")
 
     v = sub.add_parser("verify-object", help="verify a `git cat-file tag` dump on disk")
     v.add_argument("tag_object", type=Path)
@@ -402,14 +488,15 @@ def main(argv: list[str] | None = None) -> int:
             repo = args.repo or fetch_tag(args.url, args.tag, args.cache / "repo.git")
             raw = read_tag_object(repo, args.tag)
         facts = verify_tag_object(raw, args.identity_regexp, args.issuer,
-                                  args.roots, args.intermediates)
+                                  args.roots, args.intermediates, args.tagger_skew_seconds)
     except CouldNotLook as e:
         print(f"COULD-NOT-LOOK: {e}")
         return 3
     except Rejected as e:
         print(f"REJECTED: {e}")
         return 1
-    print("VERIFIED: signed by {identity} (issuer {issuer}) at {signed_at}".format(**facts))
+    print("VERIFIED: signed by {identity} (issuer {issuer}) at {when}".format(when=instants(facts),
+                                                                             **facts))
     return 0
 
 

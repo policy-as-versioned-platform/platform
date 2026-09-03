@@ -8,6 +8,9 @@
 #   3. the fixture is real material -- byte-equal to `git cat-file tag` of this
 #      repo's own signed tag, whenever the tag is present locally;
 #   4. it ACCEPTS that real signed tag;
+#   4b. it ACCEPTS a real tag whose certificate was issued AFTER its tagger
+#      time, within the bound deployment.yaml declares, and REJECTS the same
+#      tag past that bound naming the knob (ticket 73, ADR-0027);
 #   5. it REJECTS a tampered payload, a tampered signature, a re-signed
 #      forgery under the right identity, a wrong identity and a wrong issuer;
 #   6. the controller's verdict reaches the objects it gates, and the package
@@ -153,6 +156,99 @@ out="$(verify "$FIXTURE")" || fail "the real tag was rejected: $out"
 grep -q '^VERIFIED: ' <<<"$out" || fail "unexpected output: $out"
 echo "  $out"
 
+say "4b. the trust instant: a certificate issued AFTER the tagger time, within the declared bound"
+# Ticket 73, ADR-0027. git writes the tag object (and its tagger line) BEFORE gitsign asks Fulcio
+# for the certificate, so the certificate's notBefore lands one second after the tagger time on
+# about half of correctly signed tags. Chaining at the raw tagger time rejected driftwood v1.1.0
+# and ludlow v1.1.0 on the first real lane samples (2026-09-01). The instant is now the later of
+# the tagger time and notBefore, allowed only while the gap is within a bound that deployment.yaml
+# declares -- read from there, never a literal here -- so the pod and this proof agree on one
+# number. The fixture is a REAL racy tag from another party (driftwood's v1.1.0, byte-equal to
+# `git cat-file tag v1.1.0` in policy-as-versioned-driftwood/driftwood), verified under pins of
+# the same shape release.yml pins for platform: an adopter's own cut-release.yml identity.
+RACY="$PKG/testdata/driftwood-v1.1.0.tag"
+[ -f "$RACY" ] || fail "missing the racy fixture $RACY"
+bound="$(python3 - "$PKG/deployment.yaml" <<'PY'
+import sys, yaml
+dep = yaml.safe_load(open(sys.argv[1]))
+env = {e["name"]: str(e.get("value", "")) for c in dep["spec"]["template"]["spec"]["containers"]
+       for e in (c.get("env") or [])}
+print(env.get("GITSIGN_TAGGER_SKEW_SECONDS", ""))
+PY
+)"
+[ -n "$bound" ] && [ "$bound" -gt 0 ] 2>/dev/null \
+  || fail "deployment.yaml declares no positive GITSIGN_TAGGER_SKEW_SECONDS; the tolerance must live in the verifier's own config"
+[ "$bound" -le 600 ] || fail "GITSIGN_TAGGER_SKEW_SECONDS=$bound is not smaller than a Fulcio certificate's own ten-minute life; that is no bound"
+ok "deployment.yaml declares GITSIGN_TAGGER_SKEW_SECONDS=$bound"
+
+# the fixture must actually exercise the race, or this section proves nothing
+gap="$(python3 - "$RACY" <<'PY'
+import sys, re, base64, calendar, time, subprocess, pathlib, tempfile
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+i = raw.index(b"-----BEGIN SIGNED MESSAGE-----")
+tagger = int(re.search(rb"^tagger .*? (\d{9,11}) [+-]\d{4}$", raw[:i], re.M).group(1))
+der = base64.b64decode(b"".join(l for l in raw[i:].splitlines() if not l.startswith(b"-----")))
+with tempfile.NamedTemporaryFile(suffix=".der", delete=False) as fh:
+    fh.write(der); path = fh.name
+certs = subprocess.run(["openssl", "pkcs7", "-inform", "DER", "-in", path, "-print_certs"],
+                       capture_output=True, text=True, check=True).stdout
+nb = subprocess.run(["openssl", "x509", "-noout", "-startdate"], input=certs,
+                    capture_output=True, text=True, check=True).stdout.strip().split("=", 1)[1]
+print(calendar.timegm(time.strptime(nb, "%b %d %H:%M:%S %Y GMT")) - tagger)
+PY
+)"
+[ "$gap" -gt 0 ] || fail "the racy fixture's certificate notBefore is not after its tagger time (gap ${gap}s); it does not exercise the race"
+ok "fixture: certificate notBefore is ${gap}s after the tagger time, the race the verifier must survive"
+
+re_adopter="${re_release//platform/driftwood}"
+[ "$re_adopter" != "$re_release" ] || fail "could not derive an adopter-shaped identity pin from release.yml's"
+out="$(GITSIGN_TAGGER_SKEW_SECONDS="$bound" verify "$RACY" "$re_adopter" "$iss_release")" \
+  || fail "the racy tag was rejected under the declared bound of ${bound}s: $out"
+grep -q '^VERIFIED: ' <<<"$out" || fail "unexpected output: $out"
+grep -q 'certificate issued' <<<"$out" || fail "the verdict does not report the second instant: $out"
+echo "  $out"
+ok "accepted at the later instant, both instants reported"
+
+out="$(GITSIGN_TAGGER_SKEW_SECONDS=0 verify "$RACY" "$re_adopter" "$iss_release")" \
+  && fail "with the bound at 0 the racy tag was ACCEPTED; the bound is not applied: $out"
+grep -q '^REJECTED: ' <<<"$out" || fail "bound 0 failed for the wrong reason: $out"
+grep -q 'GITSIGN_TAGGER_SKEW_SECONDS' <<<"$out" \
+  || fail "the rejection over the bound does not name the knob that sets it: $out"
+echo "  ok   rejected when the gap exceeds the bound, naming the gap and the knob"
+echo "         ${out#REJECTED: }"
+
+# the tolerance moves the instant, never the payload binding: a tampered racy tag stays rejected
+python3 - "$RACY" "$tmp/tampered-racy.tag" <<'PY'
+import sys, pathlib
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+i = raw.index(b"-----BEGIN SIGNED MESSAGE-----")
+payload = raw[:i].replace(b"MODERATE", b"moderate", 1)
+assert payload != raw[:i], "fixture text changed; pick another edit"
+pathlib.Path(sys.argv[2]).write_bytes(payload + raw[i:])
+PY
+out="$(GITSIGN_TAGGER_SKEW_SECONDS="$bound" verify "$tmp/tampered-racy.tag" "$re_adopter" "$iss_release")" \
+  && fail "a tampered racy payload was ACCEPTED under the bound: $out"
+grep -q '^REJECTED: ' <<<"$out" || fail "tampered racy payload failed for the wrong reason: $out"
+echo "  ok   rejected a tampered racy payload under the same bound"
+
+# and gitsign's own verdict on the same bytes, where it is installed: the tolerance must not
+# diverge from the reference verifier. gitsign resolves the tag in the current directory, so
+# the fixture is written into a throwaway repo as a tag object first.
+if command -v gitsign >/dev/null 2>&1; then
+  git init -q "$tmp/racy.git"
+  racy_sha="$(git -C "$tmp/racy.git" hash-object -t tag -w --stdin < "$RACY")"
+  git -C "$tmp/racy.git" update-ref refs/tags/v1.1.0 "$racy_sha"
+  if ( cd "$tmp/racy.git" && GITSIGN_REKOR_MODE=offline gitsign verify-tag v1.1.0 \
+       --certificate-identity-regexp="$re_adopter" \
+       --certificate-oidc-issuer="$iss_release" ) >"$tmp/gitsign-racy.out" 2>&1; then
+    ok "gitsign verify-tag agrees: the racy tag is good under the same pins"
+  else
+    fail "gitsign REJECTS the racy tag this verifier ACCEPTS: $(tail -1 "$tmp/gitsign-racy.out")"
+  fi
+else
+  echo "  note gitsign is not on PATH; the racy-tag differential was not observed on this run."
+fi
+
 say "5. it REJECTS everything that is not that"
 reject() { # <label> <file> [regexp] [issuer]
   local label="$1"; shift
@@ -209,7 +305,17 @@ block = "-----BEGIN SIGNED MESSAGE-----\n" + "\n".join(textwrap.wrap(der, 64)) +
         "\n-----END SIGNED MESSAGE-----\n"
 pathlib.Path(sys.argv[3]).write_bytes(payload + block.encode())
 PY
-  reject "a self-signed forgery wearing the right identity" "$tmp/forged.tag"
+  # The forgery's certificate was minted just now, so its notBefore is far past the fixture's
+  # tagger time and the check-2 bound alone would refuse it before the chain is ever built. That
+  # is a correct refusal, but not the one this case exists to prove: waive the bound here so the
+  # rejection is the chain's -- the pinned root, and nothing else, stops a certificate that
+  # wears the right identity.
+  out="$(GITSIGN_TAGGER_SKEW_SECONDS=1000000000 verify "$tmp/forged.tag")" \
+    && fail "a self-signed forgery wearing the right identity was ACCEPTED: $out"
+  grep -q '^REJECTED: certificate chain did not verify' <<<"$out" \
+    || fail "the forgery was refused by something other than the pinned root chain: $out"
+  echo "  ok   rejected a self-signed forgery wearing the right identity, by the chain not the bound"
+  echo "         ${out#REJECTED: }"
 else
   fail "could not build the forgery case; openssl req refused (-addext unsupported?)"
 fi
@@ -228,13 +334,19 @@ say "6. differential against gitsign itself"
 # on the same tag -- that is ticket 16's falsifier (b), "cluster-side
 # verification passing a tag that identity-pinned CI rejects", watched rather
 # than written down. Where it is not installed, say so and do not pretend.
-if command -v gitsign >/dev/null 2>&1 && git -C "$HERE" cat-file -e 'policy/v3.0.0^{}' 2>/dev/null; then
-  # gitsign has no `-C`: it resolves the tag in the CURRENT directory, and the
-  # gate runs every verify script from the hub root, where no policy/v3.0.0
-  # exists. Without this subshell the differential read "reference not found"
-  # as gitsign REJECTING a tag this verifier accepts -- falsifier (b) firing on
-  # a could-not-look, which is the one thing a falsifier must never do.
-  if ( cd "$HERE" && GITSIGN_REKOR_MODE=offline gitsign verify-tag policy/v3.0.0 \
+if command -v gitsign >/dev/null 2>&1; then
+  # gitsign has no `-C`: it resolves the tag in the CURRENT directory, and the gate runs every
+  # verify script from the hub root, where no policy/v3.0.0 exists. It also cannot resolve a
+  # ref from inside a git WORKTREE (`reference not found`, observed 2026-09-03 on a ticket
+  # worktree of this repo), which read as gitsign REJECTING a tag this verifier accepts --
+  # falsifier (b) firing on a could-not-look, the one thing a falsifier must never do. So the
+  # fixture bytes are written into a throwaway repo as a tag object and gitsign is run there:
+  # the same bytes section 4 proved, in a shape gitsign can always read, whatever this checkout
+  # is and whether or not the tag was fetched into it.
+  git init -q "$tmp/fixture.git"
+  fx_sha="$(git -C "$tmp/fixture.git" hash-object -t tag -w --stdin < "$FIXTURE")"
+  git -C "$tmp/fixture.git" update-ref refs/tags/policy/v3.0.0 "$fx_sha"
+  if ( cd "$tmp/fixture.git" && GITSIGN_REKOR_MODE=offline gitsign verify-tag policy/v3.0.0 \
        --certificate-identity-regexp="$re_release" \
        --certificate-oidc-issuer="$iss_release" ) >"$tmp/gitsign.out" 2>&1; then
     ok "gitsign verify-tag agrees: policy/v3.0.0 is good under the same pins"
@@ -242,8 +354,7 @@ if command -v gitsign >/dev/null 2>&1 && git -C "$HERE" cat-file -e 'policy/v3.0
     fail "gitsign REJECTS policy/v3.0.0 under pins this verifier ACCEPTS (falsifier b): $(tail -1 "$tmp/gitsign.out")"
   fi
 else
-  echo "  note gitsign is not on PATH (or the tag is not in this checkout);"
-  echo "       the transparency-log differential was not observed on this run."
+  echo "  note gitsign is not on PATH; the transparency-log differential was not observed on this run."
 fi
 
 say "7. the controller's verdict reaches the objects it is supposed to gate"
@@ -252,11 +363,34 @@ say "7. the controller's verdict reaches the objects it is supposed to gate"
 # through reconcile_one, so the annotation keys, the gate path and the
 # suspend/release branches are observed rather than hoped for. The tag object
 # is the real fixture, in a local bare repo, so nothing here needs a network.
-PYTHONDONTWRITEBYTECODE=1 python3 - "$PKG" "$FIXTURE" "$tmp" "$re_release" "$iss_release" <<'PY'
-import sys, subprocess, pathlib, importlib.util
-pkg, fixture, tmp, regexp, issuer = sys.argv[1:6]
+PYTHONDONTWRITEBYTECODE=1 python3 - "$PKG" "$FIXTURE" "$tmp" "$re_release" "$iss_release" \
+    "$RACY" "$re_adopter" "$bound" <<'PY'
+import os, sys, subprocess, pathlib, importlib.util
+pkg, fixture, tmp, regexp, issuer, racy, re_adopter, bound = sys.argv[1:9]
 spec = importlib.util.spec_from_file_location("vg", pathlib.Path(pkg) / "verify_gitsign.py")
 vg = importlib.util.module_from_spec(spec); spec.loader.exec_module(vg)
+
+# the trust-instant arithmetic on its own (ADR-0027): the later instant within the bound, the
+# tagger time when the certificate is not later, a refusal that names the knob past the bound
+assert vg.trust_instant(100, 100, 0) == 100 and vg.trust_instant(100, 90, 0) == 100
+assert vg.trust_instant(100, 101, 1) == 101 and vg.trust_instant(100, 160, 60) == 160
+for tagger, nb, skew in ((100, 101, 0), (100, 161, 60)):
+    try:
+        vg.trust_instant(tagger, nb, skew)
+    except vg.Rejected as e:
+        assert vg.ENV_TAGGER_SKEW in str(e) and f"{nb - tagger}s" in str(e), e
+    else:
+        raise AssertionError(f"gap {nb - tagger} over bound {skew} was not refused")
+os.environ[vg.ENV_TAGGER_SKEW] = "x"
+try:
+    vg.declared_tagger_skew()
+except vg.CouldNotLook:
+    pass
+else:
+    raise AssertionError("a tolerance that is not a number was read as one")
+os.environ[vg.ENV_TAGGER_SKEW] = bound
+assert vg.declared_tagger_skew() == int(bound)
+print(f"  ok   trust_instant: later-of within the bound, refused past it, a bad declaration is could-not-look")
 
 repo = pathlib.Path(tmp) / "tagrepo.git"
 subprocess.run(["git", "init", "--bare", "-q", str(repo)], check=True)
@@ -284,6 +418,40 @@ assert gr[vg.ANN_VERIFIED] == "true", gr
 assert vg.KUSTOMIZATIONS % ("flux-system", "platform-policy") not in k.patches, \
     "a VERIFIED source touched the gate; it should have left it alone"
 print("  ok   verified source: annotates gitsign-verified=true, leaves the gate alone")
+
+# the racy tag through the controller, under the declared bound: verified, and the reason the
+# object carries names both instants so a reader of the annotation sees why they differ
+racy_sha = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "tag", "-w", "--stdin"],
+                          stdin=open(racy, "rb"), capture_output=True, text=True, check=True).stdout.strip()
+subprocess.run(["git", "-C", str(repo), "update-ref", "refs/tags/v1.1.0", racy_sha], check=True)
+def adopter(name, tag="v1.1.0"):
+    o = source(name, tag); o["metadata"]["annotations"][vg.ANN_IDENTITY] = re_adopter; return o
+k = StubK8s()
+ok, why = vg.reconcile_one(k, adopter("racy"), pathlib.Path(tmp) / "cache")
+assert ok is True, why
+assert "certificate issued 1s later" in why, why
+assert k.patches[vg.GITREPO % ("flux-system", "racy")][0]["metadata"]["annotations"][vg.ANN_VERIFIED] == "true"
+print("  ok   racy source: verified under the declared bound, reason carries both instants")
+
+# and with no bound declared, the strict form: the same tag is REJECTED and the gate suspended,
+# with the reason naming the knob -- the pre-ADR-0027 behaviour, kept as the default on purpose
+del os.environ[vg.ENV_TAGGER_SKEW]
+k = StubK8s()
+ok, why = vg.reconcile_one(k, adopter("racy-strict"), pathlib.Path(tmp) / "cache")
+assert ok is False and vg.ENV_TAGGER_SKEW in why, (ok, why)
+assert k.patches[vg.KUSTOMIZATIONS % ("flux-system", "platform-policy")][0]["spec"]["suspend"] is True
+os.environ[vg.ENV_TAGGER_SKEW] = bound
+print("  ok   racy source with no bound declared: rejected, gate suspended, reason names the knob")
+
+# a tolerance that is not a number is the instrument mis-declared: could-not-look, never a verdict
+os.environ[vg.ENV_TAGGER_SKEW] = "sixty"
+k = StubK8s()
+ok, why = vg.reconcile_one(k, adopter("racy-misdeclared"), pathlib.Path(tmp) / "cache")
+assert ok is None, (ok, why)
+assert k.patches[vg.GITREPO % ("flux-system", "racy-misdeclared")][0]["metadata"]["annotations"][vg.ANN_VERIFIED] == "unknown"
+assert vg.KUSTOMIZATIONS % ("flux-system", "platform-policy") not in k.patches
+os.environ[vg.ENV_TAGGER_SKEW] = bound
+print("  ok   a mis-declared tolerance: records unknown and moves no gate")
 
 # now the same source with the tag object tampered under it
 raw = pathlib.Path(fixture).read_bytes()
@@ -492,6 +660,7 @@ else
   live_tail_skip "$SUBSTRATE_REASON"
 fi
 
-pass_line "the gitsign verifier accepts this repo's own signed tag under release.yml's pins and \
-rejects a tampered payload, a tampered signature, a self-signed forgery, a wrong identity and a \
-wrong issuer; the controller's time-box names fluxcd/source-controller#1068"
+pass_line "the gitsign verifier accepts this repo's own signed tag under release.yml's pins, and a \
+real racy tag whose certificate postdates its tagger time within the declared ${bound}s bound; it \
+rejects that tag past the bound, a tampered payload, a tampered signature, a self-signed forgery, a \
+wrong identity and a wrong issuer; the controller's time-box names fluxcd/source-controller#1068"
