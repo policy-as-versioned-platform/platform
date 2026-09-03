@@ -41,15 +41,27 @@ reads the tag object, and runs four checks, all of which must pass:
 1. the CMS signature block verifies over the tag's own payload — the same
    bytes `git verify-tag` signs;
 2. the signer certificate chains to the pinned Fulcio root
-   (`fulcio-roots.pem`, `fulcio-intermediates.pem`), evaluated **at the tagger
-   timestamp inside the signed payload**. A Fulcio certificate lives ten
-   minutes, so "valid now" is never the question; and the timestamp cannot be
-   moved without breaking check 1;
+   (`fulcio-roots.pem`, `fulcio-intermediates.pem`), evaluated **at the later
+   of the tagger timestamp inside the signed payload and the certificate's
+   `notBefore`**, and only while `notBefore` trails the tagger time by at most
+   `GITSIGN_TAGGER_SKEW_SECONDS` (declared in `deployment.yaml`, 60, with its
+   reason; ticket 73, ADR-0027). A Fulcio certificate lives ten minutes, so
+   "valid now" is never the question; the timestamp cannot be moved without
+   breaking check 1; and git writes that timestamp *before* gitsign asks Fulcio
+   for the certificate, so `notBefore` is one second later on about half of
+   correctly signed tags. Chaining at the raw tagger time rejected driftwood
+   and ludlow v1.1.0 on the first real lane samples. Past the bound the tag is
+   rejected with a reason naming the gap and the knob; with no declaration the
+   bound is 0, the strict form;
 3. the certificate's URI SAN matches the pinned identity regexp;
 4. the certificate's Fulcio issuer extension equals the pinned issuer.
 
 It then writes back what it saw — `gitsign-verified`, `-verify-reason`,
-`-verified-at` — and suspends or releases the gated Kustomizations. It
+`-verified-at` — and suspends or releases the gated Kustomizations. The
+reason of a verified source carries the tagger time and, when the certificate
+was issued later, that gap and the instant the chain was evaluated at:
+`v1.1.0 signed by … at 1787677714 (certificate issued 1s later; chained at
+1787677715)`. It
 releases only a suspension it took itself, marked
 `policy-as-versioned.dev/gitsign-suspended`, so a human's own suspend is never
 overruled.
@@ -75,7 +87,20 @@ python3 verify_gitsign.py verify-tag --url https://github.com/policy-as-versione
   --tag policy/v3.0.0 --identity-regexp '…' --issuer https://token.actions.githubusercontent.com
 ```
 
-`../../verify-source-verification.sh` is the graded form of the same thing.
+By hand the bound is whatever `GITSIGN_TAGGER_SKEW_SECONDS` is in your
+environment, or `--tagger-skew-seconds`; unset, it is 0 and a racy tag is
+rejected. `testdata/driftwood-v1.1.0.tag` is such a tag: a real signed tag from
+another party whose certificate was issued one second after its tagger time,
+byte-equal to `git cat-file tag v1.1.0` in
+`policy-as-versioned-driftwood/driftwood` (tag object
+`1a88c343345616a733b028bdad4dbc271e1a3b4f`). It is not this repo's own tag, so
+`../../distribution/verify/extract-tag-fixture.sh` does not refresh it; a
+re-derivation is that one `git cat-file` in a driftwood checkout.
+
+`../../verify-source-verification.sh` is the graded form of the same thing:
+section 4b reads the bound out of `deployment.yaml`, proves the racy tag at it,
+proves the rejection at 0, and runs `gitsign verify-tag` on the same bytes as
+a differential wherever gitsign is installed.
 
 ## The time-box, and what ends it
 
@@ -98,7 +123,11 @@ in the estate is subscribed to #1068.
   fails `gitsign verify-tag`. `verify-source-verification.sh` runs gitsign as
   a differential wherever it is installed. Closing it properly means shelling
   out to the pinned gitsign binary, which needs a built image — and this
-  controller is meant to die before it earns one.
+  controller is meant to die before it earns one. The Rekor integrated time
+  is also the instant check 2 would ideally chain at, the log's clock at
+  upload; reading it is the transparency check itself (a signed entry
+  timestamp against a pinned Rekor key), so it belongs to the identity lane
+  (ticket 90), and the bounded tolerance above is what stands until then.
 - **Suspend stops the next apply, not one already made.** A source that
   verified yesterday and is tampered today is caught at the next round, not at
   admission.
