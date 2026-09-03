@@ -1,3 +1,4 @@
+# A demonstration party, not affiliated with, endorsed by or speaking for any real authority it names.
 # The platform's own party artefact (eco-system ticket 21; ADR-0019). The
 # platform is a party like any other -- it does not sit outside the model it
 # ships. Before this file existed, `platform/party/` held only the schema and
