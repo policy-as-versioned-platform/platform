@@ -141,6 +141,60 @@ for bad in 'v1.0.0-quarantine.1' 'policy/v4.0.1-' 'policy/v4.0.1-.1'; do
 done
 echo "ok: policy/v4.0.1-quarantine.1 accepted and ordered below policy/v4.0.1; a suffix on the platform's own line refused"
 
+say "8. ticket 53: the branch lands with the tags, in the same atomic push -- or neither does"
+# 2026-08-31: the push carried the tags and left the branch behind, so the
+# signed evidence commit the workflow had just made was reachable only from
+# the tag. main lost the bundle, v2.0.0 inherited the hole, three adopters
+# refused. This case is the twin of that day: commit "evidence" on the branch,
+# push, and require the remote's refs/heads/main to be the tagged commit.
+remote_main() { git ls-remote origin refs/heads/main | awk '{print $1}'; }
+before=$(remote_main)
+echo "evidence" >evidence.json && git add evidence.json && git commit -q -m "signed evidence (stand-in)"
+head=$(git rev-parse HEAD)
+[ "$before" != "$head" ] || fail "test setup: the remote branch must be behind the local commit"
+VERSION_INPUT="" MESSAGE_INPUT="" \
+  TAGS_INPUT='[{"tag":"v10.0.0","message":"evidence goes with the tag"}]' \
+  python3 "$scripts/cut-release-normalize.py" >tags.json
+"$scripts/cut-release-refuse-existing.sh" tags.json
+"$scripts/cut-release-create-tags.sh" tags.json
+"$scripts/cut-release-push.sh" tags.json origin
+remote_tags | grep -qx "v10.0.0" || fail "v10.0.0 did not land on the remote"
+[ "$(remote_main)" = "$head" ] ||
+  fail "remote refs/heads/main is $(remote_main), not the tagged commit $head: the branch was left behind (the 2026-08-31 defect)"
+[ "$(git rev-parse 'refs/tags/v10.0.0^{commit}')" = "$head" ] || fail "v10.0.0 is not on $head"
+echo "ok: refs/heads/main on the remote moved to $head, the same commit v10.0.0 points at"
+
+# ...and when the push is rejected, the branch does not move either: the
+# atomicity promise covers the branch, not only the tags. Same race shape as
+# case 4 -- a tag already on the remote at a different object.
+git tag -a v12.0.0 -m "pre-existing on remote only, simulating a race"
+git push -q origin v12.0.0
+git tag -d v12.0.0 >/dev/null
+git commit -q --allow-empty -m "evidence that must not land alone"
+[ "$(git rev-parse HEAD)" != "$head" ] || fail "test setup: HEAD should have moved"
+VERSION_INPUT="" MESSAGE_INPUT="" \
+  TAGS_INPUT='[{"tag":"v11.0.0","message":"f"},{"tag":"v12.0.0","message":"g"}]' \
+  python3 "$scripts/cut-release-normalize.py" >tags.json
+"$scripts/cut-release-create-tags.sh" tags.json
+if "$scripts/cut-release-push.sh" tags.json origin 2>push.err; then
+  fail "atomic push should have failed: v12.0.0 already exists on the remote at a different object"
+fi
+remote_tags | grep -qx "v11.0.0" && fail "v11.0.0 must not have landed when v12.0.0 was rejected"
+[ "$(remote_main)" = "$head" ] ||
+  fail "remote refs/heads/main moved to $(remote_main) although the push was rejected: the branch escaped the atomic transaction"
+echo "ok: rejected push moved neither the tags nor refs/heads/main (still $head)"
+
+# ...and a detached HEAD is refused before anything is pushed, rather than
+# guessed at: the evidence belongs on a named branch or nowhere.
+git checkout -q --detach
+if "$scripts/cut-release-push.sh" tags.json origin 2>push.err; then
+  git checkout -q main
+  fail "a detached HEAD should have been refused, not pushed"
+fi
+git checkout -q main
+grep -q "detached HEAD" push.err || fail "wrong refusal for a detached HEAD: $(cat push.err)"
+echo "ok: a detached HEAD is refused, nothing pushed"
+
 echo
 echo "PASS: single-tag legacy form works, multi-tag dispatch cuts every tag"
 echo "on the same commit, the existing-tag refusal runs for every tag before"
@@ -149,4 +203,6 @@ echo "remote, and a mis-shaped policy tag (wrong case, stray slash or"
 echo "whitespace) is refused at normalize time -- it can never reach"
 echo "cut-release-gate.py's skip branch and get pushed ungated; and a degraded"
 echo "publish's prerelease tag (ticket 43) normalizes cleanly and sorts BELOW"
-echo "the clean number through the one shared parser."
+echo "the clean number through the one shared parser; and the branch carrying"
+echo "the signed evidence lands in the same atomic push as the tags, or not at"
+echo "all (ticket 53)."
