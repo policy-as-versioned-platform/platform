@@ -177,7 +177,11 @@ itself needs.
   scenario the control's `props[name=scenario]` names, repo-relative, through the same cage engine
   the restate path uses. It is reported on the hole and its delta; it does not yet enter
   `prices[]` (a `PRICE_KINDS` major the £ seam grades), so it is priced but not yet tiered — a
-  named limit.
+  named limit. The amount is labelled in the adopter's reporting currency and this path takes no
+  FX rate, so a band declared in another currency refuses as a missing instrument naming both
+  (one currency on both sides; a relabelled amount is a minted one). The self-pin may sit
+  anywhere in `inherits[]`: the header's bare ids key to the first `controls` parent that is
+  not the adopter, on writing and on reading alike.
 - The document gains `deltas[]`. `verify/priced-holes/` in the hub grades all of this on the
   composed evidence; the superseding ADR for ADR-0013/0017/0018 point 3 is ticket 39's.
 

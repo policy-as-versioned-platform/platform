@@ -1463,12 +1463,18 @@ def _decode_control(text: str, baseline_source: str | None) -> ControlKey:
     return _control_spec(str(text), baseline_source)
 
 
-def _header_controls_source(header: dict | None) -> str | None:
+def _header_controls_source(header: dict | None, adopter_party: str | None = None) -> str | None:
     """The baseline's catalogue in a recorded header: its first `controls`
-    parent -- what its bare hole ids were keyed to."""
+    parent that is not the adopter itself -- what its bare hole ids were
+    keyed to. The same rule compose() keys baseline_source by, so an adopter
+    that lists its self-pin before the regulator in inherits[] decodes its
+    own header the way it was written (2026-09-04 review: reading the FIRST
+    controls parent decoded every bare id as the adopter's own and refused
+    the whole baseline as removed on an unchanged tree)."""
     if not header:
         return None
-    return next((p.get("party") for p in header.get("parents", []) if p.get("kind") == "controls"), None)
+    return next((p.get("party") for p in header.get("parents", [])
+                 if p.get("kind") == "controls" and p.get("party") != adopter_party), None)
 
 
 def _unknown_control_refusals(specs: list[tuple[str, ControlKey]], catalogs: dict[str, set[str]],
@@ -1654,16 +1660,21 @@ def _price_holes(hole_entries: list[dict], hole_prices: dict[ControlKey, tuple[f
 
 
 def _price_bespoke_holes(hole_entries: list[dict], adopter_party: str, adopter_dir: Path,
-                         catalog_props: dict[str, dict[str, str]], band: float | None,
-                         floor: str | None) -> list[dict]:
+                         catalog_props: dict[str, dict[str, str]], band: dict | None,
+                         reporting: str, floor: str | None) -> list[dict]:
     """A bespoke control (its source is the adopter's own catalogue) prices
     its hole through the scenario the catalogue's control names -- the
     restate path's own `_load_scenario` mechanism against the adopter's own
     tree, and the estate's own cage engine against the adopter's own band.
     One with NO scenario is the one hole-shaped refusal left: an instrument
     fault (ADR-0020), because only the party that invented the control can
-    say what missing it costs, and a regulator's weight never names it."""
+    say what missing it costs, and a regulator's weight never names it.
+    The residual is labelled in `reporting`, the adopter's reporting
+    currency, and this path takes no FX rate: a band declared in another
+    currency is the same instrument fault (hard rule 7, one currency on both
+    sides), because a relabelled amount is a minted one."""
     refusals: list[dict] = []
+    band_currency = (band.get("currency") or reporting) if band else reporting
     for h in hole_entries:
         if h["source"] != adopter_party or h["status"] == "closed":
             continue
@@ -1683,8 +1694,19 @@ def _price_bespoke_holes(hole_entries: list[dict], adopter_party: str, adopter_d
             continue
         if band is None:
             continue    # the missing appetite is already refused as an instrument
+        if band_currency != reporting:
+            refusals.append({
+                "kind": "missing-instrument",
+                "subject": f"{adopter_party}{CONTROL_KEY_SEP}{h['control_id']}",
+                "detail": f"missing instrument: bespoke control {h['control_id']} would be priced "
+                          f"against {adopter_party}'s appetite band in {band_currency} and labelled "
+                          f"in its reporting currency {reporting}; this path takes no rate, and a "
+                          f"relabelled amount is a minted one, not a converted one (ADR-0020)",
+                "needs_composition": True,
+            })
+            continue
         decision = _cage_engine().select(_load_scenario(scenario_rel, adopter_dir), adopter_party,
-                                         band, mode="warn", floor=floor)
+                                         band["amount"], mode="warn", floor=floor)
         h["amount"] = decision["uncaged_residual"]
         h["priced_by"] = f"{adopter_party} scenario {scenario_rel}"
     return refusals
@@ -2609,7 +2631,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     refusals += claim_refusals
 
     prev_header = _previous_header(adopter_dir)
-    prev_source = _header_controls_source(prev_header) or baseline_source
+    prev_source = _header_controls_source(prev_header, adopter_party) or baseline_source
     prev_holes = ({_decode_control(h, prev_source) for h in prev_header.get("holes", [])}
                   if prev_header is not None else None)
     prev_selected = ({_decode_control(c, prev_source) for c in prev_header.get("selected-controls", [])}
@@ -2669,8 +2691,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     hole_prices = _regime_hole_prices(prices)
     _price_holes(hole_entries, hole_prices, adopter_party, reporting)
     refusals += _price_bespoke_holes(hole_entries, adopter_party, adopter_dir,
-                                     catalog_props.get(adopter_party, {}),
-                                     band["amount"] if band else None,
+                                     catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
     _decorate_regime_holes(prices, hole_entries, selected_set, covered)
     deltas = compute_deltas(
@@ -4153,6 +4174,52 @@ def selfcheck() -> None:
         assert "zz-1" not in {h["control_id"] for h in docH["holes"]}, docH["holes"]
         print("OK bespoke: a bespoke control the adopter's own claim covers is no hole, so it "
               "needs no scenario and nothing refuses")
+
+        # --- the self-pin listed FIRST in inherits[] (an order an adopter is
+        # free to write). The recorded header keys its bare ids to the first
+        # controls parent that is NOT the adopter, exactly as compose() keys
+        # baseline_source, so an unchanged tree re-composes clean: no
+        # removed-control refusal, no new-hole delta (the 2026-09-04 review's
+        # blocking defect: reading the FIRST controls parent decoded every
+        # bare id as the adopter's own and refused the whole baseline) ---
+        first = root / "bespoke-self-first"
+        _write_fixture_adopter(first, "SMALL", controls_add=["fixture-adopter14:zz-1"],
+                                extra_inherits=[self_edge])
+        first_yaml = yaml.safe_load((first / "party.yaml").read_text())
+        first_yaml["inherits"] = [self_edge, *[e for e in first_yaml["inherits"]
+                                               if e["party"] != "fixture-adopter14"]]
+        (first / "party.yaml").write_text(yaml.safe_dump(first_yaml, sort_keys=False))
+        _write_small_catalog(first, {"zz-1": {"scenario": "scenarios/zz-1.json"}})
+        (first / "scenarios").mkdir()
+        shutil.copy(PLATFORM_DIR / scenario_rel, first / "scenarios" / "zz-1.json")
+        docI, renderedI = compose(first, fixture_trees)
+        assert docI["outcome"] == "composed" and docI["refusals"] == [] and docI["deltas"] == [], docI
+        assert docI["parents"][0]["party"] == "fixture-adopter14", docI["parents"]
+        headerI = yaml.safe_load(renderedI["composed/HEADER.yaml"])
+        assert "aa-2" in headerI["holes"] and "fixture-adopter14:zz-1" in headerI["holes"], headerI["holes"]
+        _commit_header(first, renderedI)
+        docJ, _ = compose(first, fixture_trees)
+        assert docJ["outcome"] == "composed", docJ["refusals"]
+        assert docJ["refusals"] == [] and docJ["deltas"] == [], (docJ["refusals"], docJ["deltas"])
+        assert {h["status"] for h in docJ["holes"]} == {"recorded"}, docJ["holes"]
+        print("OK _header_controls_source: with the self-pin listed first in inherits[], an "
+              "unchanged tree re-composes clean -- bare header ids decode to the first controls "
+              "parent that is not the adopter, as compose() keys them, so nothing refuses as "
+              "removed and nothing prints as a new hole")
+
+        # --- a band in one currency cannot price a bespoke hole labelled in
+        # another: this path takes no rate, so it refuses as a missing
+        # instrument naming both, never a relabelled (minted) amount ---
+        first_yaml["appetite"]["tolerance"]["currency"] = "USD"
+        (first / "party.yaml").write_text(yaml.safe_dump(first_yaml, sort_keys=False))
+        docK, _ = compose(first, fixture_trees)
+        faults = [r for r in docK["refusals"] if r["kind"] == "missing-instrument"]
+        assert len(faults) == 1 and "zz-1" in faults[0]["subject"], docK["refusals"]
+        assert "USD" in faults[0]["detail"] and "GBP" in faults[0]["detail"], faults
+        assert _hole(docK, "zz-1")["amount"] is None, _hole(docK, "zz-1")
+        print("OK bespoke: an appetite band in USD cannot price a bespoke hole reported in GBP -- "
+              "no rate is taken on this path, so it refuses as a missing instrument naming both "
+              "currencies rather than relabelling the residual")
 
     # --- the regime entry's holes[] carry each hole's status next to its
     # weighted amount, and a widening against the real catalogue prints the
