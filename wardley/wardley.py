@@ -449,7 +449,11 @@ def selfcheck():
         for p in out["proposals"]:
             assert p["merged"] is False and p["auto_merge"] is False, p  # propose, never dispose
             assert "cross-check" in p["required_gate"], p                # rides the existing gate
-            assert p["signed"] is True and "Rekor" in p["identity"], p   # attestable identity
+            # Ticket 78 deleted `signed` from every proposal propose() emits: a
+            # signature belongs to the commit (propose-tier.yml's gitsign step,
+            # read back out of Rekor), never to a proposal claiming it of itself.
+            assert "signed" not in p, ("a proposal must not claim to be signed", p)
+            assert "Rekor" in p["identity"], p                            # attestable identity
         total_drifts += len(drifts)
         total_props += len(out["proposals"])
     assert total_drifts, ("the forward signal surfaced no drift anywhere in the estate -- "

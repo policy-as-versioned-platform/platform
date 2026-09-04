@@ -70,7 +70,13 @@ for org, res in out.items():
     for p in props:
         assert p['merged'] is False and p['auto_merge'] is False, 'war-gamer must never merge'
         assert 'cross-check' in p['required_gate'], 'PR must ride the version cross-check gate'
-        assert p['signed'] and 'Rekor' in p['identity'], 'PR must carry the attestable identity'
+        # No \`signed\` conjunct: ticket 78 deleted that field from every proposal
+        # propose() emits, because a signature is a property of the commit --
+        # put there by propose-tier.yml's gitsign step and read back out of Rekor
+        # -- never a literal a proposal may claim about itself. What a proposal
+        # must carry is the identity MECHANISM, which is what is asserted here.
+        assert 'signed' not in p, 'a proposal must not claim to be signed'
+        assert 'Rekor' in p['identity'], 'PR must carry the attestable identity'
     total_drifts += len(drifts)
     total_props += len(props)
 # the band, not the signal, decides -- prove it: driftwood's loose band and ludlow's
