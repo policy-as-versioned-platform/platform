@@ -216,24 +216,36 @@ for e in rog.elements(Path("distribution/versions.yaml")):
 PYEOF
 )
 
-if [ -n "${unseen}" ]; then
-  echo "The array records a commit for:${unseen}"
-  echo "so cut-release.yml already cut those tags -- but this checkout has no refs/tags entry"
-  echo "for them, which is a fact about the clone (shallow, --no-tags, or an archive export)"
-  echo "and not about the release. Step 2 has already checked their gate evidence by name."
-  echo "SKIP: this checkout cannot see the signed tag(s)${unseen}; fetch tags and re-run"
-  exit 3
-fi
-
-if [ -n "${uncut}" ]; then
-  echo "No signed tag exists for:${uncut}"
-  echo "Where evidence is already written, the gate has run and the array element is correct,"
-  echo "and only the signature is outstanding. Where step 2 printed '..' for a tag, the gate"
-  echo "has not run for it either -- it runs inside the same dispatch, before the tag."
-  echo "A gitsign tag can only be cut by .github/workflows/"
-  echo "cut-release.yml inside GitHub Actions, with that run's own ambient OIDC identity."
-  echo "Nothing here may fake one, so this check cannot look at the last step of the release."
-  echo "SKIP: waiting for the owner to let cut-release.yml cut${uncut} in Actions"
+# 2026-09-04, round 2: both reasons are REPORTED, then one SKIP line carries
+# both. The first draft exited 3 inside the `unseen` branch, so a shallow
+# checkout that also held an uncut element never printed the wait on the owner
+# at all -- the reader was told to fetch tags and never told a release was still
+# uncut. They are different facts about different versions and both are true at
+# once; neither may silence the other.
+if [ -n "${unseen}" ] || [ -n "${uncut}" ]; then
+  skip_reason=""
+  if [ -n "${unseen}" ]; then
+    echo "The array records a commit for:${unseen}"
+    echo "so cut-release.yml already cut those tags -- but this checkout has no refs/tags entry"
+    echo "for them, which is a fact about the clone (shallow, --no-tags, or an archive export)"
+    echo "and not about the release. Step 2 has already checked their gate evidence by name."
+    skip_reason="this checkout cannot see the signed tag(s)${unseen}; fetch tags and re-run"
+  fi
+  if [ -n "${uncut}" ]; then
+    echo "No signed tag exists for:${uncut}"
+    echo "Where evidence is already written, the gate has run and the array element is correct,"
+    echo "and only the signature is outstanding. Where step 2 printed '..' for a tag, the gate"
+    echo "has not run for it either -- it runs inside the same dispatch, before the tag."
+    echo "A gitsign tag can only be cut by .github/workflows/"
+    echo "cut-release.yml inside GitHub Actions, with that run's own ambient OIDC identity."
+    echo "Nothing here may fake one, so this check cannot look at the last step of the release."
+    if [ -n "${skip_reason}" ]; then
+      skip_reason="${skip_reason}; AND waiting for the owner to let cut-release.yml cut${uncut} in Actions"
+    else
+      skip_reason="waiting for the owner to let cut-release.yml cut${uncut} in Actions"
+    fi
+  fi
+  echo "SKIP: ${skip_reason}"
   exit 3
 fi
 
