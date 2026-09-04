@@ -16,7 +16,7 @@
 #    them here.
 # 5. the _CONTAINER_BOOL_RE regression: probe_for's real "satisfied" pod for
 #    require-nonroot@1.0.0's pod-level predicate is kyverno-applied against
-#    the real require-nonroot@1.0.0 policy and must PASS -- SKIPs (exit 0)
+#    the real require-nonroot@1.0.0 policy and must PASS -- SKIPs (exit 3)
 #    if kyverno is absent, same convention as verify-corpus-generator.sh and
 #    verify-gate.sh. This is the precise cell the unanchored regex broke
 #    (the probe wrote into containers[0].securityContext instead of
@@ -25,6 +25,16 @@
 #    next time the regex changes.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# Ticket 76 (every green rests on an observation): the kyverno-absent branch below used to
+# print SKIP and exit 0, which talk/verify-all.sh grades PASS -- a green on the absence of the
+# instrument. A could-not-look is exit 3 (lib.sh's `skip`). And because that branch only runs on
+# a machine without the CLI, it was never itself tested: `selfcheck_absent` re-runs this script
+# with kyverno unreachable and requires exit 3 with a SKIP: last line, so every run observes the
+# branch. `--selfcheck` runs that leg alone.
+. ../lib.sh
+SELF="$PWD/${BASH_SOURCE##*/}"
+if [ "${1:-}" = "--selfcheck" ]; then selfcheck_absent "$SELF" kyverno; exit 0; fi
 
 echo "== 1. witness_set.py --selfcheck =="
 python3 witness_set.py --selfcheck
@@ -66,9 +76,9 @@ fi
 
 echo
 if ! command -v kyverno >/dev/null; then
-  echo "SKIP (step 5): kyverno CLI not found -- cannot prove the require-nonroot"
-  echo "satisfied probe passes real admission (the _CONTAINER_BOOL_RE regression)"
+  skip "step 5 could not look -- kyverno CLI not found, so the require-nonroot satisfied probe was never proved to pass real admission (the _CONTAINER_BOOL_RE regression; steps 1 to 4 held)"
 else
+  selfcheck_absent "$SELF" kyverno
   echo "== 5. the require-nonroot 'satisfied' probe passes real admission (regression guard for _CONTAINER_BOOL_RE) =="
   pod_file="$(mktemp)"
   trap 'rm -f "$pod_file"' EXIT
