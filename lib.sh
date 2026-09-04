@@ -61,6 +61,15 @@ pass_line() {
 # Prints one ok line and returns 0 when the branch holds; prints FAIL and exits 1 when it
 # does not. A no-op inside the child re-run. Callers cd to their own directory first and
 # pass "$PWD/${BASH_SOURCE##*/}" so the child re-runs the same file.
+#
+# CEILING (measured 2026-09-04, ticket 76 review). The leg re-runs the WHOLE script, so each of
+# the seven computed-semver scripts that calls it now does its work twice, plus the cost of
+# building the PATH symlink farm. Measured on the hub's own copy of this helper
+# (verify/lib-observation.sh): verify-provenance.sh 19.5s with the leg, 5.5s with it disabled
+# (PAV_SELFCHECK_CHILD=1) -- 3.5x. Paid on every gate run, not only in CI.
+# ponytail: let a script expose its could-not-look branch as one function and re-run only that,
+# or gate the leg behind a flag the gate sets once per wave rather than per script, once the
+# gate's wall-clock is the thing that hurts.
 selfcheck_absent() {
   local script="$1"; shift
   [ -z "${PAV_SELFCHECK_CHILD:-}" ] || return 0
