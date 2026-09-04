@@ -287,13 +287,53 @@ GAP
 # distribution/verify-coexistence.sh checks require-nonroot-$v. Versions come
 # from render-orphan-guard.py's versions() (distribution/versions.yaml), the
 # one array, reused -- never re-parsed here.
+#
+# 2026-09-04 (ticket 63): CUT versions only, keyed on the array element's
+# `commit` field -- the same rule, the same words, as
+# distribution/verify-declared-versions-admit.sh, distribution/verify-coexistence.sh
+# and posture/verify-posture-projection.sh. An element with no `commit` has not
+# been released: cut-release.yml fills that field in when it cuts the SIGNED
+# tag, so until then the tag does not exist, Flux has nothing to fetch, and the
+# version's policies cannot be on any cluster. Calling that "not installed live"
+# was a FAIL for an unmade release -- declaring 5.0.0 here on 2026-09-04 turned
+# this whole beat red the same minute, on a cluster where nothing had regressed.
+# The uncut tail is NAMED in the output instead of being looked for, and it is
+# named rather than skipped over: a blanket live_tail_skip would have hidden the
+# cut line's genuine green, which is the fault this rule exists to avoid.
 if ! substrate_ok "$CLUSTER"; then
   live_tail_skip "$SUBSTRATE_REASON"
 elif ! timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
   live_tail_skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then graded/up.sh)"
 else
-  say "8. live: a REAL pod in a caged Namespace is admitted, RUNS, and wears its Namespace's cage"
+  say "8. live: a REAL pod in a caged Namespace is admitted, RUNS, and wears its Namespace's cage (CUT versions only)"
+  UNCUT_TAIL="$(python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+import importlib.util
+dist = Path(sys.argv[1]).parent / "distribution"
+spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(" ".join(e["version"] for e in mod.elements(dist / "versions.yaml") if not e.get("commit")))
+PY
+)"
+  if [ -n "$UNCUT_TAIL" ]; then
+    say "   uncut tail, not looked for: $UNCUT_TAIL (declared with no commit, so no signed tag and nothing for Flux to deliver)"
+    cat <<'UNCUT'
+  NAMED, NOT CLOSED (2026-09-04, ticket 63): the orphan guard's allow-list is
+  ranged from the WHOLE array, cut or not, while a cage-tier/cage-netpol pair
+  only exists for a version whose tag was actually cut. So between the moment
+  the array declares a version and the moment cut-release.yml cuts its tag, a
+  pod may CLAIM that version, pass the orphan guard, and find no MutatingPolicy
+  self-scoped to its claim -- admitted, uncaged. Not observed on any cluster
+  today (the live guard is still rendered from the one-version array), and not
+  reachable until the branch is pushed. The honest repair is to range the
+  allow-list over CUT elements only, which is a change to the ResourceSet and
+  to render-orphan-guard.py, not to this beat.
+UNCUT
+  fi
   while IFS= read -r v; do
+    [ -n "$v" ] || continue
     timeout 10 kubectl --context "$CTX" get mutatingpolicy "cage-tier-$v" >/dev/null 2>&1 \
       || fail "cage-tier-$v MutatingPolicy not installed live"
     timeout 10 kubectl --context "$CTX" get generatingpolicy "cage-netpol-$v" >/dev/null 2>&1 \
@@ -306,8 +346,9 @@ dist = Path(sys.argv[1]).parent / "distribution"
 spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-for v in mod.versions(dist / "versions.yaml"):
-    print(v.replace(".", "-"))
+for e in mod.elements(dist / "versions.yaml"):
+    if e.get("commit"):
+        print(e["version"].replace(".", "-"))
 PY
 )
   # The newest declared version is the one the current authoring copy rendered
@@ -324,6 +365,16 @@ PY
   # ponytail: the honest upgrade is a per-version expectation table and a loop.
   # Add it the day a second line is declared; until then it would be untestable
   # code with no second line to run against.
+  #
+  # 2026-09-04 (ticket 63): CUT versions again, and for the same reason the loop
+  # above uses them. The sentence this count defends is "every declared version
+  # is INSTALLED and SELECTABLE by any pod" -- and an uncut element is neither:
+  # no tag, so Flux delivers nothing and no cage-tier-<v> is on the cluster to
+  # exercise. Counting it would have made the count 2, tripped the skip, and
+  # discarded 4.0.0's real behavioural green over a version that does not run.
+  # (What an uncut element IS selectable for is the orphan guard's allow-list;
+  # that gap is named above, and it is not this count's subject.) The day a
+  # second version is really cut, this trips exactly as it was written to.
   DECLARED_COUNT="$(python3 - "$HERE" <<'PY'
 import sys
 from pathlib import Path
@@ -332,11 +383,11 @@ dist = Path(sys.argv[1]).parent / "distribution"
 spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(len(mod.versions(dist / "versions.yaml")))
+print(len([e for e in mod.elements(dist / "versions.yaml") if e.get("commit")]))
 PY
 )"
   if [ "$DECLARED_COUNT" -gt 1 ]; then
-    live_tail_skip "distribution/versions.yaml declares $DECLARED_COUNT versions and the behavioural probes below only exercise the newest; every declared version is installed and selectable by any pod, so the others are ungraded here and this tail may not claim the cage holds for them"
+    live_tail_skip "distribution/versions.yaml declares $DECLARED_COUNT CUT versions and the behavioural probes below only exercise the newest of them; every cut version is installed and selectable by any pod, so the others are ungraded here and this tail may not claim the cage holds for them"
   fi
   NEWEST="$(python3 - "$HERE" <<'PY'
 import sys
@@ -346,10 +397,14 @@ dist = Path(sys.argv[1]).parent / "distribution"
 spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(mod.versions(dist / "versions.yaml")[-1])
+cut = [e["version"] for e in mod.elements(dist / "versions.yaml") if e.get("commit")]
+if not cut:
+    sys.exit("no CUT version in distribution/versions.yaml")
+print(cut[-1])
 PY
 )"
-  echo "  -- the live copy under test is cage-tier-${NEWEST//./-}, applied by graded/up.sh from"
+  [ -n "$NEWEST" ] || fail "no CUT version in distribution/versions.yaml: nothing is installed live to probe"
+  echo "  -- the live copy under test is cage-tier-${NEWEST//./-} (newest CUT version), applied by graded/up.sh from"
   echo "     distribution/policies/v$NEWEST (render-and-prove.py). Flux is NOT in the loop on"
   echo "     this path, so 'in force' below means installed and enforcing, never 'reconciled'."
 

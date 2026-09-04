@@ -31,31 +31,49 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Nothing false had been observed: the gate had not run. The distinction the
 # refusal was missing is the TAG. Evidence missing and NO tag is a could-not-
 # look -- the state every release passes through between review and dispatch.
-# Evidence missing and a tag that EXISTS is the real defect: something was
+# Evidence missing and a RELEASED element is the real defect: something was
 # released without the gate determining its number, which is the whole claim of
 # this beat, and that still FAILS by name.
 #
-# `--selfcheck` pins that three-way decision on its own, with no repo state.
+# 2026-09-04, review fix: "released" is keyed on the array element's `commit`
+# field, not on a local tag. cut-release.yml fills `commit` in at the same
+# moment it cuts the signed tag, so the two say the same thing about a healthy
+# repo -- but only `commit` is committed CONTENT. On a tagless or shallow
+# checkout (`--depth`, `--no-tags`, an archive export) refs/tags is empty, and a
+# tag-keyed rule let a release cut with no gate evidence read as "not yet
+# gated" and skip. The tag is kept as a second signal so a tag that appears
+# without a commit still refuses; the KEY is the commit, exactly as in the four
+# cut/uncut checks named in step 2.
+#
+# `--selfcheck` pins that decision on its own, with no repo state.
 if [ "${1:-}" = "--selfcheck" ]; then
 python3 - <<'PYEOF'
-def verdict(has_evidence, has_tag):
-    """The three states an array element can be in, and the only one that is a
-    refusal. Ordering, from cut-release.yml: gate -> evidence -> array -> tag."""
+def verdict(has_evidence, is_cut, has_tag):
+    """The states an array element can be in, and the only one that is a
+    refusal. Ordering, from cut-release.yml: gate -> evidence -> array -> tag.
+    `is_cut` is the element's own `commit` field; `has_tag` is what THIS
+    checkout can see, which is not the same question."""
     if has_evidence:
-        return "check"        # compare declared vs computed, as before
-    if has_tag:
-        return "refuse"       # released with no gate evidence: the real defect
-    return "not-yet-gated"    # reviewed, declared, dispatch not run: cannot look
+        return "check"            # compare declared vs computed, as before
+    if is_cut or has_tag:
+        return "refuse"           # released with no gate evidence: the real defect
+    return "not-yet-gated"        # reviewed, declared, dispatch not run: cannot look
 
 
-assert verdict(True, True) == "check"
-assert verdict(True, False) == "check", "evidence written, signature pending -- step 3's case"
-assert verdict(False, True) == "refuse", "a cut tag with no evidence must never be tolerated"
-assert verdict(False, False) == "not-yet-gated", (
-    "a declared element with neither evidence nor tag is the pre-dispatch state, "
+assert verdict(True, True, True) == "check"
+assert verdict(True, False, False) == "check", "evidence written, signature pending -- step 3's case"
+assert verdict(False, True, True) == "refuse", "a cut tag with no evidence must never be tolerated"
+assert verdict(False, True, False) == "refuse", (
+    "the shallow/tagless checkout: the array element records a commit, so the release WAS cut; "
+    "that this clone cannot see refs/tags is a fact about the clone, never an excuse to skip")
+assert verdict(False, False, True) == "refuse", (
+    "a tag with no commit on its element is still a release with no gate evidence")
+assert verdict(False, False, False) == "not-yet-gated", (
+    "a declared element with no evidence, no commit and no tag is the pre-dispatch state, "
     "not an observation that anything is wrong")
-print("ok  selfcheck: evidence+no tag is a could-not-look; NO evidence WITH a tag is still a "
-      "refusal; the gate-determines-the-number claim is not weakened")
+print("ok  selfcheck: evidence+no tag is a could-not-look; NO evidence with a RELEASED element "
+      "(commit on the array, or a tag) is still a refusal, tagless checkout included; the "
+      "gate-determines-the-number claim is not weakened")
 PYEOF
   exit 0
 fi
@@ -119,17 +137,32 @@ for element in declared:
     published = tag[len("policy/v"):]
     path = Path("computed-semver/evidence") / f"{published}.json"
     if not path.exists():
-        # Evidence missing: refuse only if the TAG exists (released without the
-        # gate determining its number). Otherwise this element is declared and
-        # not yet dispatched -- see the header. Step 3 names it either way.
+        # Evidence missing: refuse if this element was RELEASED, and only then.
+        # "Released" is keyed on the array element's own `commit` field -- the
+        # same key distribution/verify-declared-versions-admit.sh,
+        # verify-coexistence.sh, posture/verify-posture-projection.sh and
+        # graded/verify-graded.sh use, because cut-release.yml fills `commit`
+        # in at the same moment it cuts the signed tag. The local tag is kept
+        # as a second, weaker signal, not as the key: a tagless or shallow
+        # checkout (`clone --depth`, `fetch --no-tags`, an archive export)
+        # carries no refs/tags at all, and keying on it alone let a release cut
+        # with NO gate evidence read as "not yet dispatched" and skip -- the one
+        # direction this beat must never be wrong in. `commit` is committed
+        # content, so it survives every fetch depth.
+        cut = bool(element.get("commit"))
         tagged = subprocess.run(["git", "rev-parse", "-q", "--verify",
                                  f"refs/tags/{tag}"], capture_output=True).returncode == 0
-        if tagged:
-            raise SystemExit(f"FAIL: {tag} EXISTS as a tag but there is no {path} -- that "
+        if cut or tagged:
+            seen = "EXISTS as a tag" if tagged else (
+                "is recorded as released by the array element's commit "
+                f"{element['commit']} (this checkout carries no refs/tags/{tag}, "
+                "so the tag itself was not observed here)")
+            raise SystemExit(f"FAIL: {tag} {seen} but there is no {path} -- that "
                              "release was cut without the gate determining its number, which is "
                              "exactly what this beat exists to refuse")
-        print(f"..  {tag}: declared {element['bump']!r}; no evidence and no tag yet -- the gate "
-              "runs inside cut-release.yml, so this element has not been dispatched")
+        print(f"..  {tag}: declared {element['bump']!r}; no evidence, no commit on the array "
+              "element and no tag -- the gate runs inside cut-release.yml, so this element has "
+              "not been dispatched")
         continue
     doc = json.loads(path.read_text())
     assert doc["bump"]["declared"] == element["bump"], (
@@ -158,11 +191,17 @@ PYEOF
 
 echo
 echo "== 3. the signature: only cut-release.yml, in Actions, can produce it =="
+# 2026-09-04, review fix: the element's `commit` says whether the release was
+# cut; refs/tags says whether THIS checkout can see the tag. A cut element whose
+# tag is not in this clone is not "waiting for the owner" -- it is a shallow or
+# tagless checkout, and saying otherwise would put a false wait in front of a
+# release that already happened. Named separately, still a could-not-look.
 uncut=""
-while read -r tag; do
+unseen=""
+while read -r cut tag; do
   [ -n "$tag" ] || continue
   if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-    uncut="${uncut} ${tag}"
+    if [ "$cut" = "cut" ]; then unseen="${unseen} ${tag}"; else uncut="${uncut} ${tag}"; fi
   fi
 done < <(python3 - <<'PYEOF'
 import sys
@@ -173,9 +212,18 @@ spec = importlib.util.spec_from_file_location("rog", "distribution/render-orphan
 rog = importlib.util.module_from_spec(spec); spec.loader.exec_module(rog)
 for e in rog.elements(Path("distribution/versions.yaml")):
     if e.get("bump"):
-        print(e["tag"])
+        print("cut" if e.get("commit") else "uncut", e["tag"])
 PYEOF
 )
+
+if [ -n "${unseen}" ]; then
+  echo "The array records a commit for:${unseen}"
+  echo "so cut-release.yml already cut those tags -- but this checkout has no refs/tags entry"
+  echo "for them, which is a fact about the clone (shallow, --no-tags, or an archive export)"
+  echo "and not about the release. Step 2 has already checked their gate evidence by name."
+  echo "SKIP: this checkout cannot see the signed tag(s)${unseen}; fetch tags and re-run"
+  exit 3
+fi
 
 if [ -n "${uncut}" ]; then
   echo "No signed tag exists for:${uncut}"
