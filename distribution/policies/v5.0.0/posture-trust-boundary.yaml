@@ -1,0 +1,39 @@
+# Self-scopes via matchConditions on the policy-version label -- NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: posture-trust-boundary-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: posture
+    policy-as-versioned.dev/policy-version: 5.0.0
+spec:
+  validationActions:
+  - Deny
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+  matchConditions:
+  - name: carries-posture
+    expression: object.metadata.?labels['posture.acme.io/version'].orValue('') != ''
+  - name: only-this-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '5.0.0'
+  variables:
+  - name: posture
+    expression: object.metadata.labels['posture.acme.io/version']
+  - name: claimed
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('')
+  validations:
+  - expression: variables.posture == variables.claimed
+    message: posture.acme.io/* is set only by the platform (the stamp-posture mutate, from your validated policy-version). A user-supplied or mismatched posture label is refused — the SVID path is not forgeable at the label.

@@ -30,8 +30,12 @@
 #                      every update to a restricted/quarantine/isolated pod fail
 #                      admission with `duplicate entries for key [name=...]`.
 #   ungoverned-ns      sits in a namespace that is not governed at all -> renders
-#                      `baseline` (ADR-0022's ordering rule), decided rather than
-#                      fallen into.
+#                      `isolated` since 2026-09-04 (ticket 63). It rendered
+#                      `baseline` until ADR-0022's ordering precondition was met
+#                      (infra declared on the platform's own namespaces and
+#                      asserted by distribution/verify-infra-declaration.sh);
+#                      now saying nothing buys nothing. Still decided rather
+#                      than fallen into — this fixture is the decision.
 #   unclaimed-system   claims NO policy version at all — a stand-in for
 #                      kube-system/Kyverno/Flux/COTS pods. Genuinely out of scope
 #                      (matchConditions skip), proving the gate, not prose, keeps
@@ -203,7 +207,8 @@ spec:
     - name: waf-sidecar
       image: ghcr.io/acme/coraza-waf:cage
 ---
-# Not governed at all: baseline by decision (ADR-0022's ordering rule).
+# Not governed at all: `isolated` by decision (ticket 63, 2026-09-04), because
+# ADR-0022's ordering precondition is met. Was `baseline` until then.
 apiVersion: v1
 kind: Pod
 metadata:

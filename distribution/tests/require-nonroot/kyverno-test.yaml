@@ -2,39 +2,49 @@
 # Each version judges ONLY the pods that claim it; the other version's pods and
 # the unversioned pod are `skip` (out of scope) — proving matchConditions
 # self-scoping and side-by-side coexistence with no shared-webhook collision.
+#
+# 2026-09-04 (ticket 63): the subjects are the two DECLARED lines, 4.0.0 and
+# 5.0.0. They were 2.0.0 and 3.0.0, which the 2026-08-29 retirement deleted from
+# distribution/versions.yaml -- frozen behind their signed tags, delivered to
+# nobody. verify-coexistence.sh now asserts that the `policies:` list below is
+# exactly that declared array, so this file cannot drift back onto retired
+# bodies and go on passing about nothing.
 apiVersion: cli.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: require-nonroot-coexistence
 policies:
-  - ../../policies/v2.0.0/require-nonroot.yaml
-  - ../../policies/v3.0.0/require-nonroot.yaml
+  - ../../policies/v4.0.0/require-nonroot.yaml
+  - ../../policies/v5.0.0/require-nonroot.yaml
 resources:
   - resources.yaml
 results:
-  # --- policy 2.0.0 sees only the 2.0.0 pods ---
-  - policy: require-nonroot-2-0-0
+  # --- policy 4.0.0 sees only the 4.0.0 pods ---
+  - policy: require-nonroot-4-0-0
     kind: Pod
-    resources: [pod-2-compliant]
+    resources: [pod-4-compliant]
     result: pass
-  - policy: require-nonroot-2-0-0
+  - policy: require-nonroot-4-0-0
     kind: Pod
-    resources: [pod-2-violating]
+    resources: [pod-4-violating]
     result: fail
-  - policy: require-nonroot-2-0-0
+  - policy: require-nonroot-4-0-0
     kind: Pod
-    resources: [pod-3-compliant, pod-3-violating, pod-unversioned]
+    resources: [pod-5-compliant, pod-5-violating, pod-5-root-attested, pod-5-root-unattested, pod-unversioned]
     result: skip
-  # --- policy 3.0.0 sees only the 3.0.0 pods ---
-  - policy: require-nonroot-3-0-0
+  # --- policy 5.0.0 sees only the 5.0.0 pods ---
+  # pod-5-root-attested passes on the RE-CARRIED conditional arm while running
+  # as root; pod-5-root-unattested is byte-for-byte as hardened and still fails.
+  # That pair is the arm's whole proof.
+  - policy: require-nonroot-5-0-0
     kind: Pod
-    resources: [pod-3-compliant]
+    resources: [pod-5-compliant, pod-5-root-attested]
     result: pass
-  - policy: require-nonroot-3-0-0
+  - policy: require-nonroot-5-0-0
     kind: Pod
-    resources: [pod-3-violating]
+    resources: [pod-5-violating, pod-5-root-unattested]
     result: fail
-  - policy: require-nonroot-3-0-0
+  - policy: require-nonroot-5-0-0
     kind: Pod
-    resources: [pod-2-compliant, pod-2-violating, pod-unversioned]
+    resources: [pod-4-compliant, pod-4-violating, pod-unversioned]
     result: skip

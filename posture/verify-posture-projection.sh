@@ -99,13 +99,35 @@ PY
 # (distribution/versions.yaml), the one array, reused -- never re-parsed here. The
 # posture ClusterSPIFFEID is NOT one of the renderer's per-version members (see
 # posture/up.sh), so it stays checked by its real, unversioned name.
+#
+# 2026-09-04 (ticket 63): CUT versions only. An array element with no `commit`
+# has not been released -- cut-release.yml fills that field in when it cuts the
+# signed tag -- so its tag does not exist, Flux has nothing to deliver, and its
+# policies cannot be on any cluster. Calling that "not installed live" was a
+# FAIL for an unmade release: 5.0.0 was declared here on 2026-09-04 and turned
+# this beat red the same minute. The tail names what it skipped instead. Same
+# rule, same words, as distribution/verify-declared-versions-admit.sh and
+# verify-coexistence.sh.
 if ! substrate_ok "$CLUSTER"; then
   live_tail_skip "$SUBSTRATE_REASON"
 elif ! timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
   live_tail_skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then posture/up.sh)"
 else
-  say "4. live: posture policies + ClusterSPIFFEID installed"
+  say "4. live: posture policies + ClusterSPIFFEID installed (CUT versions only)"
+  UNCUT_TAIL="$(python3 - "$HERE" <<'PY'
+import sys
+from pathlib import Path
+import importlib.util
+dist = Path(sys.argv[1]).parent / "distribution"
+spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(" ".join(e["version"] for e in mod.elements(dist / "versions.yaml") if not e.get("commit")))
+PY
+)"
+  [ -z "$UNCUT_TAIL" ] || say "   uncut tail, not looked for: $UNCUT_TAIL (declared with no commit, so no signed tag and nothing for Flux to deliver)"
   while IFS= read -r v; do
+    [ -n "$v" ] || continue
     timeout 10 kubectl --context "$CTX" get mutatingpolicy "stamp-posture-$v" >/dev/null 2>&1 \
       || fail "stamp-posture-$v MutatingPolicy not installed live"
     timeout 10 kubectl --context "$CTX" get validatingpolicy "posture-trust-boundary-$v" >/dev/null 2>&1 \
@@ -118,8 +140,9 @@ dist = Path(sys.argv[1]).parent / "distribution"
 spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-for v in mod.versions(dist / "versions.yaml"):
-    print(v.replace(".", "-"))
+for e in mod.elements(dist / "versions.yaml"):
+    if e.get("commit"):
+        print(e["version"].replace(".", "-"))
 PY
 )
   timeout 10 kubectl --context "$CTX" get clusterspiffeid posture >/dev/null 2>&1 \

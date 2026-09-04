@@ -466,6 +466,20 @@ def selfcheck() -> None:
             "metadata": {"name": "claimant", "labels": {VERSION_LABEL: "2.0.0"}},
             "spec": {"containers": [{"name": "app", "image": "nginx:1.25"}]},
         }))
+        # The claimant needs a Namespace that DECLARES `baseline`, because the
+        # dial this fixture tightens is baseline's. It had none until
+        # 2026-09-04: with no sibling `.ns.yaml`, `namespaceObject` is null and
+        # the tier fell to the unlabelled default -- which was `baseline`, so
+        # the fixture worked by coincidence rather than by saying what it
+        # meant. Ticket 63 flipped that default to `isolated`, the pod stopped
+        # landing on the rung being tightened, both bodies agreed on the
+        # isolated dials and this assert read `none`: a real red, and the right
+        # one. The Namespace makes the fixture say which rung it is about, so
+        # it no longer moves when the default does.
+        cage_engine._write_namespace(pods_dir / "claimant.yaml", {
+            "policy-as-versioned.dev/governed": "true",
+            "posture.acme.io/tier": "baseline",
+        })
         result = cage_engine.classify_repo(old_dir, new_dir, [pods_dir / "claimant.yaml"])
         assert result.computed_bump == "major", result.computed_bump
         cage_movement = next(m for m in result.movement if m.policy == "cage-tier.yaml")

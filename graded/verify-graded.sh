@@ -57,6 +57,120 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 have python3 || fail "python3 required"
+
+# The one reader the live tail uses, shared by the real run and the selfcheck --
+# the same shape as distribution/verify-declared-versions-admit.sh and
+# distribution/verify-coexistence.sh. Modes:
+#   (none)       prints `CUT: <versions>` and `UNCUT: <versions>`, read off the array
+#   --installed  argv[3] is `kubectl get mutatingpolicy -o name` output; prints the
+#                versions whose cage-tier copy is really ON THE CLUSTER, one per line
+#   --selfcheck  runs the pure asserts; touches no disk and no cluster
+graded_state() {
+python3 - "$HERE" "${1:-}" "${2:-}" <<'PY'
+import importlib.util, re, sys
+from pathlib import Path
+
+here, mode, raw = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+dist = here.parent / "distribution"
+
+
+def partition(els):
+    """(cut, uncut) by the `commit` field -- absent or empty is UNCUT.
+    cut-release.yml fills that field in when it cuts the SIGNED tag, so until
+    then the tag does not exist and Flux has nothing to fetch. Nothing else in
+    this file may decide what 'released' means; these are the same words as
+    distribution/verify-declared-versions-admit.sh."""
+    return ([e["version"] for e in els if e.get("commit")],
+            [e["version"] for e in els if not e.get("commit")])
+
+
+def installed(names):
+    """The versions whose cage-tier MutatingPolicy is ON THE CLUSTER, read off
+    `kubectl get mutatingpolicy -o name`.
+
+    This is a fact about the CLUSTER and it may not be inferred from the array.
+    distribution/render-and-prove.py writes EVERY declared element to
+    versions.txt and graded/up.sh applies each one's cage-tier.yaml and
+    cage-netpol.yaml, cut or not -- so after one up.sh run from an array that
+    declares an uncut 5.0.0, cage-tier-5-0-0 is installed and selectable by any
+    pod even though no tag was ever cut. Counting the array would say one; the
+    cluster says two."""
+    out = set()
+    for line in names.splitlines():
+        name = line.strip().rsplit("/", 1)[-1]
+        m = re.fullmatch(r"cage-tier-(\d+)-(\d+)-(\d+)", name)
+        if m:
+            out.add(".".join(m.groups()))
+    return sorted(out, key=lambda v: [int(x) for x in v.split(".")])
+
+
+if mode == "--selfcheck":
+    # the cut/uncut partition, pinned the same way as its four siblings
+    assert partition([{"version": "4.0.0", "commit": "abc"}]) == (["4.0.0"], []), \
+        "a released element is cut and its cage must be looked for by name"
+    assert partition([{"version": "5.0.0", "tag": "policy/v5.0.0"}]) == ([], ["5.0.0"]), \
+        "an element with NO commit key at all is an uncut tail"
+    assert partition([{"version": "5.0.0", "commit": ""}]) == ([], ["5.0.0"]), \
+        "an EMPTY commit is an uncut tail too, not a cut one"
+    assert partition([{"version": "4.0.0", "commit": "abc"},
+                      {"version": "5.0.0", "tag": "policy/v5.0.0"}]) == (["4.0.0"], ["5.0.0"]), \
+        "a cut line beside an uncut one is still probed: the tail never suppresses it"
+
+    # the installed-cage reader: versioned cage-tier copies only
+    assert installed("mutatingpolicy.policies.kyverno.io/cage-tier-4-0-0\n"
+                     "mutatingpolicy.policies.kyverno.io/cage-tier-5-0-0\n"
+                     "mutatingpolicy.policies.kyverno.io/stamp-posture-4-0-0\n"
+                     "mutatingpolicy.policies.kyverno.io/cage-tier\n") == ["4.0.0", "5.0.0"], \
+        "only versioned cage-tier copies count: not another policy, not the authoring name"
+    assert installed("") == [], "an empty listing is no installed cage"
+    assert installed("x/cage-tier-10-0-0\nx/cage-tier-9-0-0\n") == ["9.0.0", "10.0.0"], \
+        "installed versions sort numerically, so the newest is the last"
+
+    # The defect of 2026-09-04 (round 2). The count that decides whether the
+    # behavioural probes may speak for the whole live surface must be asked of
+    # the CLUSTER, because up.sh's fan-out ranges the whole array: one CUT
+    # element and two INSTALLED cages is exactly the state that bought a PASS
+    # where a could-not-look is the honest grade.
+    cut, uncut = partition([{"version": "4.0.0", "commit": "abc"}, {"version": "5.0.0"}])
+    live = installed("x/cage-tier-4-0-0\nx/cage-tier-5-0-0\n")
+    assert (len(cut), len(uncut), len(live)) == (1, 1, 2), (cut, uncut, live)
+    assert len(live) > 1, "two cages live: the behavioural probes exercise one, so this tail skips"
+    assert len(installed("x/cage-tier-4-0-0\n")) == 1, \
+        "one cage live: the probes ARE the whole live surface, so the tail may speak"
+
+    # The third state, which the count must never swallow: a CUT version with no
+    # cage on the cluster is missing BY NAME, and that is a FAIL, not a skip.
+    cut, _ = partition([{"version": "6.0.0", "commit": "deadbeef"}])
+    assert cut == ["6.0.0"] and "6.0.0" not in installed("x/cage-tier-4-0-0\n"), \
+        "a cut version whose policy is genuinely missing is named, never skipped over"
+
+    print("ok   selfcheck: cut/uncut partition; installed cages read off the CLUSTER, not the "
+          "array, so two live cages skip the tail, one lets it speak, and a cut version with no "
+          "cage still fails by name")
+    sys.exit(0)
+
+if mode == "--installed":
+    print("\n".join(installed(raw)))
+    sys.exit(0)
+
+spec = importlib.util.spec_from_file_location("rog", dist / "render-orphan-guard.py")
+rog = importlib.util.module_from_spec(spec); spec.loader.exec_module(rog)
+cut, uncut = partition(rog.elements(dist / "versions.yaml"))
+print("CUT: " + " ".join(cut))
+print("UNCUT: " + " ".join(uncut))
+PY
+}
+
+# Run the selfcheck from the no-argument path, BEFORE the tool and substrate
+# checks, so a regression in the partition or in the installed-cage count cannot
+# hide behind a machine with no kyverno CLI and no cluster.
+if [ "${1:-}" = "--selfcheck" ]; then
+  graded_state --selfcheck
+  exit 0
+fi
+say "0. selfcheck: the cut/uncut partition and the installed-cage count bite"
+bash "$0" --selfcheck || fail "the selfcheck did not bite -- the checker itself has regressed"
+
 have kyverno || fail "kyverno CLI required for the offline cage proofs"
 
 say "1. offline: the £ engine — the whole ladder, £ picks the tier, floor clamps, TCoR booked"
@@ -287,29 +401,65 @@ GAP
 # distribution/verify-coexistence.sh checks require-nonroot-$v. Versions come
 # from render-orphan-guard.py's versions() (distribution/versions.yaml), the
 # one array, reused -- never re-parsed here.
+#
+# 2026-09-04 (ticket 63): CUT versions only, keyed on the array element's
+# `commit` field -- the same rule, the same words, as
+# distribution/verify-declared-versions-admit.sh, distribution/verify-coexistence.sh
+# and posture/verify-posture-projection.sh. An element with no `commit` has not
+# been released: cut-release.yml fills that field in when it cuts the SIGNED
+# tag, so until then the tag does not exist, Flux has nothing to fetch, and the
+# version's policies cannot be DELIVERED BY FLUX to any cluster. Calling that
+# "not installed live" was a FAIL for an unmade release -- declaring 5.0.0 here
+# on 2026-09-04 turned this whole beat red the same minute, on a cluster where
+# nothing had regressed. The uncut tail is NAMED in the output instead of being
+# looked for, and it is named rather than skipped over: a blanket live_tail_skip
+# would have hidden the cut line's genuine green, which is the fault this rule
+# exists to avoid.
+#
+# 2026-09-04, round 2: what the array says is CUT is the right subject for
+# "which cage must be there by name", and the WRONG subject for "how many cages
+# a pod can select". This DEMO path is not Flux: render-and-prove.py writes
+# every declared element to versions.txt and up.sh applies each one's
+# cage-tier.yaml and cage-netpol.yaml, so one up.sh run from this branch
+# installs cage-tier-5-0-0 too -- uncut, ungraded, and selectable by any pod.
+# The count below therefore asks the CLUSTER what is installed. Keying it on the
+# cut list bought a PASS from an array whose second cage was live but unprobed.
 if ! substrate_ok "$CLUSTER"; then
   live_tail_skip "$SUBSTRATE_REASON"
 elif ! timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1; then
   live_tail_skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then graded/up.sh)"
 else
-  say "8. live: a REAL pod in a caged Namespace is admitted, RUNS, and wears its Namespace's cage"
-  while IFS= read -r v; do
-    timeout 10 kubectl --context "$CTX" get mutatingpolicy "cage-tier-$v" >/dev/null 2>&1 \
-      || fail "cage-tier-$v MutatingPolicy not installed live"
-    timeout 10 kubectl --context "$CTX" get generatingpolicy "cage-netpol-$v" >/dev/null 2>&1 \
-      || fail "cage-netpol-$v GeneratingPolicy not installed live"
-  done < <(python3 - "$HERE" <<'PY'
-import sys
-from pathlib import Path
-import importlib.util
-dist = Path(sys.argv[1]).parent / "distribution"
-spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-for v in mod.versions(dist / "versions.yaml"):
-    print(v.replace(".", "-"))
-PY
-)
+  say "8. live: a REAL pod in a caged Namespace is admitted, RUNS, and wears its Namespace's cage (CUT versions only)"
+  ARRAY_STATE="$(graded_state)"
+  CUT_VERSIONS="$(printf '%s\n' "$ARRAY_STATE" | sed -n 's/^CUT: //p')"
+  UNCUT_TAIL="$(printf '%s\n' "$ARRAY_STATE" | sed -n 's/^UNCUT: //p')"
+  if [ -n "$UNCUT_TAIL" ]; then
+    say "   uncut tail, not looked for BY NAME: $UNCUT_TAIL (declared with no commit, so no signed tag and nothing for Flux to deliver)"
+    cat <<'UNCUT'
+  NAMED, NOT CLOSED (2026-09-04, ticket 63): the orphan guard's allow-list is
+  ranged from the WHOLE array, cut or not, while FLUX only ever delivers a
+  cage-tier/cage-netpol pair for a version whose tag was actually cut. So on the
+  DELIVERY path, between the moment the array declares a version and the moment
+  cut-release.yml cuts its tag, a pod may CLAIM that version, pass the orphan
+  guard, and find no MutatingPolicy self-scoped to its claim -- admitted,
+  uncaged. Not reachable until the branch is pushed and the ResourceSet is
+  reconciling it. On THIS demo path the window does not exist for the opposite
+  reason, and it is not a comfort: up.sh applies every declared element, so the
+  uncut version's cage IS installed here -- ungraded, and counted live below.
+  The honest repair for both is to range the allow-list AND the fan-out over CUT
+  elements only, which is a change to the ResourceSet, render-orphan-guard.py,
+  render-and-prove.py and up.sh, not to this beat.
+UNCUT
+  fi
+  # Every CUT version must be installed, BY NAME: a released version whose cage
+  # is missing from the cluster is the fault this loop exists to catch, and no
+  # count below may swallow it.
+  for v in $CUT_VERSIONS; do
+    timeout 10 kubectl --context "$CTX" get mutatingpolicy "cage-tier-${v//./-}" >/dev/null 2>&1 \
+      || fail "cage-tier-${v//./-} MutatingPolicy not installed live"
+    timeout 10 kubectl --context "$CTX" get generatingpolicy "cage-netpol-${v//./-}" >/dev/null 2>&1 \
+      || fail "cage-netpol-${v//./-} GeneratingPolicy not installed live"
+  done
   # The newest declared version is the one the current authoring copy rendered
   # to, so it is the copy whose behaviour this tail is entitled to assert.
   #
@@ -324,32 +474,30 @@ PY
   # ponytail: the honest upgrade is a per-version expectation table and a loop.
   # Add it the day a second line is declared; until then it would be untestable
   # code with no second line to run against.
-  DECLARED_COUNT="$(python3 - "$HERE" <<'PY'
-import sys
-from pathlib import Path
-import importlib.util
-dist = Path(sys.argv[1]).parent / "distribution"
-spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(len(mod.versions(dist / "versions.yaml")))
-PY
-)"
-  if [ "$DECLARED_COUNT" -gt 1 ]; then
-    live_tail_skip "distribution/versions.yaml declares $DECLARED_COUNT versions and the behavioural probes below only exercise the newest; every declared version is installed and selectable by any pod, so the others are ungraded here and this tail may not claim the cage holds for them"
+  #
+  # 2026-09-04 (ticket 63, round 2): ASK THE CLUSTER. The sentence this count
+  # defends is "every installed version is SELECTABLE by any pod", which is a
+  # fact about the cluster, and the array cannot stand in for it on this path:
+  # render-and-prove.py writes every declared element to versions.txt and up.sh
+  # applies each one's cage-tier.yaml and cage-netpol.yaml, so an UNCUT element
+  # gets its cage installed here too -- ungraded, and selectable the moment it
+  # is applied. Counting the CUT list (the first fix, same day) said one where
+  # the cluster said two and bought a PASS where a could-not-look is honest.
+  # Counting the WHOLE array would be wrong the other way, on a cluster that
+  # simply has not been up.sh'd since the array grew. Neither file is the
+  # subject. The cluster is.
+  INSTALLED_NAMES="$(timeout 10 kubectl --context "$CTX" get mutatingpolicy -o name 2>/dev/null)" \
+    || fail "could not list MutatingPolicies on $CTX to count the installed cages"
+  INSTALLED_CAGES="$(graded_state --installed "$INSTALLED_NAMES")"
+  INSTALLED_COUNT="$(printf '%s\n' "$INSTALLED_CAGES" | grep -c . || true)"
+  INSTALLED_LINE="$(printf '%s\n' "$INSTALLED_CAGES" | tr '\n' ' ' | sed 's/ *$//')"
+  say "   cage-tier copies installed on $CTX: ${INSTALLED_LINE:-none} ($INSTALLED_COUNT)"
+  if [ "$INSTALLED_COUNT" -gt 1 ]; then
+    live_tail_skip "$CTX carries $INSTALLED_COUNT installed cage-tier MutatingPolicies ($INSTALLED_LINE) and the behavioural probes below only exercise the newest CUT one; every installed cage is selectable by any pod, so the others are ungraded here and this tail may not claim the cage holds for them"
   fi
-  NEWEST="$(python3 - "$HERE" <<'PY'
-import sys
-from pathlib import Path
-import importlib.util
-dist = Path(sys.argv[1]).parent / "distribution"
-spec = importlib.util.spec_from_file_location("render_orphan_guard", dist / "render-orphan-guard.py")
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-print(mod.versions(dist / "versions.yaml")[-1])
-PY
-)"
-  echo "  -- the live copy under test is cage-tier-${NEWEST//./-}, applied by graded/up.sh from"
+  NEWEST="$(printf '%s' "$CUT_VERSIONS" | tr ' ' '\n' | tail -1)"
+  [ -n "$NEWEST" ] || fail "no CUT version in distribution/versions.yaml: nothing released is installed live to probe"
+  echo "  -- the live copy under test is cage-tier-${NEWEST//./-} (newest CUT version), applied by graded/up.sh from"
   echo "     distribution/policies/v$NEWEST (render-and-prove.py). Flux is NOT in the loop on"
   echo "     this path, so 'in force' below means installed and enforcing, never 'reconciled'."
 

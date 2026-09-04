@@ -1,0 +1,43 @@
+# Self-scopes via matchConditions on the policy-version label -- NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: MutatingPolicy
+metadata:
+  name: cage-tier-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 5.0.0
+spec:
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - pods
+  matchConditions:
+  - name: claims-a-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
+  - name: only-this-policy-version
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '5.0.0'
+  variables:
+  - name: nsTier
+    expression: "namespaceObject != null\n  ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('')\n  : ''"
+  - name: tier
+    expression: "variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n  ? variables.nsTier\n  : 'isolated'"
+  - name: dial
+    expression: "{'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline-5-0-0',  'prio':'-10',   'harden':'false','wafCpu':'0',   'wafMem':'0'},\n 'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted-5-0-0','prio':'-100',  'harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},\n 'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine-5-0-0','prio':'-1000', 'harden':'true', 'wafCpu':'250m','wafMem':'256Mi'},\n 'isolated':  {'cpu':'100m','mem':'64Mi', 'pc':'cage-isolated-5-0-0',  'prio':'-10000','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": variables.tier\n  } },\n  spec: Object.spec{\n    hostNetwork: false,\n    hostPID: false,\n    hostIPC: false,\n    priorityClassName: variables.dial.pc,\n    priority: int(variables.dial.prio),\n    preemptionPolicy: \"Never\",\n    containers: object.spec.containers.filter(c, c.name != \"waf-sidecar\").map(c, Object.spec.containers{\n      name: c.name,\n      resources: Object.spec.containers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{\n      name: \"waf-sidecar\",\n      image: \"ghcr.io/acme/coraza-waf:cage\",\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.wafCpu, \"memory\": variables.dial.wafMem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: true, runAsNonRoot: true,\n        allowPrivilegeEscalation: false, privileged: false\n      }\n    }] : [])\n  }\n}"
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: "variables.dial.harden == 'true'\n  ? object.spec.containers.map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/containers/\" + string(object.spec.containers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
