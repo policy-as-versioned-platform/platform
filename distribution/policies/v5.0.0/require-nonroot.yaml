@@ -1,0 +1,99 @@
+# require-nonroot @ 5.0.0 -- 4.0.0's two checks, plus the RE-CARRIED
+# root-if-attested conditional arm (ticket 58 Q2a, ticket 63).
+#
+# 5.0.0 is the isolated-default release (ticket 63, ADR-0022): the unlabelled
+# tier default flips from `baseline` to `isolated` in cage-tier.yaml. That is a
+# major, and a policy version covers the WHOLE body, so every member is
+# re-issued at the new number whether or not its own body moved.
+#
+# WHY THE ARM COMES BACK, AND WHY IT COMES BACK HERE. Principle 1's first arm --
+# "a rule may widen for a condition, uniformly, never for a named team" -- had
+# no live demonstration after 2026-08-29: it lived only in 2.0.1, and 2.0.1 was
+# RETIRED (its element deleted from distribution/versions.yaml, its tree frozen
+# behind its signed tag). A principle demonstrated only by a retired body is a
+# principle nothing serves. This cut restores it.
+#
+# It is folded INTO require-nonroot rather than shipped as its own
+# `may-run-root-if-attested` ValidatingPolicy, for the same two reasons 2.0.1
+# folded it:
+#
+#   1. Kyverno ANDs policies. Two ValidatingPolicies that both match a pod must
+#      both pass, so a separate "may run root if attested" policy could not
+#      widen this one -- it would be inert at best, and a second refusal at
+#      worst. A widening has to live inside the body it widens.
+#   2. Ticket 22's pairing rule keys on (identity, name-with-version-stripped).
+#      A new member name would read as a brand-new unpaired policy AND make
+#      require-nonroot@4.0.0 read as silently removed. Same family, same name,
+#      new number.
+#
+# THE SHAPE. Pass if you run non-root with a read-only root filesystem on every
+# container (4.0.0's rule, unchanged), OR if you run as root but carry a
+# root-attestation AND every container drops ALL capabilities AND mounts a
+# read-only root filesystem (condition C, uniform over all containers). 4.0.0's
+# two separate validations become one expression because an OR cannot be
+# expressed across two independently-evaluated validations -- each would refuse
+# on its own. Anyone who passed 4.0.0 still passes 5.0.0: this member WIDENS and
+# narrows nothing. The major on this release comes from cage-tier, not here (see
+# the release commit for the real `cage_engine.classify_repo` proof).
+#
+# The attestation predicate is deliberately the same one 2.0.1 used: a non-empty
+# `policy-as-versioned.dev/root-attestation` label. It is a REFERENCE to a
+# sign-off, not the sign-off -- this policy asserts that a named attestation was
+# claimed, never that it is valid. Verifying it would need a signature the
+# cluster can check, which is ADR-0021's territory and not this cut's.
+#
+# Still Audit. Audit->Deny promotion is a separate, editorial PR (never a timer,
+# no date logic in the body -- ADR-0006).
+#
+# Self-scopes via matchConditions on the policy-version label -- NOT
+# matchConstraints.objectSelector, which Kyverno flattens into one shared
+# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
+# multi-version coexistence. Only pods that CLAIM 5.0.0 are judged here; a pod
+# on 4.0.0 (or unversioned) is out of scope, so both declared versions admit
+# side by side.
+apiVersion: policies.kyverno.io/v1alpha1
+kind: ValidatingPolicy
+metadata:
+  name: require-nonroot-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: require-nonroot
+    policy-as-versioned.dev/policy-version: "5.0.0"
+spec:
+  validationActions: [Audit]
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: only-this-policy-version
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '5.0.0'
+  variables:
+    # 4.0.0's rule, unmoved: non-root at the pod, read-only root fs on every
+    # container.
+    - name: nonroot
+      expression: >-
+        object.spec.?securityContext.?runAsNonRoot.orValue(false) == true &&
+        object.spec.containers.all(c, c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true)
+    # Condition C, part 1: a non-empty attestation reference (who signed off the
+    # root requirement). Empty/absent -> not attested.
+    - name: attested
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/root-attestation'].orValue('') != ''
+    # Condition C, part 2: every container is hardened -- read-only root fs AND
+    # drops ALL capabilities. Uniform over all containers.
+    - name: hardened
+      expression: >-
+        object.spec.containers.all(c,
+          c.?securityContext.?readOnlyRootFilesystem.orValue(false) == true &&
+          c.?securityContext.?capabilities.?drop.orValue([]).exists(d, d == 'ALL'))
+  validations:
+    - expression: "variables.nonroot || (variables.attested && variables.hardened)"
+      message: >-
+        pods on policy-version 5.0.0 must run as non-root with a read-only root
+        filesystem on every container, OR (if they must run as root) carry a
+        policy-as-versioned.dev/root-attestation AND drop ALL capabilities +
+        mount a read-only root filesystem on every container

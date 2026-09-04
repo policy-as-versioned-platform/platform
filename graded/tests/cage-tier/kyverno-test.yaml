@@ -30,8 +30,11 @@
 #   * `sidecar-resident` already carries a `waf-sidecar` (what every UPDATE to a
 #     caged pod looks like) and comes out with exactly one — appending a second
 #     made every update fail admission outright;
-#   * `ungoverned-ns` sits in a namespace nobody governs and renders `baseline`
-#     by ADR-0022's ordering rule — a decision with a fixture, not a fall-through;
+#   * `ungoverned-ns` sits in a namespace nobody governs and renders `isolated`
+#     (ticket 63, 2026-09-04): ADR-0022's ordering precondition is met, so the
+#     strictest-cage default is universal. It rendered `baseline` until then,
+#     and this row is what turned that flip red before the policy edit made it
+#     green — a decision with a fixture, not a fall-through;
 #   * `unclaimed-system` claims no version at all and is `skip`ped — the
 #     matchConditions gate, not prose, is what keeps unversioned/system/COTS
 #     pods out of scope (ticket 02 answer #5 stays a real open question, not one

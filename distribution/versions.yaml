@@ -75,6 +75,55 @@ spec:
         # with itself. major: the cage tier moved to the governed Namespace and
         # the pod label became an output -- every 3.0.0 consumer must act.
         - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major" }
+        #
+        # 5.0.0 -- the isolated-default release (ticket 63, ADR-0022). Two
+        # things move, and only the first is why it is a major:
+        #
+        #   * cage-tier's unlabelled tier default flips from `baseline` to
+        #     `isolated`. An UNGOVERNED Namespace used to buy a nudge by saying
+        #     nothing; now silence is the bottom rung, like every other silence
+        #     in this estate. ADR-0022's ordering rule held that flip back until
+        #     the platform's own `infra` declaration on
+        #     kube-system/flux-system/kyverno had landed AND the truth surface
+        #     asserted it, or CoreDNS would fall to `isolated` and the cluster
+        #     would stop. verify-infra-declaration.sh is that assertion and it
+        #     passes, so the precondition is met and the flip ships. It stays a
+        #     tripwire afterwards: pull an infra declaration while this default
+        #     reads `isolated` and that check FAILS.
+        #
+        #     Every 4.0.0 consumer must act -- a namespace that was ungoverned
+        #     and running normally is now caged to the bottom rung, so this
+        #     cannot be a minor or a patch, and ADR-0011 refuses a declaration
+        #     weaker than the computed one. The engine agrees on its own:
+        #     computed-semver classifies the tier-default move as major without
+        #     being told (verify-rederive-bumps.sh).
+        #
+        #   * require-nonroot RE-CARRIES the root-if-attested conditional arm,
+        #     folded into its own body exactly as the retired 2.0.1 folded it.
+        #     Principle 1's first arm -- a rule may widen for a CONDITION,
+        #     uniformly, never for a named team -- lived only in 2.0.1, and
+        #     2.0.1 is retired, so nothing served demonstrated it (ticket 58
+        #     Q2a). That member widens and narrows nothing, so it contributes
+        #     no bump of its own.
+        #
+        # This is also the SECOND DECLARED LINE (ticket 58 Q1a). Since the
+        # 2026-08-29 retirement the array has declared exactly one version, so
+        # coexistence, retirement and the +/-1 window had no live subject at all
+        # -- verify-coexistence.sh could only read could-not-look. 4.0.0 stays
+        # declared beside it: that is the point. Ticket 84 supplies the third
+        # line (ticket 75 Q3: at least three coexisting versions, forward and
+        # back by one, in the owner's own 2022 words) and the supersede pricing
+        # that makes an older line cost something.
+        #
+        # `commit` is deliberately absent, as 4.0.0's was before its release:
+        # the ResourceSet template makes it optional and cut-release.yml fills
+        # it in when it cuts the SIGNED tag. Until that dispatch happens this
+        # element is an UNCUT TAIL -- policy/v5.0.0 does not exist, so Flux
+        # cannot deliver it and no cluster can be carrying it. An agent never
+        # fakes a tag, a signature or a commit hash, so the field stays empty
+        # and the live-tail checks could-not-look by name rather than reporting
+        # a defect that is really an unmade release.
+        - { version: "5.0.0", tag: "policy/v5.0.0", bump: "major" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---

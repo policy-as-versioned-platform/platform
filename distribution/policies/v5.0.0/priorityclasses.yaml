@@ -1,0 +1,51 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-baseline-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 5.0.0
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — baseline tier: evicted before healthy workloads under pressure.'
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-restricted-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 5.0.0
+value: -100
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — restricted tier: evicted before baseline-caged workloads.'
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-quarantine-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 5.0.0
+value: -1000
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — quarantine tier: first to be evicted, the hardest cage short of Deny.'
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cage-isolated-5-0-0
+  labels:
+    app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: graded-enforcement
+    policy-as-versioned.dev/policy-version: 5.0.0
+value: -10000
+preemptionPolicy: Never
+globalDefault: false
+description: 'Graded cage — isolated tier, the bottom rung: FIRST to be evicted under node pressure, and no reach at all (cage-netpol generates a deny-all NetworkPolicy). It still runs; nothing is ever denied (ADR-0022).'

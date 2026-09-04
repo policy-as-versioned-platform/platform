@@ -33,8 +33,22 @@
 # per rung. So the probe now loops the ladder as well as the array: one governed
 # Namespace per tier, one pod per (declared version, tier).
 #
-# Definition of green: every declared version admits a real pod on every rung of
-# the ladder, and every one of those pods came back wearing that rung's own cage.
+# 2026-09-04 (ticket 63), fourth defect: an UNCUT TAIL took the whole beat down
+# with it. Adding 5.0.0 to the array made every version skip, because the loop
+# below is all-or-nothing and 5.0.0's cage-tier is not on any cluster. It cannot
+# be: an element with no `commit` has not been released, its signed tag does not
+# exist, so Flux has nothing to deliver. Absence of a release nobody has cut is
+# not a defect and not an observation — but it must not be allowed to hide a
+# real one on a line that IS cut, which is what a blanket skip did. So the array
+# is partitioned: a CUT version (commit present) is probed for real and a
+# missing cage on it is still a could-not-look by name; an UNCUT version is
+# excluded from the probe and NAMED, in the output and in the PASS line, so the
+# green says exactly what it did and did not look at. `--selfcheck` pins the
+# partition.
+#
+# Definition of green: every CUT declared version admits a real pod on every
+# rung of the ladder, every one of those pods came back wearing that rung's own
+# cage, and any uncut tail is named rather than counted either way.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
@@ -42,26 +56,82 @@ CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# The one reader of the array, shared by the real run and the selfcheck. Prints
+# two lines: `CUT: <versions>` and `UNCUT: <versions>`. With --selfcheck it runs
+# the pure asserts on the partition instead and touches no disk.
+declared_state() {
+python3 - "$HERE" "${1:-}" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+
+dist, mode = Path(sys.argv[1]), sys.argv[2]
+spec = importlib.util.spec_from_file_location("rog", dist / "render-orphan-guard.py")
+rog = importlib.util.module_from_spec(spec); spec.loader.exec_module(rog)
+
+
+def partition(els):
+    """(cut, uncut) by the `commit` field. An element with no commit -- absent
+    or empty -- is an UNCUT TAIL: cut-release.yml fills that field in when it
+    cuts the signed tag, so until then the tag does not exist, Flux cannot
+    deliver the version and no cluster can be carrying it. Nothing else in this
+    file may decide what 'released' means: this is the whole definition."""
+    cut = [e["version"] for e in els if e.get("commit")]
+    uncut = [e["version"] for e in els if not e.get("commit")]
+    return cut, uncut
+
+
+if mode == "--selfcheck":
+    assert partition([{"version": "4.0.0", "commit": "abc"}]) == (["4.0.0"], []), \
+        "a released element is cut and must be probed"
+    assert partition([{"version": "5.0.0", "tag": "policy/v5.0.0"}]) == ([], ["5.0.0"]), \
+        "an element with NO commit key at all is an uncut tail"
+    assert partition([{"version": "5.0.0", "commit": ""}]) == ([], ["5.0.0"]), \
+        "an EMPTY commit is an uncut tail too, not a cut one"
+    # The defect this partition exists for: a cut line and an uncut one
+    # together must still probe the cut line, or the tail hides a real fault.
+    cut, uncut = partition([{"version": "4.0.0", "commit": "abc"},
+                            {"version": "5.0.0", "tag": "policy/v5.0.0"}])
+    assert (cut, uncut) == (["4.0.0"], ["5.0.0"]), (cut, uncut)
+    print("ok   selfcheck: cut/uncut partition -- a commit-less element is an uncut tail, "
+          "named and not probed, and never suppresses the probe of a cut line")
+    sys.exit(0)
+
+cut, uncut = partition(rog.elements(dist / "versions.yaml"))
+print("CUT: " + " ".join(cut))
+print("UNCUT: " + " ".join(uncut))
+PY
+}
+
+command -v python3 >/dev/null || fail "python3 required"
+
+# Run the selfcheck from the no-argument path, BEFORE the substrate check, so a
+# regression in the partition cannot hide behind a machine with no cluster.
+if [ -z "${1:-}" ]; then
+  say "0. selfcheck: the cut/uncut partition bites"
+  bash "$0" --selfcheck || fail "the selfcheck did not bite -- the checker itself has regressed"
+elif [ "${1:-}" = "--selfcheck" ]; then
+  declared_state --selfcheck
+  exit 0
+fi
+
 # ponytail: `infra` is off the probe ladder on purpose — only a platform-role
 # party may declare it (ADR-0022) and this Namespace is not one. Add it here the
 # day the probe runs under the platform's own party artefact.
 TIERS="baseline restricted quarantine isolated"
 
-command -v python3 >/dev/null || fail "python3 required"
 require_substrate "$CLUSTER"
 timeout 10 kubectl --context "$CTX" get mutatingpolicy >/dev/null 2>&1 \
   || skip "Kyverno MutatingPolicy CRD not installed on $CTX (run engine/up.sh then graded/up.sh)"
 
-VERSIONS="$(python3 - "$HERE" <<'PY'
-import sys, importlib.util
-from pathlib import Path
-dist = Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("rog", dist / "render-orphan-guard.py")
-mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
-print("\n".join(mod.versions(dist / "versions.yaml")))
-PY
-)"
-[ -n "$VERSIONS" ] || fail "distribution/versions.yaml declares no versions"
+STATE="$(declared_state)"
+VERSIONS="$(sed -n 's/^CUT: //p' <<<"$STATE" | tr ' ' '\n')"
+UNCUT="$(sed -n 's/^UNCUT: //p' <<<"$STATE")"
+if [ -n "$UNCUT" ]; then
+  say "uncut tail, NOT probed: $UNCUT — declared by distribution/versions.yaml with no \`commit\`, so cut-release.yml has not cut its signed tag, Flux has nothing to deliver and no cluster can be carrying it"
+fi
+if [ -z "$(tr -d '[:space:]' <<<"$VERSIONS")" ]; then
+  skip "every version distribution/versions.yaml declares is an uncut tail ($UNCUT) — none has a \`commit\`, so none has been released and there is nothing on any cluster to probe"
+fi
 
 # Absence is not a pass: a version whose own cage-tier policy is not on the
 # cluster would admit trivially, so it is a could-not-look with its name.
@@ -72,7 +142,7 @@ while IFS= read -r v; do
     || UNINSTALLED+=("$v")
 done <<<"$VERSIONS"
 if [ ${#UNINSTALLED[@]} -gt 0 ]; then
-  skip "$(printf '%s ' "${UNINSTALLED[@]}")— declared by distribution/versions.yaml but the version's own cage-tier MutatingPolicy is not installed on $CTX, so a pod admitting here would prove nothing about its cage"
+  skip "$(printf '%s ' "${UNINSTALLED[@]}")— CUT (released, tag and commit exist) and declared by distribution/versions.yaml, but the version's own cage-tier MutatingPolicy is not installed on $CTX, so a pod admitting here would prove nothing about its cage"
 fi
 
 NSPREFIX="version-admit-probe"
@@ -92,7 +162,7 @@ for t in $TIERS; do
     policy-as-versioned.dev/governed=true "posture.acme.io/tier=$t" >/dev/null
 done
 
-say "one REAL pod per (declared version x ladder rung), read back, on $CTX"
+say "one REAL pod per (CUT declared version x ladder rung), read back, on $CTX"
 BROKEN=()
 while IFS= read -r v; do
   [ -n "$v" ] || continue
@@ -137,4 +207,4 @@ done <<<"$VERSIONS"
 if [ ${#BROKEN[@]} -gt 0 ]; then
   fail "$(printf '%s; ' "${BROKEN[@]}")— declared by distribution/versions.yaml and allowed by the orphan guard. A version that cannot admit a pod, or admits one its own cage never touched, is not runnable. The repair is a patch release of the line (cut-release.yml, gitsign) or a retirement of the array element plus an adopter recompose; a released tree cannot be edited in place."
 fi
-echo "PASS: every version distribution/versions.yaml declares admits a real pod on every rung of the ladder on $CTX, and every pod came back wearing that rung's own cage"
+echo "PASS: every CUT version distribution/versions.yaml declares admits a real pod on every rung of the ladder on $CTX, and every pod came back wearing that rung's own cage${UNCUT:+ (not looked at, uncut and unreleasable: $UNCUT)}"

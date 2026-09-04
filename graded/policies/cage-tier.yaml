@@ -12,15 +12,23 @@
 # so every claiming workload keeps running, caged by degree. Nothing is ever
 # denied: the bottom rung is `isolated`, a running cage with no reach.
 #
-# FAIL CLOSED. A GOVERNED Namespace that declares no tier, or a tier this
-# policy does not know, renders `isolated` — the strictest running cage — never
-# `baseline`. Silence is never an exemption. A namespace that is NOT governed
-# still renders `baseline`: ADR-0022's ordering rule says the platform's own
-# `infra` declaration on kube-system/flux-system/kyverno must land, and the
-# truth surface must assert it, BEFORE the unlabelled default flips to
-# `isolated` — otherwise CoreDNS lands in `isolated` and the cluster stops.
-# That flip is a one-line edit to `variables.tier` below when the gate asserts
-# the infra declaration.
+# FAIL CLOSED. A Namespace that declares no tier, or a tier this policy does
+# not know, renders `isolated` — the strictest running cage — never `baseline`.
+# Silence is never an exemption, and since 2026-09-04 (ticket 63) that is true
+# of an UNGOVERNED namespace too, not just a governed one that forgot its
+# label.
+#
+# It was not always. ADR-0022's ordering rule kept the ungoverned default at
+# `baseline` until the platform's own `infra` declaration on
+# kube-system/flux-system/kyverno had landed AND the truth surface asserted it
+# — otherwise CoreDNS lands in `isolated` and the cluster stops. That
+# precondition is met: the three Namespaces carry `posture.acme.io/tier: infra`
+# on the platform's own signed namespaces.yaml manifests, party.yaml carries
+# the `platform` role that entitles the declaration, and
+# ../../distribution/verify-infra-declaration.sh asserts both on every gate
+# run. It stays a live tripwire afterwards, not a historical fact: if any infra
+# declaration is ever removed while this default reads `isolated`, that check
+# FAILS loudly rather than letting the cluster stop quietly.
 #
 # `infra` is deliberately absent from the dial table. It is a role declaration
 # by a `platform`-role party on its OWN Namespace manifests, never a priced
@@ -156,24 +164,44 @@ spec:
     # cluster-scoped request and, offline, for any `kyverno apply`/`test` run
     # that did not supply the Namespace through a CLI values file
     # (`namespaces:` list) — so every read is null-guarded.
-    - name: nsGoverned
-      expression: >-
-        namespaceObject != null &&
-        namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
+    # `nsGoverned` (the `policy-as-versioned.dev/governed` read) stood here
+    # until 2026-09-04 and was referenced by exactly one thing: the `tier`
+    # ternary's else-branch, which used it to give an UNGOVERNED namespace
+    # `baseline` and a governed-but-untiered one `isolated`. Ticket 63 flipped
+    # both arms to `isolated`, so the read had no reader left. It is deleted
+    # rather than left dead: a released body is signed and frozen, and the
+    # semver engine's `tier_expressions()` walks the `tier` variable's
+    # transitive reads, so an unreferenced variable is invisible to the engine
+    # anyway. Governance is still what the ADR-0014 guard
+    # (`governed-namespace-requires-claim`, rendered from versions.yaml) keys
+    # on; it is simply no longer what decides a rung.
     - name: nsTier
       expression: >-
         namespaceObject != null
           ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('')
           : ''
-    # Fail closed: a governed Namespace with no tier, or an unknown tier value
-    # (`infra` included — see the header), renders `isolated`. A namespace that
-    # is not governed still renders `baseline` until the platform's `infra`
-    # declaration lands and the gate asserts it (ADR-0022's ordering rule).
+    # Fail closed, everywhere. A governed Namespace with no tier, an unknown
+    # tier value (`infra` included — see the header) AND a namespace nobody
+    # governs at all all render `isolated`, the strictest running cage.
+    #
+    # 2026-09-04 (ticket 63): the ungoverned arm was `baseline` until today.
+    # ADR-0022's ordering rule held it there — the platform's own `infra`
+    # declaration on kube-system/flux-system/kyverno had to land AND the truth
+    # surface had to assert it before the default could flip, or CoreDNS would
+    # land in `isolated` and the cluster would stop. Both preconditions are met:
+    # the three namespaces carry `posture.acme.io/tier: infra` on the platform's
+    # signed namespaces.yaml, party.yaml carries the platform role, and
+    # ../../distribution/verify-infra-declaration.sh is the gating check that
+    # asserts it on every gate run. Governance no longer selects the default:
+    # silence is the bottom rung for everyone, so the else-branch collapsed
+    # from `nsGoverned ? 'isolated' : 'baseline'` to the single literal below
+    # and the `nsGoverned` variable went with it (see above). A namespace
+    # nobody governs no longer buys a nudge by saying nothing.
     - name: tier
       expression: >-
         variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']
           ? variables.nsTier
-          : (variables.nsGoverned ? 'isolated' : 'baseline')
+          : 'isolated'
     # The tier -> dials table. Mirror of cage.py TIERS (cpu/mem/priorityClass,
     # the harden flag = dropAll && readOnlyRootFs, and the WAF sidecar sizing),
     # plus `prio`, the PriorityClass's own integer value (see THE PRIORITY PAIR

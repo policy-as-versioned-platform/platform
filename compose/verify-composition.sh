@@ -65,7 +65,13 @@ print(lim["detail"] if lim["status"] == "open" else "")
 PY
 )" || fail "could not compose $ADOPTER to read its pin/render pair"
 if [ -n "$OPEN" ]; then
-  echo "SKIP: $OPEN -- the commit that carries these trees is not on the real remote until cut-release.yml cuts policy/v4.0.0 in Actions and the adopter's platform-pin.yaml moves with it"
+  # The waited-on tag is NAMED BY THE LIMIT, not hardcoded here. It said
+  # `policy/v4.0.0` from 2026-08-29 until 2026-09-04, and by then 4.0.0 had
+  # been cut and the pin had moved -- the sentence had gone stale while still
+  # reading as current, which is the failure mode this project cares about. The
+  # subject today is 5.0.0 (ticket 63, declared and not yet cut); tomorrow it is
+  # whatever the array declares ahead of the adopter's pin.
+  echo "SKIP: $OPEN -- the commit that carries these trees is not on the real remote until cut-release.yml cuts the corresponding policy/v<version> tag in Actions and the adopter's platform-pin.yaml moves with it (ticket 64 moves the pin and recomposes)"
   exit 3
 fi
 say "   every rendered policy version is present at the pinned parent commit"

@@ -1,3 +1,18 @@
+# A rendered FIXTURE, not a release. `selfcheck` is not a version: no element
+# in distribution/versions.yaml declares it, no signed tag carries it, and the
+# orphan-guard's allow-list is ranged from that same array, so a pod claiming
+# it would be refused. Flux never delivers this tree.
+#
+# 2026-09-04 (ticket 63): it deliberately did NOT take the isolated-default
+# flip. Two reasons. It serves nothing, so flipping it would change no
+# admission decision anywhere. And it is now a live example of the ternary
+# shape -- `nsGoverned ? 'isolated' : 'baseline'` -- that
+# distribution/verify-infra-declaration.sh must keep reading correctly: once
+# ticket 64 moves the three adopters' composed copies to 5.0.0, 4.0.0 and this
+# fixture are the only served bodies left carrying it, and a regex with no live
+# subject is a regex that rots. It is scanned by that check like every other
+# served body and reports `baseline`, which is the truth about it.
+#
 # Self-scopes via matchConditions on the policy-version label -- NOT
 # matchConstraints.objectSelector, which Kyverno flattens into one shared
 # ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks

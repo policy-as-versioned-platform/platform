@@ -23,6 +23,50 @@ cd "$here"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+# 2026-09-04 (ticket 63). A newly DECLARED element -- reviewed, in the array,
+# not yet dispatched -- has no evidence document, because the gate that writes
+# one runs inside cut-release.yml at cut time (step 1 below asserts that
+# ordering). Step 2 refused every such element outright, so adding 5.0.0 to the
+# array made this beat observe FALSE about a release nobody had asked for yet.
+# Nothing false had been observed: the gate had not run. The distinction the
+# refusal was missing is the TAG. Evidence missing and NO tag is a could-not-
+# look -- the state every release passes through between review and dispatch.
+# Evidence missing and a tag that EXISTS is the real defect: something was
+# released without the gate determining its number, which is the whole claim of
+# this beat, and that still FAILS by name.
+#
+# `--selfcheck` pins that three-way decision on its own, with no repo state.
+if [ "${1:-}" = "--selfcheck" ]; then
+python3 - <<'PYEOF'
+def verdict(has_evidence, has_tag):
+    """The three states an array element can be in, and the only one that is a
+    refusal. Ordering, from cut-release.yml: gate -> evidence -> array -> tag."""
+    if has_evidence:
+        return "check"        # compare declared vs computed, as before
+    if has_tag:
+        return "refuse"       # released with no gate evidence: the real defect
+    return "not-yet-gated"    # reviewed, declared, dispatch not run: cannot look
+
+
+assert verdict(True, True) == "check"
+assert verdict(True, False) == "check", "evidence written, signature pending -- step 3's case"
+assert verdict(False, True) == "refuse", "a cut tag with no evidence must never be tolerated"
+assert verdict(False, False) == "not-yet-gated", (
+    "a declared element with neither evidence nor tag is the pre-dispatch state, "
+    "not an observation that anything is wrong")
+print("ok  selfcheck: evidence+no tag is a could-not-look; NO evidence WITH a tag is still a "
+      "refusal; the gate-determines-the-number claim is not weakened")
+PYEOF
+  exit 0
+fi
+
+# `$here/<name>`, never `$0`: this script cd's to $here above, so a relative $0
+# no longer resolves (the same reason verify-corpus-generator.sh keeps $SELF).
+echo "== 0. selfcheck: the evidence/tag decision bites =="
+bash "$here/${BASH_SOURCE##*/}" --selfcheck \
+  || fail "the selfcheck did not bite -- the checker itself has regressed"
+
+echo
 echo "== 1. the workflow is wired: the gate runs BEFORE the tag, and the evidence commit lands first =="
 python3 - <<'PYEOF' || fail "cut-release.yml no longer runs the gate before the tag"
 import yaml
@@ -45,7 +89,7 @@ PYEOF
 echo
 echo "== 2. every declared bump agrees with the gate's own evidence =="
 python3 - <<'PYEOF' || fail "a declared bump and its evidence disagree"
-import json, sys
+import json, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, "computed-semver")
 import comparison_window
@@ -75,8 +119,18 @@ for element in declared:
     published = tag[len("policy/v"):]
     path = Path("computed-semver/evidence") / f"{published}.json"
     if not path.exists():
-        raise SystemExit(f"FAIL: {element['tag']} declares bump {element['bump']!r} but there is no "
-                         f"{path} -- the gate has not run for it")
+        # Evidence missing: refuse only if the TAG exists (released without the
+        # gate determining its number). Otherwise this element is declared and
+        # not yet dispatched -- see the header. Step 3 names it either way.
+        tagged = subprocess.run(["git", "rev-parse", "-q", "--verify",
+                                 f"refs/tags/{tag}"], capture_output=True).returncode == 0
+        if tagged:
+            raise SystemExit(f"FAIL: {tag} EXISTS as a tag but there is no {path} -- that "
+                             "release was cut without the gate determining its number, which is "
+                             "exactly what this beat exists to refuse")
+        print(f"..  {tag}: declared {element['bump']!r}; no evidence and no tag yet -- the gate "
+              "runs inside cut-release.yml, so this element has not been dispatched")
+        continue
     doc = json.loads(path.read_text())
     assert doc["bump"]["declared"] == element["bump"], (
         f"{version}: the array declares {element['bump']!r}, the evidence records "
@@ -124,8 +178,11 @@ PYEOF
 )
 
 if [ -n "${uncut}" ]; then
-  echo "The gate has run, the evidence is written and the array element is correct for:${uncut}"
-  echo "No signed tag exists for it. A gitsign tag can only be cut by .github/workflows/"
+  echo "No signed tag exists for:${uncut}"
+  echo "Where evidence is already written, the gate has run and the array element is correct,"
+  echo "and only the signature is outstanding. Where step 2 printed '..' for a tag, the gate"
+  echo "has not run for it either -- it runs inside the same dispatch, before the tag."
+  echo "A gitsign tag can only be cut by .github/workflows/"
   echo "cut-release.yml inside GitHub Actions, with that run's own ambient OIDC identity."
   echo "Nothing here may fake one, so this check cannot look at the last step of the release."
   echo "SKIP: waiting for the owner to let cut-release.yml cut${uncut} in Actions"
