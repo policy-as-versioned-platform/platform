@@ -14,8 +14,10 @@ hub's gate over the real adopters:
 Why a second check when the proposer already only tightens: the proposer writes proposals,
 and a human edits the Namespace by hand too. This is the pull-request gate that catches the
 hand edit -- or a merge that raced a re-price -- before Flux renders a looser cage than the
-party's worst-priced regime. A missing declaration is `isolated` by ADR-0022 and binds; an
-off-ladder tier cannot be compared and is refused as a missing instrument.
+party's worst-priced regime. A missing declaration is `isolated` by ADR-0022 and binds; ADR-0022's
+`infra` rung is a declaration a platform-role party may make and is tighter than anything a price
+can select, so it binds too; any other tier cannot be compared and is refused as a missing
+instrument. Two governed Namespace DOCUMENTS -- in two files or in one -- is could-not-look.
 
 Reads the COMMITTED evidence document: on a pull request the compose-check job regenerates
 it and fails on any drift, so the committed copy is the recomposed one by the time this runs.
@@ -49,7 +51,11 @@ def bind(prices: list[dict], declared: str | None, floor: str | None) -> dict:
     sel = wargamer.select_party_tier(prices, current=declared, floor=floor)
     required = sel["tier"]
     effective = declared if declared is not None else FAIL_CLOSED
-    bound = required is None or LADDER.index(effective) >= LADDER.index(required)
+    # rank(), not LADDER.index(): ADR-0022's `infra` rung is a declaration a
+    # platform-role party may make, and it is tighter than every rung a price can
+    # select. LADDER.index() raised on it, which graded a legitimate declaration
+    # as a missing instrument (fixed 2026-09-04).
+    bound = required is None or wargamer.rank(effective) >= wargamer.rank(required)
     return {"bound": bound, "declared": declared, "effective": effective, "required": required,
             "strictest_line": sel["strictest_line"], "lines": sel["lines"], "floor": floor,
             "clamped_to_floor": sel["clamped_to_floor"]}
@@ -68,9 +74,20 @@ def check(evidence_path: Path, adopter_dir: Path) -> tuple[int, str, dict | None
         return 3, (f"SKIP: no manifest under {adopter_dir} declares a Namespace carrying "
                    f'{tier_pr.GOVERNED_LABEL}: "true" -- there is no declaration to bind'), None
     if len(hits) > 1:
-        rel = ", ".join(str(h.relative_to(adopter_dir)) for h in hits)
-        return 3, f"SKIP: {len(hits)} governed Namespace manifests under {adopter_dir} ({rel})", None
-    declared = tier_pr.declared_tier(hits[0].read_text())
+        # Counted per DECLARATION: `find_governed_namespaces` lists one entry per
+        # governed Namespace DOCUMENT, so two of them in one file is caught here too.
+        # Before 2026-09-04 it counted files, and a second governed Namespace declared
+        # looser in the same manifest was invisible -- the check read the first and
+        # silently passed. Could-not-look rather than refuse: two declarations is a
+        # question about which one is the party's, not an observation that either is
+        # loose, and this check refuses to guess (ADR-0020).
+        return 3, (f"SKIP: {len(hits)} governed Namespace declarations under {adopter_dir} "
+                   f"({tier_pr.name_declarations(hits, adopter_dir)}) -- which one carries "
+                   f"this party's tier is not this check's guess to make"), None
+    try:
+        declared = tier_pr.declared_tier(hits[0].read_text())
+    except tier_pr.AmbiguousDeclaration as e:      # belt and braces: hits is already 1 here
+        return 3, f"SKIP: {hits[0]}: {e}", None
     floor = tier_pr.read_overlay_floor(adopter_dir / "party.yaml")
     try:
         verdict = bind(prices, declared, floor)
@@ -162,12 +179,54 @@ def selfcheck() -> None:
         assert rc == 3 and last.startswith("SKIP:"), (rc, last)
         rc, last, _ = check(tmp / "absent.json", tmp / "adopter")
         assert rc == 3 and last.startswith("SKIP:"), (rc, last)
+        # 11. TWO governed Namespace documents in ONE file, the second declared
+        #     looser: the ambiguity guard counted files until 2026-09-04, so this
+        #     read the first document and silently PASSED over a loose second one.
+        #     It is a could-not-look with a named reason, never a pass.
+        rc, last, _ = plant(tmp, "isolated", driftwood_today)
+        assert rc == 0, (rc, last)                    # the first document alone is bound
+        ns = tmp / "adopter" / "gitops" / "apps" / "namespace.yaml"
+        ns.write_text(ns.read_text() + '---\n'
+                      'apiVersion: v1\nkind: Namespace\nmetadata:\n  name: y\n  labels:\n'
+                      '    policy-as-versioned.dev/governed: "true"\n'
+                      '    posture.acme.io/tier: "baseline"\n')
+        rc, last, _ = check(tmp / "evidence.json", tmp / "adopter")
+        assert rc == 3 and last.startswith("SKIP:") and "2 governed Namespace declarations" in last, \
+            ("a second governed Namespace in the SAME file must be counted, not read past", rc, last)
+        assert "2 documents in it" in last, ("the reason must name the file and say it carries "
+                                             "two declarations", last)
+        # 12. ADR-0022's `infra`: a platform-role party's legitimate declaration, and
+        #     tighter than any rung a price can select. It binds; it is not a missing
+        #     instrument (which is how it graded until 2026-09-04).
+        rc, last, v = plant(tmp, "infra", driftwood_today)
+        assert rc == 0 and v["bound"] and v["effective"] == "infra", (rc, last, v)
+        rc, last, v = plant(tmp, "infra", [line("ico", "restricted")], floor="quarantine")
+        assert rc == 0 and v["bound"], (rc, last, v)
+        # 13. the floor is read only as a DIRECT child of `overlay:`. A `floor:` nested
+        #     deeper under `overlay:` is not a declaration party_artefact.py's schema
+        #     admits, and until 2026-09-04 the read matched it at any depth -- so a
+        #     decoy ABOVE the real floor won, and a party bound against a looser floor
+        #     than it declared.
+        adopter = tmp / "adopter"
+        (adopter / "party.yaml").write_text(
+            "party: x\nroles: [adopter]\noverlay:\n  restate:\n    defaults:\n"
+            "      floor: baseline\n  floor: quarantine\n")
+        assert tier_pr.read_overlay_floor(adopter / "party.yaml") == "quarantine", \
+            "a `floor:` nested deeper than a direct child of `overlay:` is not the floor"
+        (adopter / "party.yaml").write_text(
+            "party: x\nroles: [adopter]\noverlay:\n  restate:\n    defaults:\n"
+            "      floor: baseline\n")
+        assert tier_pr.read_overlay_floor(adopter / "party.yaml") is None, \
+            "an overlay that declares no floor of its own declares no floor"
 
     print("ok  tier binding: driftwood's committed shape (isolated over {isolated, baseline, "
           "isolated}) is bound; restricted or baseline over a stricter line is REFUSED and told "
           "what to declare; tighter or equal is bound; no declaration is isolated by default; "
-          "the declared floor binds; an off-ladder tier is a missing instrument; a premium-only "
-          "document binds nothing and says so; no Namespace or no evidence is could-not-look")
+          "the declared floor binds, and only where it is declared as a direct child of "
+          "`overlay:`; an off-ladder tier is a missing instrument while ADR-0022's `infra` is a "
+          "legitimate declaration that binds; a premium-only document binds nothing and says so; "
+          "no Namespace, two governed Namespace documents in one file, or no evidence is "
+          "could-not-look")
 
 
 def main(argv: list[str]) -> int:

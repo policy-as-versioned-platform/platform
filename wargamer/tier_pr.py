@@ -75,18 +75,26 @@ _GOVERNED_TRUE = re.compile(
     r"""^(\s*)policy-as-versioned\.dev/governed:\s*["']?true["']?\s*$""")
 _TIER_LINE = re.compile(r"""^(\s*)posture\.acme\.io/tier:\s*\S.*$""")
 _TIER_VALUE = re.compile(r"""^\s*posture\.acme\.io/tier:\s*["']?([^"'\s#]+)""")
-_OVERLAY_FLOOR = re.compile(r"""^\s+floor:\s*["']?([^"'\s#]+)""")
+_OVERLAY_FLOOR = re.compile(r"""^(\s+)floor:\s*["']?([^"'\s#]+)""")
+
+
+class AmbiguousDeclaration(ValueError):
+    """One file declares more than one governed Namespace. Which document
+    carries the party's tier is not this module's guess to make (ADR-0020: a
+    reader that cannot tell must not answer). Found 2026-09-04: the ambiguity
+    guard counted FILES, so a second governed Namespace declared looser in the
+    SAME file was invisible and every check silently passed on the first."""
 
 
 # --------------------------------------------------------------------------
 # finding the declaration -- by the governed label, never by a path
 # --------------------------------------------------------------------------
-def governed_namespace_span(text: str) -> tuple[int, int] | None:
-    """The (start, end) line span of the YAML document in `text` that is a
-    Namespace AND carries `governed: "true"`, or None. Document-scoped so a
-    multi-document file (tuppence/reset/workloads.yaml declares an
-    ungoverned Namespace beside its workloads) is read a document at a
-    time, not as one blob."""
+def governed_namespace_spans(text: str) -> list[tuple[int, int]]:
+    """EVERY (start, end) line span in `text` that is a Namespace document AND
+    carries `governed: "true"`. Document-scoped so a multi-document file
+    (tuppence/reset/workloads.yaml declares an ungoverned Namespace beside its
+    workloads) is read a document at a time, not as one blob -- and so that a
+    file carrying TWO governed Namespaces is counted as two, not one."""
     lines = text.splitlines(keepends=True)
     starts, ends, cur = [], [], 0
     for i, line in enumerate(lines):
@@ -96,12 +104,29 @@ def governed_namespace_span(text: str) -> tuple[int, int] | None:
             cur = i + 1
     starts.append(cur)
     ends.append(len(lines))
+    hits = []
     for start, end in zip(starts, ends):
         doc = lines[start:end]
         if any(_KIND_NAMESPACE.match(x) for x in doc) and \
                 any(_GOVERNED_TRUE.match(x) for x in doc):
-            return start, end
-    return None
+            hits.append((start, end))
+    return hits
+
+
+def governed_namespace_span(text: str) -> tuple[int, int] | None:
+    """THE governed Namespace document's span, or None where `text` declares
+    none. Raises AmbiguousDeclaration where it declares more than one: two
+    declarations in one file is a question, and answering it with the first one
+    is how a looser second declaration goes unread."""
+    hits = governed_namespace_spans(text)
+    if not hits:
+        return None
+    if len(hits) > 1:
+        at = ", ".join(f"lines {s + 1}-{e}" for s, e in hits)
+        raise AmbiguousDeclaration(
+            f"{len(hits)} governed Namespace documents in one file ({at}) -- which one "
+            f"carries this party's tier is not this module's guess to make")
+    return hits[0]
 
 
 def _candidate_manifests(adopter_dir: Path) -> list[Path]:
@@ -119,10 +144,12 @@ def _candidate_manifests(adopter_dir: Path) -> list[Path]:
 
 
 def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
-    """Every manifest in the adopter's own repo that declares a governed
-    Namespace. The proposer knows no path: `gitops/apps/namespace.yaml` is
-    where all three adopters happen to keep it today, and an adopter that
-    moves it is still proposed against.
+    """Every governed Namespace DECLARATION in the adopter's own repo, as the
+    path of the manifest carrying it -- one entry per governed Namespace
+    document, so a single file declaring two appears twice and `len(...) > 1`
+    means what every caller reads it to mean. The proposer knows no path:
+    `gitops/apps/namespace.yaml` is where all three adopters happen to keep it
+    today, and an adopter that moves it is still proposed against.
 
     ponytail: a line-level read, not a YAML parse -- a GitHub runner is not
     promised pyyaml (the same reason rejection-decay.yaml is read by hand).
@@ -133,9 +160,19 @@ def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
             text = path.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        if governed_namespace_span(text):
-            hits.append(path)
+        hits.extend(path for _ in governed_namespace_spans(text))
     return hits
+
+
+def name_declarations(hits: list[Path], adopter_dir: Path) -> str:
+    """The hits as a human-readable list, saying when one FILE carries more than
+    one of them -- otherwise a two-document file reads as the same path twice."""
+    counts: dict[str, int] = {}
+    for h in hits:
+        rel = str(h.relative_to(adopter_dir))
+        counts[rel] = counts.get(rel, 0) + 1
+    return ", ".join(f"{rel} ({n} documents in it)" if n > 1 else rel
+                     for rel, n in sorted(counts.items()))
 
 
 def declared_tier(text: str) -> str | None:
@@ -143,7 +180,9 @@ def declared_tier(text: str) -> str | None:
     declares today, or None where it declares none (which ADR-0022 renders as
     `isolated`). Read from the Namespace, never from a price line's `old_tier`:
     the line records what a regime priced last time, the Namespace records what
-    the party signed (ticket 78)."""
+    the party signed (ticket 78).
+
+    Raises AmbiguousDeclaration where `text` declares two governed Namespaces."""
     span = governed_namespace_span(text)
     if span is None:
         return None
@@ -162,20 +201,32 @@ def read_overlay_floor(party_yaml: Path) -> str | None:
     ponytail: a line-level read of the top-level `overlay:` block, for the same
     reason the rest of this module reads YAML by hand (a runner is not promised
     pyyaml). A floor nested any deeper than `overlay:` -> `  floor:` is not a
-    shape party_artefact.py's schema admits."""
+    shape party_artefact.py's schema admits, and this reads only that shape: the
+    key must be a DIRECT child of `overlay:`, at the same indent as the block's
+    own first key. Matching `floor:` at any depth (which is what this did until
+    2026-09-04) let `overlay: {add: [{floor: baseline}]}` -- a decoy nested under
+    a list item, not a declaration -- win over the real floor above it."""
     if not party_yaml.exists():
         return None
     in_overlay = False
+    block_indent: int | None = None
     for line in party_yaml.read_text().splitlines():
-        if line.startswith("#") or not line.strip():
+        if line.lstrip().startswith("#") or not line.strip():
             continue
         if not line[0].isspace():
             in_overlay = line.split(":", 1)[0].strip() == "overlay"
+            block_indent = None
             continue
-        if in_overlay:
-            found = _OVERLAY_FLOOR.match(line)
-            if found:
-                return found.group(1)
+        if not in_overlay:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block_indent is None:
+            block_indent = indent          # the overlay block's own key indent
+        if indent != block_indent:
+            continue                       # nested deeper than a direct child: not the floor
+        found = _OVERLAY_FLOOR.match(line)
+        if found:
+            return found.group(2)
     return None
 
 
@@ -255,6 +306,10 @@ def apply_tier_declaration(text: str, tier: str) -> tuple[str, bool]:
     `text` -- updated where it is already declared, inserted right after the
     governed label where it is not. Every other byte of the file, comments
     included, is untouched.
+
+    Raises AmbiguousDeclaration where `text` declares two governed Namespaces:
+    rewriting the first and leaving the second is exactly the silent partial
+    write this must not do.
 
     ponytail: a line edit inside the governed document's span, so the
     Namespace's own commentary survives a re-tune. A trailing `# comment` on
@@ -389,7 +444,11 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     p["manifest"] = result["manifest"]
 
     text = ns_path.read_text()
-    new_text, changed = apply_tier_declaration(text, p["change"]["to"])
+    try:
+        new_text, changed = apply_tier_declaration(text, p["change"]["to"])
+    except AmbiguousDeclaration as e:
+        result["error"] = f"{ns_path}: {e} -- nothing landed"
+        return result
     if not changed:
         result["error"] = (f"{ns_path} no longer declares a governed Namespace "
                             f"-- nothing to land")
@@ -408,7 +467,12 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     # Re-read AFTER the checkout: the edit must land on what `base` declares
     # today, not on whatever the working tree happened to be on.
     on_base = ns_path.read_text()
-    new_text, changed = apply_tier_declaration(on_base, p["change"]["to"])
+    try:
+        new_text, changed = apply_tier_declaration(on_base, p["change"]["to"])
+    except AmbiguousDeclaration as e:
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result["error"] = f"{ns_path} on origin/{base}: {e} -- nothing landed"
+        return result
     if not changed:
         _git("checkout", "-q", base, cwd=adopter_dir)
         result["error"] = (f"{ns_path} declares no governed Namespace on origin/{base} "
@@ -442,6 +506,10 @@ def _tightens(current: str | None, tier: str) -> bool:
     moment of the write. None declared is `isolated` by default, and only the
     explicit `isolated` line may be written over it."""
     ladder = wargamer.LADDER
+    # `tier` is what a price selected, so it must be on LADDER. `current` is what the
+    # Namespace DECLARES, so it may also be ADR-0022's `infra` -- which is tighter than
+    # every rung a price can reach, so nothing tightens it and False is the right answer
+    # for the same reason it is the right answer for a tier nobody can rank.
     if tier not in ladder or (current is not None and current not in ladder):
         return False
     if current is None:
@@ -491,8 +559,10 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
         ns_error = (f"no manifest under {adopter_dir} declares a Namespace with "
                     f'{GOVERNED_LABEL}: "true" -- there is no tier declaration to propose against')
     elif len(ns_hits) > 1:
-        ns_error = (f"{len(ns_hits)} governed Namespace manifests under {adopter_dir} "
-                    f"({', '.join(str(h.relative_to(adopter_dir)) for h in ns_hits)}) -- "
+        # Counted per DECLARATION, not per file: two governed Namespace documents in
+        # one manifest is the same ambiguity as two manifests (found 2026-09-04).
+        ns_error = (f"{len(ns_hits)} governed Namespace declarations under {adopter_dir} "
+                    f"({name_declarations(ns_hits, adopter_dir)}) -- "
                     f"which one carries this party's tier is not this proposer's guess to make")
 
     # The selection is over the PARTY, not the price line (ticket 78; ADR-0022):
@@ -915,6 +985,51 @@ def selfcheck() -> None:
         assert 'posture.acme.io/tier: "restricted"' in _git(
             "show", f"{feeds_branch}:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
 
+        # --- 4f. TWO governed Namespace documents in ONE manifest (ticket 78
+        #     review, 2026-09-04). The ambiguity guard counted FILES, so a second
+        #     governed Namespace declared LOOSER in the same file was invisible:
+        #     the proposer read the first, and apply_tier_declaration() rewrote
+        #     the first and left the second exactly as it was. Two declarations
+        #     is a question, so nothing lands and the reason names the file. ---
+        two_docs = ns.read_text() + (          # 4e left main declaring `baseline`
+            '---\n'
+            'apiVersion: v1\n'
+            'kind: Namespace\n'
+            'metadata:\n'
+            '  name: driftwood-batch\n'
+            '  labels:\n'
+            '    policy-as-versioned.dev/governed: "true"\n'
+            '    posture.acme.io/tier: "baseline"\n')
+        assert len(governed_namespace_spans(two_docs)) == 2, \
+            "two governed Namespace documents in one file must be counted as two"
+        try:
+            apply_tier_declaration(two_docs, "quarantine")
+        except AmbiguousDeclaration:
+            pass
+        else:
+            raise AssertionError("apply_tier_declaration must refuse to rewrite only the first "
+                                 "of two governed Namespace documents")
+        ns.write_text(two_docs)
+        _git("add", "-A", cwd=work)
+        _git("commit", "-q", "-m", "a second governed Namespace in the same file", cwd=work)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "baseline", "quarantine", True),
+        ]}))
+        ambiguous = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  org="driftwood", rejections_path=None, base="main",
+                                  dry_run=False)
+        assert len(ambiguous) == 1 and "landed" not in ambiguous[0], ambiguous
+        assert "2 governed Namespace declarations" in ambiguous[0]["error"], ambiguous
+        assert "2 documents in it" in ambiguous[0]["error"], \
+            ("the reason must say the two declarations are in one file", ambiguous)
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), \
+            ("an ambiguous declaration proposes nothing", _read_log(gh_log))
+        assert 'posture.acme.io/tier: "quarantine"' not in _git(
+            "show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+        _declare("baseline")     # back to one declaration for what follows
+
         # --- 5. structural safety: this module has no way to merge/dispose,
         #     and no way to open an issue either ---
         me = sys.modules[__name__]
@@ -956,8 +1071,12 @@ def selfcheck() -> None:
         "nothing records the no); the proposer can only TIGHTEN (ticket 78): a per-line "
         "crossing on a party declared isolated lands nothing (no branch, no PR), the party's "
         "strictest priced line is what gets written and the body says so, the declared "
-        "overlay.floor clamps the write up, and the current tier is read off the Namespace "
-        "(a line landing looser than the declaration is held); no merge()/approve()/dispose() "
+        "overlay.floor clamps the write up (read only as a direct child of `overlay:`, so a "
+        "decoy nested deeper is not a floor), and the current tier is read off the Namespace "
+        "(a line landing looser than the declaration is held); TWO governed Namespace "
+        "DOCUMENTS in one manifest is counted as two and lands nothing, and "
+        "apply_tier_declaration refuses to rewrite the first and leave the second; "
+        "no merge()/approve()/dispose() "
         "anywhere in this module, and no DISPOSING GH CALL either -- the argv this module "
         "builds is read, a planted `_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and "
         "a planted /merge REST path are both caught, and a `gh pr create` is not."

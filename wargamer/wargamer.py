@@ -156,11 +156,35 @@ def wargame(intel=None):
 
 
 # --- the party's one tier (ticket 78; ADR-0022) --------------------------------
-# Loosest first. `infra` is deliberately absent: only a platform-role party
-# declares it, on a Namespace manifest, never through a price -- the same
-# ladder driftwood/selection-policy/selection_policy.py publishes.
+# Loosest first. `infra` is absent from LADDER because nothing SELECTS it: a
+# price never proposes it and a floor never declares it -- the same ladder
+# driftwood/selection-policy/selection_policy.py publishes.
 LADDER = ("baseline", "restricted", "quarantine", "isolated")
 FAIL_CLOSED = LADDER[-1]     # a governed Namespace with no tier renders isolated
+
+# ADR-0022's fifth rung, which a Namespace may nonetheless DECLARE. Only a
+# platform-role party may declare it; a declaration from any other party renders
+# `isolated`. Both readings answer the two questions this fold asks the same way
+# -- `infra` is tighter than every rung on LADDER, and `isolated` is LADDER's own
+# tightest rung -- so no proposal can tighten an `infra` declaration and no priced
+# line is looser than one, whoever wrote it. That is why this needs no role
+# lookup, and why grading `infra` as a missing instrument (which is what happened
+# before 2026-09-04) was wrong: it is a legitimate declaration, not an unreadable
+# one (ADR-0022, "only a party with the `platform` role may declare a Namespace at
+# `infra`").
+INFRA = "infra"
+DECLARABLE = LADDER + (INFRA,)
+
+
+def rank(tier):
+    """How TIGHT `tier` is, as an index: higher is tighter. Defined over every
+    tier a Namespace may declare, which is one rung longer than what a price may
+    select. Raises ValueError for anything else -- tighter or looser cannot be
+    told, and guessing is a loosening nobody signed (ADR-0020)."""
+    if tier not in DECLARABLE:
+        raise ValueError(f"tier {tier!r} is not one a Namespace may declare "
+                         f"{list(DECLARABLE)} -- tighter or looser cannot be told")
+    return DECLARABLE.index(tier)
 
 
 def select_party_tier(prices, current=None, floor=None):
@@ -184,8 +208,13 @@ def select_party_tier(prices, current=None, floor=None):
     question this proposer does not yet ask: it needs the party's aggregate
     residual and a PR body that says so, and neither exists yet.
 
-    Raises ValueError for a tier off the ladder (a missing instrument: the
-    proposer cannot tell tighter from looser and must not guess)."""
+    A Namespace declared `infra` (ADR-0022's platform-role rung) is tighter than
+    every rung a price can select, so the fold is always held against it. A price
+    or a floor naming `infra` still raises: nothing SELECTS that rung.
+
+    Raises ValueError for a tier a price may not select or a Namespace may not
+    declare (a missing instrument: the proposer cannot tell tighter from looser
+    and must not guess)."""
     lines = {}
     for price in prices:
         tier = price.get("proposed_tier")
@@ -197,9 +226,9 @@ def select_party_tier(prices, current=None, floor=None):
         lines[f"{price.get('source')}/{price.get('kind')}"] = tier
     if floor is not None and floor not in LADDER:
         raise ValueError(f"declared floor {floor!r} is not on the ladder {list(LADDER)}")
-    if current is not None and current not in LADDER:
-        raise ValueError(f"the Namespace declares tier {current!r}, which is not on the ladder "
-                         f"{list(LADDER)} -- tighter or looser cannot be told")
+    if current is not None and current not in DECLARABLE:
+        raise ValueError(f"the Namespace declares tier {current!r}, which is not one a Namespace "
+                         f"may declare {list(DECLARABLE)} -- tighter or looser cannot be told")
 
     strictest = max(lines.values(), key=LADDER.index) if lines else None
     tier, clamped = strictest, False
@@ -210,7 +239,7 @@ def select_party_tier(prices, current=None, floor=None):
         held = True
         basis = "no line prices a tier, so there is nothing to declare"
     else:
-        tightens = LADDER.index(tier) > LADDER.index(effective)
+        tightens = rank(tier) > rank(effective)
         explicit_default = current is None and tier == FAIL_CLOSED
         held = not (tightens or explicit_default)
         basis = (f"strictest priced line is {strictest!r} across {sorted(lines)}"
@@ -458,9 +487,18 @@ def selfcheck():
     # nothing priced: nothing to declare
     assert select_party_tier([{"source": "insurer", "kind": "premium", "proposed_tier": None}],
                              current="baseline")["held"] is True
+    # ADR-0022's `infra` rung is a legitimate DECLARATION (only a platform-role party
+    # may make it, and from anyone else it renders `isolated`) and it is tighter than
+    # anything a price can select, so it is held, never refused as an unreadable tier.
+    infra = select_party_tier([line("feeds", "isolated", True)], current="infra")
+    assert infra["held"] is True and infra["tier"] == "isolated", infra
+    assert rank("infra") > rank("isolated") > rank("baseline")
+    # ...but nothing SELECTS infra: a price naming it, or a floor declaring it, is refused
     # off-ladder anything is a missing instrument, never a guess
     for bad in (lambda: select_party_tier([line("feeds", "paranoid", True)], current="baseline"),
-                lambda: select_party_tier([line("feeds", "isolated", True)], current="infra"),
+                lambda: select_party_tier([line("feeds", "infra", True)], current="baseline"),
+                lambda: select_party_tier([line("feeds", "isolated", True)], floor="infra"),
+                lambda: select_party_tier([line("feeds", "isolated", True)], current="deny"),
                 lambda: select_party_tier([line("feeds", "isolated", True)], floor="deny")):
         try:
             bad()
