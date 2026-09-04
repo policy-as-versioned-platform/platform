@@ -243,8 +243,11 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
 ECO-SYSTEM TICKET 69 (ticket 58 Q5(b); ADR-0020): AN UNTAGGED PIN IS A
 PRICED HOLE. The premium edge reads the pin's signature state off the
 parent tree's OWN tags (`pin_signature` on the entry: `signed` when a tag
-of the pinned form carries a signature block, `untagged` when none does,
-`unobserved` when the tree has no git metadata to read). Untagged, the pin
+of the pinned form is an annotated tag object carrying a signature block,
+`untagged` when the checkout shows the publisher's tags and none of them
+signs the pin, `unobserved` when this checkout is in no position to say --
+no git metadata, no tag at all, or a matched tag that is not an annotated
+object because a second fetch flattened it). Untagged, the pin
 is a `hole` on the premium entry -- the premium itself, booked as paid
 against a quote no tag signs, under the adopter's own perspective and
 currency -- printed as a `new-untagged-pin` delta, recorded on the next
@@ -2264,18 +2267,49 @@ def _pin_tag_pattern(name: str, version: str) -> re.Pattern:
 
 
 def _tag_version_key(tag: str) -> list[int]:
-    return [int(x) for x in tag.rsplit("v", 1)[1].split(".")]
+    """Sort key over the tags of ONE pin form, tolerant of a pre-release
+    suffix (`v1.0.0-rc1`): each dotted field orders on its leading digits, and
+    a field carrying anything else sorts the tag below the plain release of
+    the same numbers. A pre-release pin is a legal pin, so reading its state
+    may not raise on the way to the highest tag."""
+    key: list[int] = []
+    release = 1
+    for field in tag.rsplit("v", 1)[-1].split("."):
+        digits = re.match(r"\d+", field)
+        key.append(int(digits.group()) if digits else 0)
+        if digits is None or digits.end() != len(field):
+            release = 0
+    return key + [release]
 
 
 def pin_signature_state(tree: Path | None, party: str, name: str, version: str) -> dict:
     """Ticket 69. What the parent tree's OWN tags say about the pin:
     `signed` when the highest tag of the pinned form is an annotated tag
-    carrying a signature block, `untagged` when no such tag does (none of
-    the form, or one with no block), `unobserved` when the tree carries no
-    git metadata to read a tag off. Presence of the block is what is read
-    here, the same reading `_signed_tags` makes for the adopter's own tags;
-    whether it VERIFIES under the pinned identity is the hub check's, and
-    this module never claims it. Never a refusal."""
+    carrying a signature block, `untagged` when the checkout demonstrably
+    carries the publisher's tags and none of them signs the pin, `unobserved`
+    when this checkout is in no position to say. Presence of the block is what
+    is read here, the same reading `_signed_tags` makes for the adopter's own
+    tags; whether it VERIFIES under the pinned identity is the hub check's,
+    and this module never claims it. Never a refusal.
+
+    Only a checkout that can actually show the publisher's tag namespace may
+    say `untagged`, because `untagged` books a hole of the whole premium and
+    an absent tag and an unfetched one look identical from inside a checkout:
+
+      - no git metadata at all: nothing to read (a fixture, a copied tree);
+      - a git checkout carrying NO tag whatever: `actions/checkout` fetches
+        none unless `fetch-tags: true` is set, so an empty tag namespace is
+        the shape of a shallow fetch, not of a publisher who never tagged;
+      - a matching tag that is not an annotated tag OBJECT (`objecttype` is
+        `commit`): a lightweight tag, or an annotated tag flattened by
+        checkout's second fetch (release.yml re-fetches the real ref before
+        verifying for exactly this reason) -- the object that would carry the
+        signature is not in this checkout to read.
+
+    All three are could-not-look: they keep a recorded hole open and open
+    none (ticket 69 decision 6). A tag of the pinned form that IS an
+    annotated object and carries no signature block is a real observation and
+    stays `untagged`: an unsigned tag signs nothing (decision 5)."""
     if tree is None or not (Path(tree) / ".git").exists():
         return {"state": "unobserved", "tag": None,
                 "detail": f"the {party} parent tree carries no git metadata, so no tag could be "
@@ -2283,24 +2317,32 @@ def pin_signature_state(tree: Path | None, party: str, name: str, version: str) 
     listed = subprocess.run(
         ["git", "-C", str(tree), "for-each-ref", "--format=%(refname:short) %(objecttype)",
          "refs/tags"], capture_output=True, text=True)
+    refs = [r for r in (line.split() for line in listed.stdout.splitlines()) if len(r) == 2]
+    if listed.returncode != 0 or not refs:
+        return {"state": "unobserved", "tag": None,
+                "detail": f"the {party} parent's checkout carries no tag at all, so it cannot "
+                          f"tell an untagged {name}@{version} from a checkout fetched without "
+                          f"tags; the signature state is unobserved, not absent"}
     pattern = _pin_tag_pattern(name, version)
-    refs = [line.split() for line in listed.stdout.splitlines()]
-    hits = sorted((tag, kind) for tag, kind in (r for r in refs if len(r) == 2)
-                  if pattern.match(tag))
+    hits = sorted((tag, kind) for tag, kind in refs if pattern.match(tag))
     if not hits:
         return {"state": "untagged", "tag": None,
                 "detail": f"no tag of the form {name}/v* or v* signs @{version} on the {party} "
-                          f"parent's checkout"}
+                          f"parent's checkout, which carries {len(refs)} tag(s) of its own"}
     tag, kind = max(hits, key=lambda h: _tag_version_key(h[0]))
-    if kind == "tag":
-        body = subprocess.run(["git", "-C", str(tree), "cat-file", "-p", tag],
-                              capture_output=True, text=True).stdout
-        if "-----BEGIN" in body:
-            return {"state": "signed", "tag": tag,
-                    "detail": f"tag {tag} on the {party} checkout carries a signature block"}
+    if kind != "tag":
+        return {"state": "unobserved", "tag": tag,
+                "detail": f"tag {tag} on the {party} checkout is a {kind}, not an annotated tag "
+                          f"object -- a lightweight tag, or one flattened by a second fetch -- so "
+                          f"the object that would carry a signature is not here to read"}
+    body = subprocess.run(["git", "-C", str(tree), "cat-file", "-p", tag],
+                          capture_output=True, text=True).stdout
+    if "-----BEGIN" in body:
+        return {"state": "signed", "tag": tag,
+                "detail": f"tag {tag} on the {party} checkout carries a signature block"}
     return {"state": "untagged", "tag": tag,
-            "detail": f"tag {tag} exists on the {party} checkout but carries no signature "
-                      f"block, so it signs nothing"}
+            "detail": f"annotated tag {tag} exists on the {party} checkout but carries no "
+                      f"signature block, so it signs nothing"}
 
 
 def _previous_pin_hole(prev_prices: list[dict], party: str, name: str) -> dict | None:
@@ -3061,16 +3103,84 @@ def _adopter_copy(name: str, dest: Path) -> Path:
 
 
 def _insurer_copy(dest: Path, *, git: bool) -> Path:
-    """Ticket 69's fixture: the real insurer's party.yaml and quote/ tree in
-    a scratch directory with NO tag -- `git init` and nothing else when
-    `git`, so the tree is observable and untagged; no git metadata at all
-    otherwise, so it is unobserved. No fixture here ever claims a signature."""
+    """Ticket 69's could-not-look fixtures: the real insurer's party.yaml and
+    quote/ tree in a scratch directory with NO tag -- `git init` and nothing
+    else when `git`, which is the shape a CI checkout without `fetch-tags`
+    has; no git metadata at all otherwise. Both read `unobserved`: a checkout
+    that cannot show the publisher's tags cannot call a pin untagged. No
+    fixture here ever claims a signature."""
     src = DEFAULT_ESTATE_CLONE / "insurer"
     dest.mkdir(parents=True)
     (dest / "party.yaml").write_text((src / "party.yaml").read_text())
     shutil.copytree(src / "quote", dest / "quote")
     if git:
         subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    return dest
+
+
+def _insurer_clone(dest: Path) -> Path:
+    """Ticket 69's untagged fixture, half one: a real `git clone` of the
+    insurer, so the publisher's OWN tags travel -- its real annotated v1.0.0
+    and nothing invented. A checkout like this one is the only kind that can
+    honestly say a pin is untagged."""
+    subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "insurer"), str(dest)],
+                   check=True, capture_output=True)
+    return dest
+
+
+def _quote_at_untagged_major(tree: Path, adopter: str, major: str) -> None:
+    """Ticket 69's untagged fixture, half two: the quote the insurer already
+    publishes, copied to a MAJOR it has never tagged, so the pin below points
+    at a real quote file no tag of the publisher's signs. No tag is created,
+    deleted, renamed or edited here: the tag namespace stays exactly the
+    publisher's own."""
+    src = tree / "quote" / adopter / "v1"
+    dest = tree / "quote" / adopter / major
+    shutil.copytree(src, dest)
+    doc = json.loads((dest / "feed.json").read_text())
+    doc["version"] = f"{major.lstrip('v')}.0.0"
+    (dest / "feed.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+
+def _bump_feed_pin(work: Path, party: str, name: str, version: str) -> None:
+    """Move ONE adopter feed pin, the edit a Renovate PR would make."""
+    doc = yaml.safe_load((work / "party.yaml").read_text())
+    for edge in doc["inherits"]:
+        if edge.get("kind") == "feed" and edge.get("party") == party and edge.get("name") == name:
+            edge["version"] = version
+    (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+
+def _flatten_tag(tree: Path, tag: str) -> None:
+    """Overwrite `refs/tags/<tag>` onto the commit it resolves to -- exactly
+    what `actions/checkout`'s second fetch does to an annotated tag object,
+    and why release.yml re-fetches the real ref before verifying it. The tag
+    name and the commit stay the publisher's own; only the object the local
+    ref points at changes, which is the whole point of the fixture."""
+    commit = subprocess.run(["git", "-C", str(tree), "rev-parse", f"{tag}^{{commit}}"],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(tree), "update-ref", f"refs/tags/{tag}", commit],
+                   check=True, capture_output=True)
+
+
+def _tag_shape_repo(dest: Path, *, tag: str | None, annotated: bool, flatten: bool = False) -> Path:
+    """A throwaway repo of this fixture's own -- no publisher's name on it --
+    carrying one commit and at most one tag, to read the SHAPES a checkout can
+    present back: no tag, a lightweight tag, an annotated tag, and an
+    annotated tag flattened onto its commit the way `actions/checkout`'s
+    second fetch flattens one (release.yml re-fetches the ref for exactly this
+    reason). Nothing here is signed and nothing claims to be."""
+    dest.mkdir(parents=True)
+    git = ["git", "-C", str(dest), "-c", "user.name=fixture", "-c", "user.email=fixture@invalid",
+           "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "fixture"], check=True,
+                   capture_output=True)
+    if tag:
+        subprocess.run(git + (["tag", "-a", tag, "-m", tag] if annotated else ["tag", tag]),
+                       check=True, capture_output=True)
+        if flatten:
+            _flatten_tag(dest, tag)
     return dest
 
 
@@ -3422,14 +3532,18 @@ def selfcheck() -> None:
     # eco-system ticket 69: an untagged pin is a priced hole
     # ======================================================================
     # The real insurer clone carries its signed v1.x.y tag, so the real
-    # driftwood's premium entry reads `signed` and carries no hole. A copy of
-    # the same insurer tree with NO tag is the untagged case: the quote still
+    # driftwood's premium entry reads `signed` and carries no hole. The
+    # untagged case is a real CLONE of the insurer -- the publisher's own tags
+    # travel -- carrying the quote it already publishes at a major it has
+    # never tagged, with driftwood's pin moved onto it: the quote still
     # prices, the pin is a hole of its own premium under driftwood's own
     # perspective and currency, printed as a delta and never a refusal; a
-    # second composition records it; a tree with no git metadata is a
-    # could-not-look that opens nothing and closes nothing; and composing
-    # again against the real signed clone closes it. No fixture here claims a
-    # signature: the only signed tag read is the insurer's real one.
+    # second composition records it; a checkout that cannot show the
+    # publisher's tags (no git metadata, no tag at all, a flattened tag) is a
+    # could-not-look that opens nothing and closes nothing; and a pin back
+    # onto the version the insurer's real signed tag carries closes it. No
+    # fixture here claims a signature: the only signed tag read is the
+    # insurer's real one.
     if quote_path.exists():
         real_premium = next(e for e in document["prices"] if e["kind"] == "premium")
         sig = real_premium["pin_signature"]
@@ -3439,12 +3553,44 @@ def selfcheck() -> None:
         print("OK pin signature: the real driftwood's quote pin resolves to the insurer's signed "
               "tag %s on the checkout, and carries no hole" % sig["tag"])
 
+        # The three shapes a checkout can present, read at the pure seam on
+        # this fixture's own throwaway repos: only the annotated tag object is
+        # an observation. Red before the fix: a tagless checkout and a
+        # flattened tag both read `untagged` and booked a hole of the whole
+        # premium into a signed artefact.
+        with tempfile.TemporaryDirectory() as td:
+            shapes = Path(td)
+            for label, kwargs, want in (
+                    ("a checkout with no tag at all", dict(tag=None, annotated=False), "unobserved"),
+                    ("a lightweight tag", dict(tag="v1.0.0", annotated=False), "unobserved"),
+                    ("an annotated tag flattened onto its commit",
+                     dict(tag="v1.0.0", annotated=True, flatten=True), "unobserved"),
+                    ("an annotated tag carrying no signature block",
+                     dict(tag="v1.0.0", annotated=True), "untagged")):
+                repo = _tag_shape_repo(shapes / label.replace(" ", "-"), **kwargs)  # type: ignore[arg-type]
+                got = pin_signature_state(repo, "fixture-publisher", "fixture-feed", "v1")
+                assert got["state"] == want, (label, got)
+            # and a pre-release pin reads rather than raising on its own tag
+            pre = _tag_shape_repo(shapes / "pre-release", tag="v1.0.0-rc1", annotated=True)
+            assert pin_signature_state(pre, "fixture-publisher", "fixture-feed",
+                                        "v1.0.0-rc1")["state"] == "untagged"
+        print("OK pin signature: only a checkout that can show the publisher's tag namespace may "
+              "say `untagged` -- no tag at all, a lightweight tag and a flattened annotated tag "
+              "all read `unobserved`; an annotated tag with no signature block is untagged")
+
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            untagged = _insurer_copy(root / "insurer-untagged", git=True)
+            untagged = _insurer_clone(root / "insurer-untagged")
+            _quote_at_untagged_major(untagged, "driftwood", "v2")
+            tagless = _insurer_copy(root / "insurer-tagless", git=True)
+            _quote_at_untagged_major(tagless, "driftwood", "v2")
             bare = _insurer_copy(root / "insurer-bare", git=False)
+            _quote_at_untagged_major(bare, "driftwood", "v2")
+            flattened = _insurer_clone(root / "insurer-flattened")
+            _flatten_tag(flattened, "v1.0.0")
             trees = {**parent_trees, "insurer": untagged}
             work = _adopter_copy("driftwood", root)
+            _bump_feed_pin(work, "insurer", "quote-driftwood", "v2")
 
             def _premium(doc: dict) -> dict:
                 return next(e for e in doc["prices"] if e["kind"] == "premium")
@@ -3466,14 +3612,14 @@ def selfcheck() -> None:
             assert hole is not None and hole["kind"] == UNTAGGED_PIN_HOLE_KIND, hole
             assert hole["status"] == "new", hole
             assert hole["source"] == "insurer" and hole["name"] == "quote-driftwood", hole
-            assert hole["version"] == "v1", hole
+            assert hole["version"] == "v2", hole
             assert hole["perspective"] == "driftwood" and hole["currency"] == "GBP", hole
             assert hole["amount"] == p1["amount"] and hole["amount"] > 0, (hole, p1["amount"])
             assert hole["priced_by"], hole
             d1 = _pin_deltas(doc1)
             assert len(d1) == 1 and d1[0]["kind"] == "new-untagged-pin", doc1["deltas"]
             assert d1[0]["source"] == "insurer" and d1[0]["name"] == "quote-driftwood", d1
-            assert d1[0]["version"] == "v1", d1
+            assert d1[0]["version"] == "v2", d1
             assert d1[0]["perspective"] == "driftwood" and d1[0]["currency"] == "GBP", d1
             assert d1[0]["amount"] == p1["amount"] and d1[0]["priced_by"] == hole["priced_by"], d1
             assert "amount" in d1[0] and "detail" in d1[0], d1
@@ -3491,25 +3637,48 @@ def selfcheck() -> None:
             assert _pin_deltas(doc2) == [], doc2["deltas"]
             print("OK untagged pin: a second composition records the hole and prints no delta")
 
-            # 3. unobserved: no git metadata to read a tag off -- a could-not-look
-            # that neither opens a hole nor closes the recorded one
+            # 3. unobserved: a checkout that cannot show the publisher's tags
+            # -- no git metadata, and no tag at all (the shape `actions/checkout`
+            # leaves without `fetch-tags: true`) -- is a could-not-look that
+            # neither opens a hole nor closes the recorded one
             _commit(doc2, rendered2)
-            doc3, _ = compose(work, {**parent_trees, "insurer": bare})
-            assert doc3["outcome"] == "composed", doc3["refusals"]
-            p3 = _premium(doc3)
-            assert p3["pin_signature"]["state"] == "unobserved", p3["pin_signature"]
-            assert "no git" in p3["pin_signature"]["detail"], p3["pin_signature"]
-            assert p3["hole"]["status"] == "recorded", p3["hole"]
-            assert _pin_deltas(doc3) == [], doc3["deltas"]
-            fresh = _adopter_copy("driftwood", root / "fresh")
-            doc3b, _ = compose(fresh, {**parent_trees, "insurer": bare})
-            assert _premium(doc3b)["pin_signature"]["state"] == "unobserved", _premium(doc3b)
-            assert _premium(doc3b)["hole"] is None, _premium(doc3b)["hole"]
-            assert _pin_deltas(doc3b) == [], doc3b["deltas"]
-            print("OK unobserved pin: a parent tree with no git metadata reads `unobserved`, "
-                  "keeps a recorded hole and opens none -- a could-not-look, never a signature")
+            rendered3: dict[str, str] = {}
+            for tree, expected in ((bare, "no git"), (tagless, "no tag at all")):
+                doc3, rendered3 = compose(work, {**parent_trees, "insurer": tree})
+                assert doc3["outcome"] == "composed", doc3["refusals"]
+                p3 = _premium(doc3)
+                assert p3["pin_signature"]["state"] == "unobserved", p3["pin_signature"]
+                assert expected in p3["pin_signature"]["detail"], p3["pin_signature"]
+                assert p3["hole"]["status"] == "recorded", p3["hole"]
+                assert _pin_deltas(doc3) == [], doc3["deltas"]
+                fresh = _adopter_copy("driftwood", root / f"fresh-{expected.replace(' ', '-')}")
+                _bump_feed_pin(fresh, "insurer", "quote-driftwood", "v2")
+                doc3b, _ = compose(fresh, {**parent_trees, "insurer": tree})
+                assert _premium(doc3b)["pin_signature"]["state"] == "unobserved", _premium(doc3b)
+                assert _premium(doc3b)["hole"] is None, _premium(doc3b)["hole"]
+                assert _pin_deltas(doc3b) == [], doc3b["deltas"]
+            print("OK unobserved pin: a parent tree with no git metadata, and a checkout carrying "
+                  "no tag at all, both read `unobserved` -- they keep a recorded hole and open "
+                  "none, a could-not-look and never a signature")
 
-            # 4. closed: the real clone's signed tag now signs the pin
+            # 3b. the defect this fix closes: driftwood's real, SIGNED pin
+            # against an insurer checkout whose annotated tag a second fetch
+            # flattened. A checkout like that is what the adopters' workflows
+            # produce, and reading it as `untagged` books a six-figure hole
+            # into a signed artefact over a signature that is really there.
+            flat_work = _adopter_copy("driftwood", root / "flattened")
+            doc_flat, _ = compose(flat_work, {**parent_trees, "insurer": flattened})
+            p_flat = _premium(doc_flat)
+            assert p_flat["pin_signature"]["state"] == "unobserved", p_flat["pin_signature"]
+            assert p_flat["hole"] is None, p_flat["hole"]
+            assert _pin_deltas(doc_flat) == [], doc_flat["deltas"]
+            print("OK unobserved pin: a real signed tag flattened onto its commit by a second "
+                  "fetch reads `unobserved` and books NO hole -- a fabricated hole is worse than "
+                  "a missed one, and the fetch is the workflow's to fix (ticket 69)")
+
+            # 4. closed: the pin moves back onto the version the insurer's real
+            # signed tag carries, and the recorded hole closes itself
+            _bump_feed_pin(work, "insurer", "quote-driftwood", "v1")
             doc4, rendered4 = compose(work, parent_trees)
             assert doc4["outcome"] == "composed", doc4["refusals"]
             p4 = _premium(doc4)
@@ -3526,13 +3695,19 @@ def selfcheck() -> None:
                   "hole, prints one closed-untagged-pin delta, and the next composition "
                   "carries no hole -- the hole heals itself when the tag lands")
 
-            # 5. the rendered policies never change on a signature state move (the
-            # header records the parent SHAs, which differ between the fixture
-            # insurer tree and the real clone, so it is compared without)
-            moved = [k for k in rendered1 if k != "composed/HEADER.yaml" and rendered1[k] != rendered4.get(k)]
+            # 5. the rendered policies never change on a signature state move.
+            # Compared across untagged, recorded and unobserved, which are the
+            # same pin against the same quote read three ways -- the closed
+            # case moves the pin itself, so its render is not the same input.
+            # (The header records the parent SHAs, which differ between the
+            # fixture insurer trees, so it is compared without.)
+            moved = [k for k in rendered1
+                     if k != "composed/HEADER.yaml"
+                     and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
             assert not moved, moved
             print("OK untagged pin: the rendered artefact is byte-identical across untagged, "
-                  "recorded and closed -- signature state lives in the evidence, never the render")
+                  "recorded and unobserved -- signature state lives in the evidence, never the "
+                  "render")
 
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
@@ -4714,7 +4889,10 @@ def selfcheck() -> None:
         "insurer tree's own tags; an untagged pin composes with a hole of its own premium under "
         "the adopter's perspective and currency, printed as a new-untagged-pin delta, recorded "
         "on the next composition, kept open under an unobserved tree, and closed by the first "
-        "signed tag that carries it -- never a refusal and never a claimed signature."
+        "signed tag that carries it -- never a refusal and never a claimed signature; and only "
+        "a checkout that can show the publisher's tag namespace says `untagged` at all, so a "
+        "tagless checkout, a lightweight tag and a flattened annotated tag read `unobserved` "
+        "rather than booking a hole over a signature that is really there."
     )
 
 
