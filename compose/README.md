@@ -147,6 +147,44 @@ itself needs.
   exist in the party artefact schema, so composition never has occasion to pass one.
 - The document gains `prices[]`.
 
+## What eco-system ticket 38 changes: a hole is priced, not counted
+
+- **The new-hole, baseline-widening and new-ungoverned-namespace refusals are gone.** Each prints
+  as a `deltas[]` entry under the adopter's own perspective and currency — what changed since the
+  last signed composed artefact and what a pinned instrument prices it at. A delta no pinned
+  instrument names carries `amount: null` and `priced_by: null`: a named absence, never a zero.
+  The only hole-shaped refusal left is a bespoke control with no signed scenario (a missing
+  instrument, ADR-0020). `removed-control` stands: a removal is an exemption by another name.
+- **Every hole is `(source, id)`** across every `controls` parent, an adopter's own catalogue
+  included. A claim's source is its component-definition's `source` href (`../nist/...` → `nist`);
+  a bare `overlay.controls` id is the baseline's catalogue's, `party:id` names another controls
+  parent's. The header writes the bare id where the source is the baseline's own and `source:id`
+  otherwise, so the three real adopters' headers keep their shape byte for byte. `holes[]` entries
+  carry `source`, `control_id`, `status`, `perspective`, `currency`, `amount` and `priced_by`; the
+  regime entry's `holes[]` partition (ticket 25) is untouched and each line gains the adopter's
+  `status` for that control (`new`/`recorded`/`closed`/`covered`/`unselected`).
+- **An ungoverned namespace is priced**, on its `ungoverned[]` entry: its workload share
+  (Deployments, StatefulSets, DaemonSets, Jobs, CronJobs in the repo walk, over the same across
+  every namespace carrying the `institution` label) of the adopter's whole uncaged residual (the
+  `exposure` total), LEF-ramped from `since` by the feeds module's own `eol_ramp` and bounded at the
+  whole residual. `since` is read off the first *signed* tag whose header names the namespace — no
+  new header field, and it survives a close and a reopen — and `as_of` is the newest `published_at`
+  among the pinned feeds, so the module still reads no clock. What cannot be read is named in
+  `price.limits[]`, never invented. The live case is tuppence's `tuppence-reset`.
+- **A bespoke control** is a small OSCAL catalogue the adopter publishes and pins as a `controls`
+  parent of *itself*; the self-pin resolves to the adopter's own tree (the catalogue is signed by
+  the same tag as the composed artefact — ADR-0017's "no separate pin"). Its hole is priced by the
+  scenario the control's `props[name=scenario]` names, repo-relative, through the same cage engine
+  the restate path uses. It is reported on the hole and its delta; it does not yet enter
+  `prices[]` (a `PRICE_KINDS` major the £ seam grades), so it is priced but not yet tiered — a
+  named limit. The amount is labelled in the adopter's reporting currency and this path takes no
+  FX rate, so a band declared in another currency refuses as a missing instrument naming both
+  (one currency on both sides; a relabelled amount is a minted one). The self-pin may sit
+  anywhere in `inherits[]`: the header's bare ids key to the first `controls` parent that is
+  not the adopter, on writing and on reading alike.
+- The document gains `deltas[]`. `verify/priced-holes/` in the hub grades all of this on the
+  composed evidence; the superseding ADR for ADR-0013/0017/0018 point 3 is ticket 39's.
+
 ## Run
 
 ```sh

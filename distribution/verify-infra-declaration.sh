@@ -16,18 +16,35 @@
 #      body (distribution, graded, and each adopter's composed/) for the
 #      UNGOVERNED-namespace tier default -- the fallback a Namespace with no
 #      `governed: "true"` label renders to (kube-system/flux-system/kyverno
-#      included, since none of them are governed). Two served shapes exist
-#      side by side today: the pre-namespaceObject flat CEL
-#      `...['posture.acme.io/tier'].orValue('<default>')`, and the landed
-#      namespaceObject ternary `nsGoverned ? 'isolated' : '<default>'` --
-#      that file's own docstring names its else-branch as "a one-line edit
-#      ... when the gate asserts the infra declaration", which is exactly
-#      the edit this proof exists to gate. If ANY served copy's default has
-#      moved to `isolated` while any of the three infra namespaces is NOT
-#      (yet) declared infra, this FAILS LOUDLY -- that gap is exactly what
-#      stops CoreDNS landing in isolated the moment the fail-closed default
-#      ships. Today every served default is still `baseline`, so this proof
-#      is a live tripwire for that future landing, not a historical fact.
+#      included, since none of them are governed). If ANY served copy's
+#      default has moved to `isolated` while any of the three infra
+#      namespaces is NOT (yet) declared infra, this FAILS LOUDLY -- that gap
+#      is exactly what stops CoreDNS landing in isolated the moment the
+#      fail-closed default ships. It is a live tripwire, not a historical
+#      fact: the flip has now shipped (below), so pulling an infra
+#      declaration is what would fire it.
+#
+#      THREE served shapes exist side by side, and this check must read all
+#      three or it goes blind exactly when it matters:
+#        a. the pre-namespaceObject flat CEL,
+#           `...['posture.acme.io/tier'].orValue('<default>')` -- the
+#           retired 2.x/3.x trees;
+#        b. the namespaceObject ternary `nsGoverned ? 'isolated' :
+#           '<default>'` -- 4.0.0, vselfcheck, and every adopter composed
+#           copy still pinned to 4.0.0;
+#        c. the COLLAPSED else-branch, `? variables.nsTier : '<default>'` --
+#           graded and 5.0.0 since 2026-09-04 (ticket 63). The flip made
+#           both arms of (b)'s ternary the same rung, so the ternary and the
+#           `nsGoverned` variable it was the only reader of both went away.
+#           A shape this check cannot see reads None, never a safe guess.
+#
+#      COMMENTS ARE STRIPPED before any of that (ticket 63). They were not
+#      until 2026-09-04, and the flip's own changelog comment in graded's
+#      cage-tier.yaml -- prose quoting the OLD shape, "collapsed from
+#      `nsGoverned ? 'isolated' : 'baseline'`" -- was read as shape (b) and
+#      reported that already-flipped body as still `baseline`. Same bug this
+#      script fixed for parse_namespace_docs on 2026-08-28, one function
+#      down: a comment must declare nothing, here too.
 #
 # Wholly offline: reads YAML/text off disk, touches no cluster. Never turns
 # absence of a served copy into a pass -- at least one must be found.
@@ -142,22 +159,47 @@ def served_cage_tier_files(estate_dir):
     return out
 
 
+def policy_body(text):
+    """A served policy body with its COMMENTS REMOVED and its rendered
+    escapes unfolded, ready for the shape regexes below.
+
+    Comments first: a rendered tree and an authoring copy both carry prose,
+    and prose about a policy is not the policy. On 2026-09-04 the flip's own
+    changelog comment in graded/policies/cage-tier.yaml quoted the shape it
+    had just replaced, and unlabelled_default read that quotation instead of
+    the live expression -- reporting a body that defaults to `isolated` as
+    still `baseline`, which is precisely the direction this tripwire must
+    never be wrong in. Then `\\n`: a rendered version tree writes each CEL
+    expression as one double-quoted YAML scalar with literal backslash-n
+    escapes, while the authoring copy uses a block scalar with real
+    newlines. Unfolding makes one set of regexes read both."""
+    text = re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", text)
+    return text.replace("\\n", "\n")
+
+
 def unlabelled_default(path):
     """The tier an UNGOVERNED namespace (kube-system/flux-system/kyverno's
     own population) falls to when this served body has no tier opinion for
-    it. Two shapes, checked in the order a served copy actually migrates
-    through:
-      1. The landed namespaceObject ternary's else-branch --
-         `nsGoverned ? 'isolated' : '<default>'` -- the exact line the
-         policy's own docstring calls out as the future one-line flip.
-      2. The older flat CEL read straight off the pod's own label --
-         `...['posture.acme.io/tier'].orValue('<default>')` -- for any
-         served copy (distribution/composed) not yet migrated.
-    None if this file matches neither (a shape this check cannot see is
+    it. Three shapes, checked in the order a served copy migrates through:
+      1. The COLLAPSED else-branch -- `? variables.nsTier : '<default>'` --
+         graded and 5.0.0 since ticket 63 flipped the default. Checked
+         first: shape 2's regex cannot match it, but a body carrying both
+         (an authoring copy mid-edit) is honestly described by the arm that
+         actually runs, which is the collapsed one.
+      2. The namespaceObject ternary's else-branch --
+         `nsGoverned ? 'isolated' : '<default>'` -- 4.0.0, vselfcheck, and
+         every adopter composed copy still pinned to 4.0.0.
+      3. The older flat CEL read straight off the pod's own label --
+         `...['posture.acme.io/tier'].orValue('<default>')` -- the retired
+         2.x/3.x trees, not yet migrated when they were frozen.
+    None if this file matches none of them (a shape this check cannot see is
     never treated as safe -- served_cage_tier_files' caller still lists it,
     with its default printed as None, so a genuinely new shape is visible
     in the output rather than silently skipped)."""
-    text = open(path).read()
+    text = policy_body(open(path).read())
+    m = re.search(r"\?\s*variables\.nsTier\s*:\s*'([a-zA-Z]+)'", text)
+    if m:
+        return m.group(1)
     m = re.search(r"nsGoverned\s*\?\s*'isolated'\s*:\s*'([a-zA-Z]+)'", text)
     if m:
         return m.group(1)
@@ -222,9 +264,55 @@ if selfcheck:
     assert unlabelled_default(tmp) == "isolated", "flat orValue shape: danger value must be read"
     open(tmp, "w").write("no tier expression of any known shape in this file\n")
     assert unlabelled_default(tmp) is None, "an unrecognised shape must read as None, not a safe guess"
+    # THE COLLAPSED SHAPE (ticket 63). Once both arms of the ternary became
+    # `isolated` the ternary went, and with it the only regex this check had.
+    # An unread shape is a None, and a None is not an offender -- so without
+    # this leg the flip would have shipped invisible to the tripwire that
+    # gates it. Both the authoring block scalar and the rendered one-line
+    # form with literal \n escapes are pinned, because the served copies use
+    # one each.
+    open(tmp, "w").write(
+        "    - name: tier\n      expression: >-\n"
+        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
+        "          ? variables.nsTier\n"
+        "          : 'isolated'\n"
+    )
+    assert unlabelled_default(tmp) == "isolated", "collapsed shape, block scalar: danger value must be read"
+    open(tmp, "w").write(
+        '  - name: tier\n    expression: "variables.nsTier in [\'baseline\', \'restricted\']'
+        "\\n  ? variables.nsTier\\n  : 'isolated'\"\n"
+    )
+    assert unlabelled_default(tmp) == "isolated", "collapsed shape, rendered \\n form: danger value must be read"
+    open(tmp, "w").write(
+        "    - name: tier\n      expression: >-\n"
+        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
+        "          ? variables.nsTier\n"
+        "          : 'baseline'\n"
+    )
+    assert unlabelled_default(tmp) == "baseline", "collapsed shape: a safe value must be read as itself"
+    # A COMMENT DECLARES NOTHING, HERE TOO (ticket 63). The flip's changelog
+    # comment quotes the shape it replaced; reading prose reported an
+    # already-flipped body as `baseline` -- the tripwire wrong in the one
+    # direction it must never be wrong in.
+    open(tmp, "w").write(
+        "    # collapsed from `nsGoverned ? 'isolated' : 'baseline'` on 2026-09-04\n"
+        "    # and the older flat read was ['posture.acme.io/tier'].orValue('baseline')\n"
+        "    - name: tier\n      expression: >-\n"
+        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
+        "          ? variables.nsTier\n"
+        "          : 'isolated'\n"
+    )
+    assert unlabelled_default(tmp) == "isolated", \
+        "prose quoting an older shape must not outvote the expression that actually runs"
+    open(tmp, "w").write(
+        "# this file's only mention of a default is in prose:\n"
+        "# `nsGoverned ? 'isolated' : 'baseline'`\n"
+        "apiVersion: policies.kyverno.io/v1alpha1\n"
+    )
+    assert unlabelled_default(tmp) is None, "a body whose ONLY match is a comment declares nothing"
     os.remove(tmp)
-    print("ok   selfcheck: ordering_rule, parse_namespace_docs and unlabelled_default (both "
-          "served shapes) behave as claimed")
+    print("ok   selfcheck: ordering_rule, parse_namespace_docs and unlabelled_default (all "
+          "three served shapes, and comments declaring nothing) behave as claimed")
     sys.exit(0)
 
 missing, found = declared_infra(platform)

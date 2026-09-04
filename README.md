@@ -3,6 +3,8 @@
 **GitHub org:** [`policy-as-versioned-platform`](https://github.com/policy-as-versioned-platform) ·
 **Role:** publisher, risk-bearer · **Licence:** [Apache-2.0](LICENSE)
 
+*A demonstration party, not affiliated with, endorsed by or speaking for any real authority it names.*
+
 Part of the *Policy as Versioned Code* estate: a shared platform, two regulators, three regulated
 institutions, each its own independent GitHub organisation, exchanging signed, versioned
 dependencies. Full thesis, design decisions (ADRs) and the other five parties:

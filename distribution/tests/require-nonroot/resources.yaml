@@ -1,32 +1,81 @@
 # pod-N-* claim policy-version N; unversioned claims none.
+#
+# 2026-09-04 (ticket 63): the matrix moved off the RETIRED 2.0.0/3.0.0 trees
+# onto the two lines distribution/versions.yaml actually declares, 4.0.0 and
+# 5.0.0. It had run over retired bodies since the 2026-08-29 retirement, and a
+# green over bodies Flux no longer delivers says nothing about what coexists
+# today -- it is the kind of pass that is true and worthless. verify-coexistence
+# now asserts that the `policies:` list next door is exactly the declared array,
+# so this fixture cannot drift back onto frozen trees unnoticed.
+#
+# 5.0.0 re-carries the root-if-attested conditional arm (ticket 58 Q2a), so the
+# two pods that arm exists for are here: the attested one it admits and the
+# identically-hardened UNattested one it still fails. An arm that widens for a
+# condition has to be shown widening for the condition and not otherwise.
 apiVersion: v1
 kind: Pod
-metadata: { name: pod-2-compliant, labels: { "policy-as-versioned.dev/policy-version": "2.0.0" } }
-spec:
-  securityContext: { runAsNonRoot: true }
-  containers: [{ name: c, image: nginx }]
----
-apiVersion: v1
-kind: Pod
-metadata: { name: pod-2-violating, labels: { "policy-as-versioned.dev/policy-version": "2.0.0" } }
-spec:
-  containers: [{ name: c, image: nginx }]
----
-# Compliant under 2.0.0 (runAsNonRoot) but would FAIL 3.0.0 (no read-only fs).
-# It claims 2.0.0, so 3.0.0 must SKIP it — that is coexistence, not collision.
-apiVersion: v1
-kind: Pod
-metadata: { name: pod-3-compliant, labels: { "policy-as-versioned.dev/policy-version": "3.0.0" } }
+metadata: { name: pod-4-compliant, labels: { "policy-as-versioned.dev/policy-version": "4.0.0" } }
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx, securityContext: { readOnlyRootFilesystem: true } }]
 ---
 apiVersion: v1
 kind: Pod
-metadata: { name: pod-3-violating, labels: { "policy-as-versioned.dev/policy-version": "3.0.0" } }
+metadata: { name: pod-4-violating, labels: { "policy-as-versioned.dev/policy-version": "4.0.0" } }
+spec:
+  containers: [{ name: c, image: nginx }]
+---
+# Compliant under 5.0.0 the plain way (non-root AND a read-only root fs). It
+# claims 5.0.0, so 4.0.0 must SKIP it -- that is coexistence, not collision.
+apiVersion: v1
+kind: Pod
+metadata: { name: pod-5-compliant, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
+spec:
+  securityContext: { runAsNonRoot: true }
+  containers: [{ name: c, image: nginx, securityContext: { readOnlyRootFilesystem: true } }]
+---
+# Non-root but no read-only root filesystem: fails 5.0.0's plain arm, and
+# carries no attestation, so the conditional arm does not save it either.
+apiVersion: v1
+kind: Pod
+metadata: { name: pod-5-violating, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx }]
+---
+# THE RE-CARRIED ARM. Runs as ROOT -- no runAsNonRoot at all -- but carries a
+# root-attestation reference AND every container drops ALL capabilities and
+# mounts a read-only root filesystem. That is condition C, so 5.0.0 admits it.
+# The widening is for the CONDITION, uniformly: nothing here names a team.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-5-root-attested
+  labels:
+    policy-as-versioned.dev/policy-version: "5.0.0"
+    policy-as-versioned.dev/root-attestation: "sec-review-2026-09-04"
+spec:
+  containers:
+    - name: c
+      image: nginx
+      securityContext:
+        readOnlyRootFilesystem: true
+        capabilities: { drop: ["ALL"] }
+---
+# The same hardening, NO attestation. Fails condition C, so 5.0.0 still fails
+# it. This row is the one that makes the arm above mean something: without it,
+# "root is fine if hardened" would pass here too and the attestation would be
+# decoration.
+apiVersion: v1
+kind: Pod
+metadata: { name: pod-5-root-unattested, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
+spec:
+  containers:
+    - name: c
+      image: nginx
+      securityContext:
+        readOnlyRootFilesystem: true
+        capabilities: { drop: ["ALL"] }
 ---
 # No policy-version label -> out of scope of every versioned policy (proves the
 # matchConditions self-scoping, not an objectSelector).

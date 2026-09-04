@@ -12,6 +12,10 @@
 #   require_substrate <cluster>    substrate_ok or skip. Whole-script gate.
 #   live_tail_skip <reason>        print the tail's SKIP line, record it so the
 #                                  final PASS line names the unobserved tail.
+#   selfcheck_absent <script> <tool>...
+#                                  re-run <script> with <tool>... unreachable and
+#                                  require exit 3 with a SKIP: last line, so the
+#                                  could-not-look branch is observed, not assumed.
 # Offline-proof scripts gate only their live tail: `if substrate_ok x; then
 # ... else live_tail_skip "$SUBSTRATE_REASON"; fi`, then `pass_line "<claim>"`,
 # which exits 3 (SKIP) if any tail was skipped, 0 only when every tail was observed.
@@ -43,4 +47,56 @@ live_tail_skip() { echo "SKIP (live tail): $*"; LIVE_TAIL_SKIPPED="$*"; }
 pass_line() {
   if [ -n "$LIVE_TAIL_SKIPPED" ]; then echo "SKIP: offline proof holds; live tail could not look: $LIVE_TAIL_SKIPPED — $*"; exit 3; fi
   echo "PASS: $*"
+}
+
+# selfcheck_absent <script> <tool>...  (ecosystem ticket 76, "every green rests on an
+# observation"). A script's could-not-look branch only runs on a machine that lacks the
+# instrument, so on every machine that has it the branch is untested and can rot back to
+# `exit 0` -- which verify-all.sh grades PASS, a green on an absence. This runs the branch:
+# it re-executes <script> with <tool>... unreachable and requires exit 3 with a "SKIP: "
+# last line. The tools are hidden by rebuilding each PATH directory that holds one as a farm
+# of symlinks to its other entries, so the neighbours stay reachable (homebrew's python3,
+# with pyyaml, lives in the same directory as kyverno and cosign).
+#
+# Prints one ok line and returns 0 when the branch holds; prints FAIL and exits 1 when it
+# does not. A no-op inside the child re-run. Callers cd to their own directory first and
+# pass "$PWD/${BASH_SOURCE##*/}" so the child re-runs the same file.
+#
+# CEILING (measured 2026-09-04, ticket 76 review). The leg re-runs the WHOLE script, so each of
+# the seven computed-semver scripts that calls it now does its work twice, plus the cost of
+# building the PATH symlink farm. Measured on the hub's own copy of this helper
+# (verify/lib-observation.sh): verify-provenance.sh 19.5s with the leg, 5.5s with it disabled
+# (PAV_SELFCHECK_CHILD=1) -- 3.5x. Paid on every gate run, not only in CI.
+# ponytail: let a script expose its could-not-look branch as one function and re-run only that,
+# or gate the leg behind a flag the gate sets once per wave rather than per script, once the
+# gate's wall-clock is the thing that hurts.
+selfcheck_absent() {
+  local script="$1"; shift
+  [ -z "${PAV_SELFCHECK_CHILD:-}" ] || return 0
+  local names="$*" hidden=" $* " farm sub dir f keep="" out rc=0 last
+  farm="$(mktemp -d)"
+  local IFS=:
+  for dir in $PATH; do
+    sub=""
+    for f in "$@"; do if [ -x "$dir/$f" ]; then sub=hide; fi; done
+    if [ "$sub" = hide ]; then
+      sub="$farm/$(printf '%s' "$dir" | tr / _)"
+      mkdir -p "$sub"
+      for f in "$dir"/*; do
+        case "$hidden" in *" ${f##*/} "*) ;; *) ln -s "$f" "$sub/" 2>/dev/null || true ;; esac
+      done
+      keep="${keep:+$keep:}$sub"
+    else
+      keep="${keep:+$keep:}$dir"
+    fi
+  done
+  IFS=$' \t\n'
+  out="$(PAV_SELFCHECK_CHILD=1 PATH="$keep" "${BASH:-bash}" "$script" 2>&1)" || rc=$?
+  rm -rf "$farm"
+  last="$(printf '%s\n' "$out" | tail -1)"
+  case "$rc:$last" in
+    3:SKIP:*) echo "  ok   selfcheck: with $names unreachable this script exits 3 and its last line is SKIP:" ;;
+    *) echo "FAIL: selfcheck: with $names unreachable ${script##*/} exited $rc (want 3), last line: ${last:0:120}"
+       exit 1 ;;
+  esac
 }

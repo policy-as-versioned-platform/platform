@@ -204,6 +204,59 @@ penalty-schema}` resolves the same way, falling back to ico's pre-envelope
 header recorded before the rename still yields an "old" version. A file
 that is not a valid envelope is an `invalid-feed` refusal, never a crash.
 
+ECO-SYSTEM TICKET 38 (ticket 15's resolution; ADR-0020; the ADR superseding
+ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
+
+  * The new-hole, baseline-widening and new-ungoverned-namespace refusals are
+    GONE. Each prints as a `deltas[]` entry under the adopter's own
+    perspective and currency: what changed since the last signed composed
+    artefact, and what a pinned instrument prices it at. A delta no pinned
+    instrument names carries `amount: null` and `priced_by: null` -- a named
+    absence, never a zero and never a refusal.
+  * Every hole is keyed on (source, id) -- the catalogue that defines the
+    control and its bare id in it -- across EVERY `controls` parent, an
+    adopter's own catalogue included. A claim's source is its component-
+    definition's `source` href; a bare `overlay.controls` id is the
+    baseline's catalogue's, and `party:id` names another controls parent's.
+    The header writes the bare id where the source is the baseline's own and
+    `source:id` otherwise, so the real estate's header shape is byte-stable.
+  * An UNGOVERNED NAMESPACE is priced: its workload share (Deployments,
+    StatefulSets, DaemonSets, Jobs and CronJobs in the repo walk, over the
+    same across every institution namespace) of the adopter's whole uncaged
+    residual, LEF-ramped from `since` by the EOL feed's own `eol_ramp`, and
+    bounded at the whole residual. `since` is READ off the first SIGNED tag
+    whose header names the namespace (no new header field, and it survives a
+    close and a reopen because tag history does); `as_of` is the newest
+    `published_at` among the pinned feeds, so this module still reads no
+    clock. A since no signed tag carries, or a residual no feed prices, is a
+    named limit on the entry, never an invented date and never a zero.
+  * A BESPOKE CONTROL is one the adopter defines in a small OSCAL catalogue
+    it publishes as a `controls` parent of ITSELF (the self-pin resolves to
+    the adopter's own tree: the catalogue is signed by the same tag as the
+    composed artefact, ADR-0017's "no separate pin"). Its hole is priced by
+    the scenario the catalogue's control names (`props[name=scenario]`,
+    repo-relative) through the same cage engine the restate path uses. A
+    bespoke hole with NO scenario is the one hole-shaped refusal left: a
+    missing instrument (ADR-0020), because only the party that invented the
+    control can say what missing it costs.
+
+ECO-SYSTEM TICKET 69 (ticket 58 Q5(b); ADR-0020): AN UNTAGGED PIN IS A
+PRICED HOLE. The premium edge reads the pin's signature state off the
+parent tree's OWN tags (`pin_signature` on the entry: `signed` when a tag
+of the pinned form is an annotated tag object carrying a signature block,
+`untagged` when the checkout shows the publisher's tags and none of them
+signs the pin, `unobserved` when this checkout is in no position to say --
+no git metadata, no tag at all, or a matched tag that is not an annotated
+object because a second fetch flattened it). Untagged, the pin
+is a `hole` on the premium entry -- the premium itself, booked as paid
+against a quote no tag signs, under the adopter's own perspective and
+currency -- printed as a `new-untagged-pin` delta, recorded on the next
+composition, and closed (a `closed-untagged-pin` delta) by the first
+signed tag that carries it, with no edit. Unobserved opens nothing and
+closes nothing. Nothing here refuses, and nothing here claims a signature
+VERIFIES: the identity-pinned verification against the publisher's real
+remote is the hub's verify/feed-contract/verify-untagged-pin-is-priced.sh.
+
 Usage:
     composition.py compose <adopter-dir> [--estate-clone DIR] [--out DIR]
     composition.py verify <adopter-dir> [--estate-clone DIR]
@@ -217,6 +270,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -229,7 +283,11 @@ import yaml
 HERE = Path(__file__).resolve().parent
 PLATFORM_DIR = HERE.parent
 ESTATE_CLONE = PLATFORM_DIR.parent
-DEFAULT_ESTATE_CLONE = ESTATE_CLONE
+# A nested worktree of the platform clone (`.estate-clone/platform/.work/<ticket>`,
+# the build brief's layout) resolves to a parent that is not the estate; the
+# override names the estate to compose against without moving the file.
+DEFAULT_ESTATE_CLONE = Path(os.environ["PAVC_ESTATE_CLONE"]) if os.environ.get("PAVC_ESTATE_CLONE") \
+    else ESTATE_CLONE
 
 sys.path.insert(0, str(PLATFORM_DIR / "party"))
 import party_artefact  # noqa: E402
@@ -248,6 +306,28 @@ PROVENANCE_INHERITED = "policy-as-versioned.dev/inherited-from"
 PROVENANCE_SOURCE = "policy-as-versioned.dev/source-path"
 GOVERNED_LABEL = "policy-as-versioned.dev/governed"
 INSTITUTION_LABEL = "policy-as-versioned.dev/institution"
+# What counts as a workload when an ungoverned namespace is priced as a share
+# (ticket 38): the pod-owning kinds a repo walk can see. A namespace created by
+# hand on the cluster stays invisible (ADR-0018 point 3) -- it is Flux drift,
+# owned by the estate's drift tooling, not something merge time can price.
+WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob")
+# A control key is (source, id): the party whose catalogue defines the control
+# and the bare id exactly as that catalogue writes it (ADR-0013's exact-string
+# rule, per catalogue). `source:id` is how a party names a control off the
+# baseline's own catalogue in `overlay.controls` and how the header records
+# one; a bare id is the baseline's catalogue's. Catalogue ids carry no colon.
+CONTROL_KEY_SEP = ":"
+# The OSCAL prop on a bespoke control that names the adopter-signed scenario
+# pricing its hole, repo-relative to the adopter's own tree.
+BESPOKE_SCENARIO_PROP = "scenario"
+# The deltas[] kinds: what replaced the three refusals, plus their closings.
+DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
+               "new-ungoverned-namespace", "closed-ungoverned-namespace",
+               "new-untagged-pin", "closed-untagged-pin")
+# Ticket 69: what a premium entry's `pin_signature.state` may read, and the
+# kind of the hole an untagged pin opens on that entry.
+PIN_SIGNATURE_STATES = ("signed", "untagged", "unobserved")
+UNTAGGED_PIN_HOLE_KIND = "untagged-pin"
 
 # Where an unpinned parent kind's version lives inside the PARTY'S OWN clone
 # -- ticket 11's forward note: "the seam/resolver (ticket 12) must resolve
@@ -705,22 +785,37 @@ def render_is_faithful(rendered_doc: dict, source_doc: dict) -> bool:
 # --------------------------------------------------------------------------
 
 
-def governed_namespaces(adopter_dir: Path) -> list[str]:
-    names: set[str] = set()
-    for path in sorted(adopter_dir.rglob("*.yaml")):
-        if ".git" in path.parts or "composed" in path.parts:
+def _namespace_facts(adopter_dir: Path) -> tuple[dict[str, bool], dict[str, int]]:
+    """ONE walk over the adopter's own manifests (skipping .git, composed/ and
+    other tickets' .work/): every Namespace carrying the `institution` label,
+    mapped to whether it also carries `governed: "true"`, and the number of
+    workloads (WORKLOAD_KINDS) declared in each namespace. A Namespace with no
+    `institution` label at all is infrastructure and is not a candidate; the
+    workloads in it are counted but never enter the institution denominator."""
+    institution: dict[str, bool] = {}
+    workloads: dict[str, int] = {}
+    for path in sorted(Path(adopter_dir).rglob("*.yaml")):
+        if ".git" in path.parts or "composed" in path.parts or ".work" in path.parts:
             continue
         try:
             docs = [d for d in yaml.safe_load_all(path.read_text()) if isinstance(d, dict)]
         except yaml.YAMLError:
             continue
         for doc in docs:
-            if doc.get("kind") != "Namespace":
-                continue
-            labels = (doc.get("metadata") or {}).get("labels") or {}
-            if labels.get(GOVERNED_LABEL) == "true":
-                names.add(doc["metadata"]["name"])
-    return sorted(names)
+            md = doc.get("metadata") or {}
+            if doc.get("kind") == "Namespace":
+                labels = md.get("labels") or {}
+                if INSTITUTION_LABEL in labels:
+                    institution[md["name"]] = labels.get(GOVERNED_LABEL) == "true"
+            elif doc.get("kind") in WORKLOAD_KINDS:
+                ns = str(md.get("namespace") or "default")
+                workloads[ns] = workloads.get(ns, 0) + 1
+    return institution, workloads
+
+
+def governed_namespaces(adopter_dir: Path) -> list[str]:
+    institution, _ = _namespace_facts(adopter_dir)
+    return sorted(n for n, governed in institution.items() if governed)
 
 
 def ungoverned_namespaces(adopter_dir: Path) -> list[str]:
@@ -729,52 +824,144 @@ def ungoverned_namespaces(adopter_dir: Path) -> list[str]:
     hole moved up one level (ADR-0018): such a namespace can exempt every
     workload inside it by omission, the same way an unclaimed hole does. A
     Namespace with no `institution` label at all is infrastructure, not a
-    candidate, and is ignored entirely -- this is the same walk
-    `governed_namespaces` does, over the same files, just the other label."""
-    names: set[str] = set()
-    for path in sorted(adopter_dir.rglob("*.yaml")):
-        if ".git" in path.parts or "composed" in path.parts:
-            continue
-        try:
-            docs = [d for d in yaml.safe_load_all(path.read_text()) if isinstance(d, dict)]
-        except yaml.YAMLError:
-            continue
-        for doc in docs:
-            if doc.get("kind") != "Namespace":
-                continue
-            labels = (doc.get("metadata") or {}).get("labels") or {}
-            if INSTITUTION_LABEL in labels and labels.get(GOVERNED_LABEL) != "true":
-                names.add(doc["metadata"]["name"])
-    return sorted(names)
+    candidate, and is ignored entirely -- the same walk `governed_namespaces`
+    does, over the same files, just the other label."""
+    institution, _ = _namespace_facts(adopter_dir)
+    return sorted(n for n, governed in institution.items() if not governed)
 
 
-def compute_ungoverned(current: set[str], prev_ids: set[str] | None) -> tuple[list[dict], list[dict]]:
-    """ungoverned[] entries (new/recorded/closed) and the refusals a NEW
-    ungoverned namespace produces -- "the rule is the hole rule" (ticket 15):
-    the exact new/recorded/closed shape and the exact bootstrap rule
-    compute_holes already uses. prev_ids is None on the FIRST composition
-    ever -- nothing yet to compare a namespace as new against, so "the first
-    composition records three ungoverned namespaces and refuses on none"
-    (spec.md) applies here too."""
+def compute_ungoverned(current: set[str], prev_ids: set[str] | None) -> list[dict]:
+    """ungoverned[] entries (new/recorded/closed) -- "the rule is the hole
+    rule" (ticket 15): the exact new/recorded/closed shape compute_holes uses.
+    prev_ids is None on the FIRST composition ever. Nothing here refuses any
+    more (ticket 38): a new one is PRICED by price_ungoverned below and
+    printed as a delta, exactly as a new hole is."""
     entries: list[dict] = []
-    refusals: list[dict] = []
     for name in sorted(current):
-        if prev_ids is None or name in prev_ids:
-            entries.append({"namespace": name, "status": "recorded"})
-        else:
-            entries.append({"namespace": name, "status": "new"})
-            refusals.append({
-                "kind": "new-ungoverned-namespace", "subject": name,
-                "detail": f"{name} carries the institution label and not governed: \"true\", "
-                          f"and it is not in the last signed composed artefact's recorded "
-                          f"ungoverned set -- a namespace cannot exempt every workload in it "
-                          f"by omission (ADR-0014, ADR-0018)",
-                "needs_composition": True,
-            })
+        status = "recorded" if prev_ids is None or name in prev_ids else "new"
+        entries.append({"namespace": name, "status": status})
     if prev_ids is not None:
         for name in sorted(prev_ids - current):
             entries.append({"namespace": name, "status": "closed"})
-    return entries, refusals
+    return entries
+
+
+def _signed_tags(repo: Path) -> list[tuple[str, str]]:
+    """(tag, date) for every annotated tag in the adopter's own repo that
+    carries a signature block, oldest first. Presence of the block is what is
+    read here; whether the signature VERIFIES is verify/provenance's job, and
+    this module never claims it. [] where the tree is not a git repo (a
+    fixture) or carries no such tag."""
+    repo = Path(repo)
+    if not (repo / ".git").exists():
+        return []
+    listed = subprocess.run(
+        ["git", "-C", str(repo), "for-each-ref", "--sort=creatordate",
+         "--format=%(refname:short) %(creatordate:short) %(objecttype)", "refs/tags"],
+        capture_output=True, text=True)
+    out: list[tuple[str, str]] = []
+    for line in listed.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 3 or parts[2] != "tag":
+            continue
+        body = subprocess.run(["git", "-C", str(repo), "cat-file", "-p", parts[0]],
+                              capture_output=True, text=True).stdout
+        if "-----BEGIN" in body:
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def _first_signed_since(adopter_dir: Path, namespace: str) -> tuple[str | None, str | None]:
+    """The date of the FIRST signed tag whose composed header records
+    `namespace` as ungoverned -- the `since` an ungoverned namespace ramps
+    from (ticket 38, ticket 15 Q3(a)). Read off tag history, so no new header
+    field carries it and a namespace that closes and reopens keeps its
+    original since. (date, None) when found; (None, why) when no signed
+    composed artefact names it -- a fact to carry, never a date to invent."""
+    for tag, date in _signed_tags(adopter_dir):
+        shown = subprocess.run(["git", "-C", str(adopter_dir), "show", f"{tag}:composed/HEADER.yaml"],
+                               capture_output=True, text=True)
+        if shown.returncode != 0:
+            continue
+        text = shown.stdout
+        if text.startswith(HEADER_COMMENT):
+            text = text[len(HEADER_COMMENT):]
+        try:
+            header = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if isinstance(header, dict) and namespace in (header.get("ungoverned-namespaces") or []):
+            return date, None
+    return None, f"no signed composed artefact names {namespace}"
+
+
+def _feeds_module():
+    """platform's own feeds converter, imported for its `eol_ramp` -- the
+    estate's one time-varying ramp (ticket 15 Q3: "the ramp already exists,
+    so no invented formula and no knob"). The dates it takes are both signed
+    facts; this module still reads no clock."""
+    spec = importlib.util.spec_from_file_location("_pavc_feeds", PLATFORM_DIR / "feeds" / "to_fair_scenario.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _ramp(since: str | None, as_of: str | None) -> float:
+    """The LEF multiplier for how far `as_of` sits past `since`: the EOL feed's
+    own eol_ramp, +1x per year past, capped at +4x. 1.0 where either date is
+    unknown -- an unramped share, with the missing date named beside it."""
+    if not since or not as_of:
+        return 1.0
+    return float(_feeds_module().eol_ramp(since, as_of))
+
+
+def ungoverned_price(base: float, workloads: int, total_workloads: int, ramp: float) -> tuple[float, bool]:
+    """The amount an ungoverned namespace prices at, and whether the bound
+    bit: workloads inside over workloads in every institution namespace, times
+    the whole uncaged residual, times the ramp, never above the whole residual
+    (the bound keeps it a price of a SHARE). Pure, so the verifier and the
+    hub tests re-derive it."""
+    share = workloads / total_workloads if total_workloads else 0.0
+    raw = base * share * ramp
+    return min(base, raw), raw > base
+
+
+def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str, currency: str,
+                     base: float | None, as_of: str | None) -> None:
+    """Attach a `price` to every OPEN ungoverned entry (new or recorded).
+    Everything on it is a fact the composition read or a limit it names:
+    the workload counts, the share, `since` off the first signed tag naming
+    the namespace, `as_of` off the newest pinned feed, the ramp between them,
+    the base (the adopter's whole uncaged residual) and the bounded amount.
+    Mutates `entries` in place."""
+    institution, workloads = _namespace_facts(adopter_dir)
+    total = sum(n for ns, n in workloads.items() if ns in institution)
+    for entry in entries:
+        if entry["status"] == "closed":
+            continue
+        name = entry["namespace"]
+        inside = workloads.get(name, 0)
+        since, since_limit = _first_signed_since(adopter_dir, name)
+        limits: list[str] = []
+        if since_limit:
+            limits.append(f"{since_limit}: ramp held at 1.0 until a signed tag records it")
+        if as_of is None and since is not None:
+            limits.append("no pinned feed carries a published_at, so there is no as_of to ramp to")
+        ramp = _ramp(since, as_of)
+        share = inside / total if total else 0.0
+        amount: float | None = None
+        bounded = False
+        if base is None:
+            limits.append(f"no priced exposure: {adopter_party} pins no feed that prices its "
+                          f"residual, so there is nothing to take a share of")
+        else:
+            amount, bounded = ungoverned_price(base, inside, total, ramp)
+        entry["price"] = {
+            "perspective": adopter_party, "currency": currency, "amount": amount,
+            "share": share, "workloads": inside, "workloads_total": total,
+            "base": base, "ramp": ramp, "since": since, "as_of": as_of,
+            "bounded": bounded, "limits": limits,
+        }
 
 
 # --------------------------------------------------------------------------
@@ -979,11 +1166,13 @@ def _appetite_tolerance(party: str, adopter_dir: Path | None = None,
         return None
 
 
-def _load_scenario(rel_path: str) -> dict:
+def _load_scenario(rel_path: str, root: Path = PLATFORM_DIR) -> dict:
     """A restate entry's own `scenario`, resolved against this repo
     (platform) -- the same convention the prototype used for its named
-    scenario (`policy/scenarios/driftwood-root-residual.json`)."""
-    return json.loads((PLATFORM_DIR / rel_path).read_text())
+    scenario (`policy/scenarios/driftwood-root-residual.json`). A bespoke
+    control's scenario (ticket 38) resolves against the ADOPTER's own tree
+    instead: the party that invented the control signs its price."""
+    return json.loads((Path(root) / rel_path).read_text())
 
 
 def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) -> dict:
@@ -1174,26 +1363,52 @@ PARENT_CLAIMS_PATH = ("oscal", "component-definition.json")
 ADOPTER_CLAIMS_FILE = "component-definition.json"
 
 
-def _catalog_ids(nist_root: Path) -> set[str]:
-    """Every control id the controls parent's catalogue carries, walking
-    nested (enhancement) controls so `ac-6.10` is found by a group-level
-    scan -- the same walk as nist/scripts/verify_baselines.py and
-    platform/oscal/lint_claims.py's catalog_control_ids(). Duplicated on
-    purpose: each reader stays self-contained (lint_claims.py's own
-    docstring names this convention)."""
-    catalog_dir = nist_root / "catalog"
+ControlKey = tuple[str, str]   # (source party, bare catalogue id)
+
+
+def _catalog_dir(root: Path) -> Path:
+    """Where a controls party's catalogue lives in its own tree: the path its
+    party.yaml `publishes[]` declares for `kind: controls` (ADR-0019, the
+    discovery record), else `catalog/` -- nist's layout, and the default an
+    adopter's own small bespoke catalogue uses."""
+    root = Path(root)
+    party_yaml = root / "party.yaml"
+    if party_yaml.exists():
+        doc = yaml.safe_load(party_yaml.read_text()) or {}
+        declared = next((e.get("path") for e in doc.get("publishes") or []
+                         if e.get("kind") == "controls" and e.get("path")), None)
+        if declared:
+            return root / declared
+    return root / "catalog"
+
+
+def _catalog_controls(root: Path) -> dict[str, dict[str, str]]:
+    """Every control id a controls party's catalogue carries, mapped to its
+    props by name, walking nested (enhancement) controls so `ac-6.10` is
+    found by a group-level scan -- the same walk as nist/scripts/
+    verify_baselines.py and platform/oscal/lint_claims.py's
+    catalog_control_ids(). Duplicated on purpose: each reader stays self-
+    contained (lint_claims.py's own docstring names this convention). The
+    props are what a bespoke control names its scenario in (ticket 38)."""
+    catalog_dir = _catalog_dir(root)
     meta = json.loads((catalog_dir / "CATALOG_VERSION.json").read_text())
     catalog_doc = json.loads((catalog_dir / meta["file"]).read_bytes())
-    ids: set[str] = set()
+    controls: dict[str, dict[str, str]] = {}
 
-    def walk(controls):
-        for c in controls:
-            ids.add(c["id"])
+    def walk(items):
+        for c in items:
+            controls[c["id"]] = {p["name"]: p["value"] for p in c.get("props", [])
+                                 if "name" in p and "value" in p}
             walk(c.get("controls", []))
 
     for group in catalog_doc["catalog"].get("groups", []):
         walk(group.get("controls", []))
-    return ids
+    walk(catalog_doc["catalog"].get("controls", []))
+    return controls
+
+
+def _catalog_ids(nist_root: Path) -> set[str]:
+    return set(_catalog_controls(nist_root))
 
 
 def _baseline_ids(nist_root: Path, name: str) -> set[str] | None:
@@ -1201,79 +1416,147 @@ def _baseline_ids(nist_root: Path, name: str) -> set[str] | None:
     string off `with-ids` (ADR-0013). None means the controls parent
     publishes no baseline of this name -- "a missing baseline file" is a
     lint finding (spec.md), not something only composition could see."""
-    meta_path = nist_root / "catalog" / "BASELINE_VERSIONS.json"
+    meta_path = _catalog_dir(nist_root) / "BASELINE_VERSIONS.json"
     if not meta_path.exists():
         return None
     meta = json.loads(meta_path.read_text())
     entry = meta.get("baselines", {}).get(name)
     if entry is None:
         return None
-    profile_doc = json.loads((nist_root / "catalog" / entry["file"]).read_bytes())
+    profile_doc = json.loads((_catalog_dir(nist_root) / entry["file"]).read_bytes())
     return set(profile_doc["profile"]["imports"][0]["include-controls"][0]["with-ids"])
 
 
-def _load_claims(comp_def_path: Path) -> list[tuple[str, str]]:
-    """(control-id, claimed policy name) for every Check_Id prop in one
-    OSCAL component-definition -- the same read as oscal/lint_claims.py's
-    claimed_policy_names(), duplicated so this reader stays self-contained
-    too. [] when the party ships no such file (an adopter need not)."""
+def _load_claims(comp_def_path: Path) -> list[tuple[str | None, str, str]]:
+    """(source href, control-id, claimed policy name) for every Check_Id
+    prop in one OSCAL component-definition -- the same read as
+    oscal/lint_claims.py's claimed_policy_names(), duplicated so this reader
+    stays self-contained too, plus the enclosing block's `source`: the one
+    place OSCAL names the catalogue a bare id belongs to (ADR-0013). [] when
+    the party ships no such file (an adopter need not)."""
     if not comp_def_path.exists():
         return []
     comp_def = json.loads(comp_def_path.read_text())
-    out: list[tuple[str, str]] = []
+    out: list[tuple[str | None, str, str]] = []
     for comp in comp_def["component-definition"]["components"]:
         for ci in comp.get("control-implementations", []):
+            source = ci.get("source")
             for ir in ci.get("implemented-requirements", []):
                 control = ir["control-id"]
                 for p in ir.get("props", []):
                     if p.get("name") == "Check_Id":
-                        out.append((control, p["value"]))
+                        out.append((source, control, p["value"]))
     return out
 
 
-def _unknown_id_refusals(ids: list[str], catalog_ids: set[str], subject_prefix: str) -> list[dict]:
-    """An id absent from the catalogue, exact-string -- no case-fold, no
-    prefix-strip (ADR-0013): a hard failure, never a hole. A plain lint of
-    the id against the catalogue would also catch this, so
+def _claim_source(href: str | None, claiming_party: str, sources: set[str],
+                  baseline_source: str | None) -> str | None:
+    """Which controls parent a claim's `source` href names: the first path
+    segment that is a pinned controls party (`../nist/catalog/...` -> nist).
+    An href that names none is the claiming party's own catalogue where it
+    pins itself as a controls parent (a bespoke catalogue, `catalog/...`),
+    else the baseline's catalogue -- ADR-0013's one authority."""
+    for seg in re.split(r"[\\/]+", str(href or "")):
+        if seg and seg not in (".", "..") and seg in sources:
+            return seg
+    if claiming_party in sources:
+        return claiming_party
+    return baseline_source
+
+
+def _control_spec(spec: str, baseline_source: str | None) -> ControlKey:
+    """An `overlay.controls` entry as written: `party:id` names that controls
+    parent's catalogue; a bare id is the baseline's catalogue's."""
+    if CONTROL_KEY_SEP in spec:
+        source, cid = spec.split(CONTROL_KEY_SEP, 1)
+        return source, cid
+    return str(baseline_source), spec
+
+
+def _encode_control(key: ControlKey, baseline_source: str | None) -> str:
+    """How the header records a control key: the bare id where the source is
+    the baseline's own catalogue (the real estate's shape, byte-stable), and
+    `source:id` for any other controls parent."""
+    source, cid = key
+    return cid if source == baseline_source else f"{source}{CONTROL_KEY_SEP}{cid}"
+
+
+def _decode_control(text: str, baseline_source: str | None) -> ControlKey:
+    return _control_spec(str(text), baseline_source)
+
+
+def _header_controls_source(header: dict | None, adopter_party: str | None = None) -> str | None:
+    """The baseline's catalogue in a recorded header: its first `controls`
+    parent that is not the adopter itself -- what its bare hole ids were
+    keyed to. The same rule compose() keys baseline_source by, so an adopter
+    that lists its self-pin before the regulator in inherits[] decodes its
+    own header the way it was written (2026-09-04 review: reading the FIRST
+    controls parent decoded every bare id as the adopter's own and refused
+    the whole baseline as removed on an unchanged tree)."""
+    if not header:
+        return None
+    return next((p.get("party") for p in header.get("parents", [])
+                 if p.get("kind") == "controls" and p.get("party") != adopter_party), None)
+
+
+def _unknown_control_refusals(specs: list[tuple[str, ControlKey]], catalogs: dict[str, set[str]],
+                              subject_prefix: str) -> list[dict]:
+    """A (source, id) absent from that source's catalogue, exact-string -- no
+    case-fold, no prefix-strip (ADR-0013): a hard failure, never a hole. A
+    plain lint of the id against the catalogue would also catch this, so
     needs_composition is False (spec.md: "a prefixed id... are lint
-    findings")."""
-    return [{
-        "kind": "unknown-control-id",
-        "subject": f"{subject_prefix}: {cid}",
-        "detail": f"{cid!r} is absent from the catalogue -- exact-string resolution finds no "
-                  f"case-folded or prefix-stripped match, and an unknown id is a hard failure, "
-                  f"not a hole (ADR-0013)",
-        "needs_composition": False,
-    } for cid in sorted(dict.fromkeys(ids)) if cid not in catalog_ids]
+    findings"). `specs` pairs each key with the spelling the party wrote."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for spelled, (source, cid) in specs:
+        if spelled in seen:
+            continue
+        seen.add(spelled)
+        if cid in catalogs.get(source, set()):
+            continue
+        where = (f"{source}'s catalogue" if source in catalogs
+                 else f"any pinned controls parent ({', '.join(sorted(catalogs)) or 'none'})")
+        out.append({
+            "kind": "unknown-control-id",
+            "subject": f"{subject_prefix}: {spelled}",
+            "detail": f"{spelled!r} is absent from {where} -- exact-string resolution finds no "
+                      f"case-folded or prefix-stripped match, and an unknown id is a hard failure, "
+                      f"not a hole (ADR-0013)",
+            "needs_composition": False,
+        })
+    return out
 
 
-def resolve_claims(all_claims: list[tuple[str, str, str]], policy_owner: dict[str, str],
-                    catalog_ids: set[str]) -> tuple[set[str], list[dict]]:
-    """Every (control_id, policy_name, claiming_party) triple, resolved two
-    ways:
+def resolve_claims(all_claims: list[tuple[str | None, str, str, str]], policy_owner: dict[str, str],
+                    catalogs: dict[str, set[str]], baseline_source: str | None
+                    ) -> tuple[set[ControlKey], list[dict]]:
+    """Every (source href, control_id, policy_name, claiming_party) claim,
+    resolved three ways:
 
+      * its control key is (source, id): the href names the catalogue
+        (ADR-0013's enclosing block), the id must be in THAT catalogue, else
+        an unknown-control-id -- a lint finding, needs_composition False;
       * the claimed policy must be shipped by SOME composed party, else a
-        DANGLING claim (ADR-0013's exact-string id rule catches an unknown
-        control id the same way) -- both are lint findings a per-party
-        check would also catch on its own (oscal/lint_claims.py already
-        does, for platform's), so needs_composition is False;
-      * it must be shipped by the SAME party that claims it, else the
-        claim is against ANOTHER party's policy (ADR-0017: "a control
-        claim belongs to whoever ships the implementation") -- telling
-        whose policy it is needs the whole composed set, so
-        needs_composition is True.
+        DANGLING claim -- a lint finding a per-party check would also catch
+        (oscal/lint_claims.py already does, for platform's);
+      * it must be shipped by the SAME party that claims it, else the claim
+        is against ANOTHER party's policy (ADR-0017) -- telling whose policy
+        it is needs the whole composed set, so needs_composition is True.
 
-    A control counts as COVERED -- not a hole -- the moment ANY claim
-    exists for it, valid or not: "a baseline control with no claim is a
-    hole" (spec.md) says no claim, not no VALID claim. A dangling or
-    cross-party claim is its own refusal, orthogonal to hole counting."""
-    covered: set[str] = set()
+    A control counts as COVERED -- not a hole -- the moment ANY claim exists
+    for it, valid or not: "a baseline control with no claim is a hole"
+    (spec.md) says no claim, not no VALID claim. A dangling or cross-party
+    claim is its own refusal, orthogonal to hole counting."""
+    covered: set[ControlKey] = set()
     refusals: list[dict] = []
-    for control_id, policy_name, claiming_party in all_claims:
-        covered.add(control_id)
-        refusals += _unknown_id_refusals([control_id], catalog_ids,
-                                          f"{claiming_party} component-definition")
-        if control_id not in catalog_ids:
+    for href, control_id, policy_name, claiming_party in all_claims:
+        source = _claim_source(href, claiming_party, set(catalogs), baseline_source)
+        key = (str(source), control_id)
+        covered.add(key)
+        unknown = _unknown_control_refusals([(control_id, key)], catalogs,
+                                            f"{claiming_party} component-definition")
+        if unknown:
+            refusals += unknown
             continue
         owner = policy_owner.get(policy_name)
         if owner is None:
@@ -1298,67 +1581,220 @@ def resolve_claims(all_claims: list[tuple[str, str, str]], policy_owner: dict[st
     return covered, refusals
 
 
-def compute_holes(selected_set: set[str], covered: set[str],
-                   prev_hole_ids: set[str] | None) -> tuple[list[dict], list[dict]]:
-    """holes[] entries (new/recorded/closed) and the refusals a NEW hole
-    produces. prev_hole_ids is None on the FIRST composition ever -- there
-    is nothing yet to compare a hole as new against, so spec.md's bootstrap
-    rule applies: "the first composition records every hole and refuses on
-    none"."""
+def compute_holes(selected_set: set[ControlKey], covered: set[ControlKey],
+                   prev_holes: set[ControlKey] | None) -> list[dict]:
+    """holes[] entries (new/recorded/closed), each keyed on (source, id).
+    prev_holes is None on the FIRST composition ever -- nothing yet to
+    compare a hole as new against. Nothing here refuses (ticket 38): a new
+    hole is priced by compute_deltas and printed as a delta, because a
+    control unimplemented is a missing behaviour, never a missing
+    instrument (ADR-0020)."""
     holes = sorted(selected_set - covered)
     entries: list[dict] = []
-    refusals: list[dict] = []
-    for cid in holes:
-        if prev_hole_ids is None or cid in prev_hole_ids:
-            entries.append({"control_id": cid, "status": "recorded"})
-        else:
-            entries.append({"control_id": cid, "status": "new"})
-            refusals.append({
-                "kind": "new-hole", "subject": cid,
-                "detail": f"{cid} is in the selected baseline and no claim covers it, and it "
-                          f"is not in the last signed composed artefact's recorded hole list "
-                          f"-- a new hole refuses (ADR-0013)",
-                "needs_composition": True,
-            })
-    if prev_hole_ids is not None:
-        for cid in sorted((prev_hole_ids & selected_set) - set(holes)):
-            entries.append({"control_id": cid, "status": "closed"})
-    return entries, refusals
+    for source, cid in holes:
+        status = "recorded" if prev_holes is None or (source, cid) in prev_holes else "new"
+        entries.append({"source": source, "control_id": cid, "status": status})
+    if prev_holes is not None:
+        for source, cid in sorted((prev_holes & selected_set) - set(holes)):
+            entries.append({"source": source, "control_id": cid, "status": "closed"})
+    return entries
 
 
-def check_selected_set(selected_set: set[str], prev_selected: set[str] | None) -> list[dict]:
+def check_selected_set(selected_set: set[ControlKey], prev_selected: set[ControlKey] | None,
+                       baseline_source: str | None) -> list[dict]:
     """A control leaving the selected set is refused, no exceptions:
     "a removal is refused... the composition compares the selected set
     against the last signed composed artefact's selected set and refuses
-    on any control that left" (spec.md). None means the first composition
-    -- nothing to compare against yet."""
+    on any control that left" (spec.md; ADR-0013's removal rule, which
+    ticket 38 leaves standing -- a removal is an exemption by another name).
+    None means the first composition -- nothing to compare against yet."""
     if prev_selected is None:
         return []
     return [{
-        "kind": "removed-control", "subject": cid,
-        "detail": f"{cid} was in the last signed composed artefact's selected control set and "
-                  f"is absent now -- a control may be added, never removed (ADR-0013)",
+        "kind": "removed-control", "subject": _encode_control(key, baseline_source),
+        "detail": f"{_encode_control(key, baseline_source)} was in the last signed composed "
+                  f"artefact's selected control set and is absent now -- a control may be "
+                  f"added, never removed (ADR-0013)",
         "needs_composition": True,
-    } for cid in sorted(prev_selected - selected_set)]
+    } for key in sorted(prev_selected - selected_set)]
 
 
-def check_baseline_widening(baseline_ids: set[str], prev_baseline_ids: set[str] | None,
-                             prev_name: str | None, name: str) -> list[dict]:
-    """A named-baseline change that only ADDS controls still refuses, with
-    no override: "a baseline widening refused with no override, so that
-    MODERATE to HIGH is a reviewed decision and never a quiet edit"
-    (spec.md). A change that drops a control is caught by
-    check_selected_set above instead -- this fires only when nothing left,
-    so a narrowing isn't double-counted here."""
+def baseline_widening_delta(baseline_ids: set[str], prev_baseline_ids: set[str] | None,
+                            prev_name: str | None, name: str, baseline_source: str | None,
+                            hole_prices: dict[ControlKey, tuple[float, str]],
+                            perspective: str, currency: str) -> dict | None:
+    """A named-baseline change that only ADDS controls prints as ONE priced
+    delta (ticket 38; reversals 9-10: widening is priced, never refused):
+    how many controls it adds, how many of those a pinned regulator weight
+    prices, and the sum of those prices -- or no amount at all where no
+    pinned weight names any of them, a named absence rather than a zero.
+    The controls themselves print as new-hole deltas beside it. A change
+    that drops a control is check_selected_set's, so a narrowing is never
+    double-counted here."""
     if prev_baseline_ids is None or prev_name == name or not (baseline_ids > prev_baseline_ids):
-        return []
-    return [{
+        return None
+    added = sorted(baseline_ids - prev_baseline_ids)
+    priced = [hole_prices[(str(baseline_source), cid)][0] for cid in added
+              if (str(baseline_source), cid) in hole_prices]
+    return {
         "kind": "baseline-widening", "subject": f"{prev_name} -> {name}",
-        "detail": f"{prev_name} -> {name} adds {len(baseline_ids - prev_baseline_ids)} "
-                  f"control(s) at once; a baseline widening is a reviewed decision and has no "
-                  f"override (ADR-0013)",
-        "needs_composition": True,
-    }]
+        "perspective": perspective, "currency": currency,
+        "added": len(added), "priced": len(priced),
+        "amount": sum(priced) if priced else None,
+        "detail": f"{prev_name} -> {name} adds {len(added)} control(s); {len(priced)} of them "
+                  f"carry a pinned regulator weight and price at "
+                  f"{sum(priced):.2f} {currency}; the rest are holes no pinned weight names"
+                  if priced else
+                  f"{prev_name} -> {name} adds {len(added)} control(s), none of which a pinned "
+                  f"regulator weight names, so the widening carries no amount yet -- a named "
+                  f"absence, not a zero",
+    }
+
+
+def _regime_hole_prices(prices: list[dict]) -> dict[ControlKey, tuple[float, str]]:
+    """(source, id) -> (amount, priced_by) for every hole a pinned regime
+    entry's published weights price -- what a hole delta is priced with.
+    The regulator's weights partition its regime's exposure (ticket 25), so
+    a hole's price is its share of that entry and never an addition to it."""
+    out: dict[ControlKey, tuple[float, str]] = {}
+    for e in prices:
+        if e.get("kind") != "feed":
+            continue
+        for h in e.get("holes") or []:
+            key = (str(h["source"]), str(h["id"]))
+            out.setdefault(key, (float(h["amount"]),
+                                 f"{e['source']} {e.get('name') or e['kind']}@{e.get('new_version')} "
+                                 f"{ICO_REGIME}/{ICO_VIOLATION_TYPE} weight {h['weight']}"))
+    return out
+
+
+def _price_holes(hole_entries: list[dict], hole_prices: dict[ControlKey, tuple[float, str]],
+                 perspective: str, currency: str) -> None:
+    """Attach perspective, currency and -- where a pinned weight names the
+    hole -- its amount and what priced it, to every holes[] entry. A hole no
+    pinned instrument names carries `amount: null`, never a zero."""
+    for h in hole_entries:
+        priced = hole_prices.get((h["source"], h["control_id"]))
+        h["perspective"] = perspective
+        h["currency"] = currency
+        h["amount"] = priced[0] if priced else None
+        h["priced_by"] = priced[1] if priced else None
+
+
+def _price_bespoke_holes(hole_entries: list[dict], adopter_party: str, adopter_dir: Path,
+                         catalog_props: dict[str, dict[str, str]], band: dict | None,
+                         reporting: str, floor: str | None) -> list[dict]:
+    """A bespoke control (its source is the adopter's own catalogue) prices
+    its hole through the scenario the catalogue's control names -- the
+    restate path's own `_load_scenario` mechanism against the adopter's own
+    tree, and the estate's own cage engine against the adopter's own band.
+    One with NO scenario is the one hole-shaped refusal left: an instrument
+    fault (ADR-0020), because only the party that invented the control can
+    say what missing it costs, and a regulator's weight never names it.
+    The residual is labelled in `reporting`, the adopter's reporting
+    currency, and this path takes no FX rate: a band declared in another
+    currency is the same instrument fault (hard rule 7, one currency on both
+    sides), because a relabelled amount is a minted one."""
+    refusals: list[dict] = []
+    band_currency = (band.get("currency") or reporting) if band else reporting
+    for h in hole_entries:
+        if h["source"] != adopter_party or h["status"] == "closed":
+            continue
+        scenario_rel = (catalog_props.get(h["control_id"]) or {}).get(BESPOKE_SCENARIO_PROP)
+        if not scenario_rel or not (Path(adopter_dir) / scenario_rel).exists():
+            refusals.append({
+                "kind": "missing-instrument",
+                "subject": f"{adopter_party}{CONTROL_KEY_SEP}{h['control_id']}",
+                "detail": f"missing instrument: bespoke control {h['control_id']} in "
+                          f"{adopter_party}'s own catalogue is a hole and names no signed "
+                          f"scenario ({BESPOKE_SCENARIO_PROP} prop"
+                          + (f" points at {scenario_rel!r}, which does not exist" if scenario_rel
+                             else " absent")
+                          + f"); only {adopter_party} can price a control it invented (ADR-0020)",
+                "needs_composition": True,
+            })
+            continue
+        if band is None:
+            continue    # the missing appetite is already refused as an instrument
+        if band_currency != reporting:
+            refusals.append({
+                "kind": "missing-instrument",
+                "subject": f"{adopter_party}{CONTROL_KEY_SEP}{h['control_id']}",
+                "detail": f"missing instrument: bespoke control {h['control_id']} would be priced "
+                          f"against {adopter_party}'s appetite band in {band_currency} and labelled "
+                          f"in its reporting currency {reporting}; this path takes no rate, and a "
+                          f"relabelled amount is a minted one, not a converted one (ADR-0020)",
+                "needs_composition": True,
+            })
+            continue
+        decision = _cage_engine().select(_load_scenario(scenario_rel, adopter_dir), adopter_party,
+                                         band["amount"], mode="warn", floor=floor)
+        h["amount"] = decision["uncaged_residual"]
+        h["priced_by"] = f"{adopter_party} scenario {scenario_rel}"
+    return refusals
+
+
+def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selected: set[ControlKey],
+                           covered: set[ControlKey]) -> None:
+    """Every holes[] line on a regime entry gains the adopter's own status
+    for that control: new / recorded / closed (this run's hole entries),
+    covered (a claim exists), or unselected (the weight names a control
+    outside this party's selected set). The partition itself is untouched:
+    the weights still sum to one and the amounts to the entry (ticket 25)."""
+    status_by_key = {(h["source"], h["control_id"]): h["status"] for h in hole_entries}
+    for e in prices:
+        for h in e.get("holes") or []:
+            key = (str(h["source"]), str(h["id"]))
+            if key in status_by_key:
+                h["status"] = status_by_key[key]
+            elif key in selected and key in covered:
+                h["status"] = "covered"
+            else:
+                h["status"] = "unselected"
+
+
+def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
+                   widening: dict | None, perspective: str, currency: str) -> list[dict]:
+    """deltas[]: what changed since the last signed composed artefact, each
+    under the adopter's own perspective and currency with the amount its
+    hole or namespace entry carries. This is what the three refusals
+    became (ticket 38): a report of a priced move, never a wall."""
+    deltas: list[dict] = []
+    for h in hole_entries:
+        if h["status"] in ("new", "closed"):
+            deltas.append({
+                "kind": f"{h['status']}-hole", "source": h["source"], "control_id": h["control_id"],
+                "perspective": perspective, "currency": currency,
+                "amount": h.get("amount"), "priced_by": h.get("priced_by"),
+                "detail": (f"{h['source']}{CONTROL_KEY_SEP}{h['control_id']} is selected and no "
+                           f"claim covers it, and it was not in the last signed composed "
+                           f"artefact's recorded holes" if h["status"] == "new" else
+                           f"{h['source']}{CONTROL_KEY_SEP}{h['control_id']} was a recorded hole "
+                           f"and a claim now covers it")
+                          + (f"; priced at {h['amount']:.2f} {currency} by {h['priced_by']}"
+                             if h.get("amount") is not None else
+                             "; no pinned instrument names a price for it"),
+            })
+    if widening is not None:
+        deltas.append(widening)
+    for e in ungoverned_entries:
+        if e["status"] in ("new", "closed"):
+            price = e.get("price") or {}
+            deltas.append({
+                "kind": f"{e['status']}-ungoverned-namespace", "namespace": e["namespace"],
+                "perspective": perspective, "currency": currency,
+                "amount": price.get("amount"),
+                "detail": (f"{e['namespace']} carries the institution label and not governed: "
+                           f"\"true\", and was not in the last signed composed artefact's "
+                           f"recorded ungoverned set" if e["status"] == "new" else
+                           f"{e['namespace']} was a recorded ungoverned namespace and now carries "
+                           f"governed: \"true\"")
+                          + (f"; priced at {price['amount']:.2f} {currency} as {price['workloads']} "
+                             f"of {price['workloads_total']} institution workloads x ramp "
+                             f"{price['ramp']:.4f}" if price.get("amount") is not None else
+                             ("; " + "; ".join(price["limits"]) if price.get("limits") else "")),
+            })
+    return deltas
 
 
 # --------------------------------------------------------------------------
@@ -1418,6 +1854,26 @@ def _feed_as_of(path: Path) -> str | None:
         return None
     published = doc.get("published_at")
     return published[:10] if isinstance(published, str) else None
+
+
+def _composition_as_of(edges: list[dict], parent_trees: dict[str, Path]) -> str | None:
+    """The date THIS composition prices as of: the newest `published_at`
+    among the pinned feed envelopes (ticket 38). A signed fact, so the
+    ungoverned ramp reads it rather than a clock (D1), and a re-composition
+    from the same parents lands on the same date. None where no pinned feed
+    carries one -- a named limit on the entry, never today's date."""
+    dates: list[str] = []
+    for edge in edges:
+        if edge["kind"] not in FEED_KINDS:
+            continue
+        tree = parent_trees.get(edge["party"])
+        name = _feed_name(edge)
+        if tree is None or not name:
+            continue
+        as_of = _feed_as_of(feed_file(edge["party"], name, edge["version"], Path(tree)))
+        if as_of:
+            dates.append(as_of)
+    return max(dates) if dates else None
 
 
 def _feed_currency(name: str, payload: dict) -> str | None:
@@ -1800,10 +2256,162 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
 # --------------------------------------------------------------------------
 
 
+def _pin_tag_pattern(name: str, version: str) -> re.Pattern:
+    """The tag forms that sign a feed pin: `<name>/vX.Y.Z` or bare `vX.Y.Z`
+    (a single tag line for every feed, ticket 14 answer 4). A bare-major pin
+    (`v1`) is signed by any `v1.x.y`; a full version must match exactly. The
+    same rule the hub's feed_contract.py resolves a pin by."""
+    v = version.lstrip("v")
+    ver = re.escape(v) if "." in v else rf"{re.escape(v)}\.\d+\.\d+"
+    return re.compile(rf"^(?:{re.escape(name)}/)?v{ver}$")
+
+
+def _tag_version_key(tag: str) -> list[int]:
+    """Sort key over the tags of ONE pin form, tolerant of a pre-release
+    suffix (`v1.0.0-rc1`): each dotted field orders on its leading digits, and
+    a field carrying anything else sorts the tag below the plain release of
+    the same numbers. A pre-release pin is a legal pin, so reading its state
+    may not raise on the way to the highest tag."""
+    key: list[int] = []
+    release = 1
+    for field in tag.rsplit("v", 1)[-1].split("."):
+        digits = re.match(r"\d+", field)
+        key.append(int(digits.group()) if digits else 0)
+        if digits is None or digits.end() != len(field):
+            release = 0
+    return key + [release]
+
+
+def pin_signature_state(tree: Path | None, party: str, name: str, version: str) -> dict:
+    """Ticket 69. What the parent tree's OWN tags say about the pin:
+    `signed` when the highest tag of the pinned form is an annotated tag
+    carrying a signature block, `untagged` when the checkout demonstrably
+    carries the publisher's tags and none of them signs the pin, `unobserved`
+    when this checkout is in no position to say. Presence of the block is what
+    is read here, the same reading `_signed_tags` makes for the adopter's own
+    tags; whether it VERIFIES under the pinned identity is the hub check's,
+    and this module never claims it. Never a refusal.
+
+    Only a checkout that can actually show the publisher's tag namespace may
+    say `untagged`, because `untagged` books a hole of the whole premium and
+    an absent tag and an unfetched one look identical from inside a checkout:
+
+      - no git metadata at all: nothing to read (a fixture, a copied tree);
+      - a git checkout carrying NO tag whatever: `actions/checkout` fetches
+        none unless `fetch-tags: true` is set, so an empty tag namespace is
+        the shape of a shallow fetch, not of a publisher who never tagged;
+      - a matching tag that is not an annotated tag OBJECT (`objecttype` is
+        `commit`): a lightweight tag, or an annotated tag flattened by
+        checkout's second fetch (release.yml re-fetches the real ref before
+        verifying for exactly this reason) -- the object that would carry the
+        signature is not in this checkout to read.
+
+    All three are could-not-look: they keep a recorded hole open and open
+    none (ticket 69 decision 6). A tag of the pinned form that IS an
+    annotated object and carries no signature block is a real observation and
+    stays `untagged`: an unsigned tag signs nothing (decision 5)."""
+    if tree is None or not (Path(tree) / ".git").exists():
+        return {"state": "unobserved", "tag": None,
+                "detail": f"the {party} parent tree carries no git metadata, so no tag could be "
+                          f"read for {name}@{version}; the signature state is unobserved, not absent"}
+    listed = subprocess.run(
+        ["git", "-C", str(tree), "for-each-ref", "--format=%(refname:short) %(objecttype)",
+         "refs/tags"], capture_output=True, text=True)
+    refs = [r for r in (line.split() for line in listed.stdout.splitlines()) if len(r) == 2]
+    if listed.returncode != 0 or not refs:
+        return {"state": "unobserved", "tag": None,
+                "detail": f"the {party} parent's checkout carries no tag at all, so it cannot "
+                          f"tell an untagged {name}@{version} from a checkout fetched without "
+                          f"tags; the signature state is unobserved, not absent"}
+    pattern = _pin_tag_pattern(name, version)
+    hits = sorted((tag, kind) for tag, kind in refs if pattern.match(tag))
+    if not hits:
+        return {"state": "untagged", "tag": None,
+                "detail": f"no tag of the form {name}/v* or v* signs @{version} on the {party} "
+                          f"parent's checkout, which carries {len(refs)} tag(s) of its own"}
+    tag, kind = max(hits, key=lambda h: _tag_version_key(h[0]))
+    if kind != "tag":
+        return {"state": "unobserved", "tag": tag,
+                "detail": f"tag {tag} on the {party} checkout is a {kind}, not an annotated tag "
+                          f"object -- a lightweight tag, or one flattened by a second fetch -- so "
+                          f"the object that would carry a signature is not here to read"}
+    body = subprocess.run(["git", "-C", str(tree), "cat-file", "-p", tag],
+                          capture_output=True, text=True).stdout
+    if "-----BEGIN" in body:
+        return {"state": "signed", "tag": tag,
+                "detail": f"tag {tag} on the {party} checkout carries a signature block"}
+    return {"state": "untagged", "tag": tag,
+            "detail": f"annotated tag {tag} exists on the {party} checkout but carries no "
+                      f"signature block, so it signs nothing"}
+
+
+def _previous_pin_hole(prev_prices: list[dict], party: str, name: str) -> dict | None:
+    """The open (new or recorded) untagged-pin hole the last signed composed
+    artefact carried on this premium edge, or None."""
+    for e in prev_prices or []:
+        if e.get("kind") == "premium" and e.get("source") == party and e.get("name") == name:
+            hole = e.get("hole")
+            if isinstance(hole, dict) and hole.get("status") in ("new", "recorded"):
+                return hole
+            return None
+    return None
+
+
+def untagged_pin_hole(signature: dict, prev_hole: dict | None, *, party: str, name: str,
+                      version: str, perspective: str, currency: str, amount: float) -> dict | None:
+    """The hole an untagged premium pin opens on its own entry (ticket 69):
+    the premium, booked as paid against a quote no tag signs, under the
+    adopter's own perspective and currency. `new` on first sight, `recorded`
+    once the last signed artefact carried it, `closed` when a signed tag now
+    carries the pin, None when there is nothing to report. An unobserved
+    state keeps a recorded hole open and opens none: a could-not-look is
+    never a signature and never a closure."""
+    state = signature["state"]
+    priced_by = (f"{party} {name}@{version}: the premium the pin books, paid against a quote "
+                 f"no signed tag carries")
+    base = {"kind": UNTAGGED_PIN_HOLE_KIND, "source": party, "name": name, "version": version,
+            "perspective": perspective, "currency": currency}
+    if state == "untagged":
+        return {**base, "status": "recorded" if prev_hole else "new", "amount": amount,
+                "priced_by": priced_by, "detail": signature["detail"]}
+    if prev_hole is None:
+        return None
+    if state == "unobserved":
+        return {**base, "status": "recorded", "amount": amount, "priced_by": priced_by,
+                "detail": f"{signature['detail']}; the recorded hole stays open"}
+    return {**base, "status": "closed", "amount": amount, "priced_by": priced_by,
+            "detail": f"{signature['detail']}; the hole the last signed artefact recorded is closed"}
+
+
+def untagged_pin_deltas(prices: list[dict], perspective: str, currency: str) -> list[dict]:
+    """deltas[] for the premium entries whose untagged-pin hole opened or
+    closed since the last signed composed artefact (ticket 69), in the same
+    shape compute_deltas prints a control hole's move."""
+    deltas: list[dict] = []
+    for e in prices:
+        hole = e.get("hole") if e.get("kind") == "premium" else None
+        if not isinstance(hole, dict) or hole.get("status") not in ("new", "closed"):
+            continue
+        deltas.append({
+            "kind": f"{hole['status']}-untagged-pin", "source": hole["source"],
+            "name": hole["name"], "version": hole["version"],
+            "perspective": perspective, "currency": currency,
+            "amount": hole["amount"], "priced_by": hole["priced_by"],
+            "detail": (f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']} and "
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is booked "
+                       f"as paid against an unsigned quote" if hole["status"] == "new" else
+                       f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']}; "
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is again "
+                       f"paid against a signed quote"),
+        })
+    return deltas
+
+
 def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  perspective_doc: dict, reporting_currency: str,
                  prev_version: str | None,
-                 parent_trees: dict[str, Path] | None = None) -> dict:
+                 parent_trees: dict[str, Path] | None = None,
+                 prev_prices: list[dict] | None = None) -> dict:
     """One `kind: premium` prices[] entry, read off the insurer's own signed
     quote feed. There is no arithmetic here on purpose: the premium is a
     CONTRACT COST -- what this adopter pays, booked under its own perspective
@@ -1846,6 +2454,15 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                        f"and currency, so there is no cost line to book")
     amount, fx = _converted(float(premium["amount"]), native, reporting_currency,
                              _feed_as_of(path), parent_trees)
+    # Ticket 69: the pin's signature state, read off the parent tree's own
+    # tags (`tree` as passed, never the platform fallback: the platform's
+    # tags sign nothing of the insurer's), and the hole an untagged pin is.
+    signature = pin_signature_state(tree if tree != PLATFORM_DIR else None, edge["party"], name,
+                                    str(edge["version"]))
+    hole = untagged_pin_hole(
+        signature, _previous_pin_hole(prev_prices or [], edge["party"], name),
+        party=edge["party"], name=name, version=str(edge["version"]),
+        perspective=adopter_party, currency=reporting_currency, amount=amount)
     return _price_entry(
         edge["party"], "premium", adopter_party, reporting_currency, amount, perspective_doc,
         name=name,
@@ -1859,6 +2476,8 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
         valid_from=payload.get("valid_from"),
         valid_until=payload.get("valid_until"),
         priced_against=payload.get("priced_against") or [],
+        pin_signature=signature,
+        hole=hole,
         **fx,
     )
 
@@ -1959,7 +2578,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             prices.append(price_quote(
                 edge, adopter_party, parent_trees.get(edge["party"]),
                 perspective_doc=perspective_doc, reporting_currency=reporting,
-                prev_version=prev_version, parent_trees=parent_trees))
+                prev_version=prev_version, parent_trees=parent_trees,
+                prev_prices=prev_prices))
             continue
         prices.append(price_parent(
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
@@ -1998,6 +2618,7 @@ def _refused(errors: list[str]) -> dict:
         "holes": [],
         "ungoverned": [],
         "prices": [],
+        "deltas": [],
         "limits": [],
     }
 
@@ -2026,6 +2647,14 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
 
     parents: list[dict] = []
     missing: list[str] = []
+    parent_trees = dict(parent_trees)
+    if any(e.get("party") == adopter_party for e in edges):
+        # A SELF-PIN (ticket 38): the adopter pins its own bespoke controls
+        # catalogue as a parent. The tree is the tree under composition --
+        # always, so composing a copy prices that copy's own catalogue -- and
+        # the catalogue is signed by the same tag as the composed artefact
+        # (ADR-0017's "no separate pin"), so no tag of its own is needed.
+        parent_trees[adopter_party] = adopter_dir
     for edge in edges:
         party, kind, version = edge["party"], edge["kind"], edge["version"]
         tree = parent_trees.get(party)
@@ -2055,11 +2684,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     conflicting_keys: set[tuple[str, str, str]] = set()
     implementations_parties: set[str] = set()
     guards: list[dict] = []
-    # (control_id, claimed policy name, claiming party) -- every OSCAL
-    # control claim composition can see: each implementations parent's own
-    # (ADR-0017: a claim belongs to whoever ships the implementation), plus
-    # the adopter's own, gathered below the loop.
-    claims: list[tuple[str, str, str]] = []
+    # (source href, control_id, claimed policy name, claiming party) -- every
+    # OSCAL control claim composition can see: each implementations parent's
+    # own (ADR-0017: a claim belongs to whoever ships the implementation),
+    # plus the adopter's own, gathered below the loop. The href is what keys
+    # the claim to a catalogue (ticket 38: every claim is a (source, id)).
+    claims: list[tuple[str | None, str, str, str]] = []
 
     for edge in edges:
         if edge["kind"] != "implementations":
@@ -2072,8 +2702,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         members_by_version, this_guards = load_implementations(impl_root)
         source_ref = f"{impl_party}@{impl_version}"
 
-        for control_id, policy_name in _load_claims(impl_root.joinpath(*PARENT_CLAIMS_PATH)):
-            claims.append((control_id, policy_name, impl_party))
+        for href, control_id, policy_name in _load_claims(impl_root.joinpath(*PARENT_CLAIMS_PATH)):
+            claims.append((href, control_id, policy_name, impl_party))
 
         for version, members in sorted(members_by_version.items()):
             for (family, base), meta in sorted(members.items()):
@@ -2114,8 +2744,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
 
     # The adopter's own control claims -- next to the party artefact it
     # signs (ADR-0017), never mixed with a parent's.
-    for control_id, policy_name in _load_claims(adopter_dir / ADOPTER_CLAIMS_FILE):
-        claims.append((control_id, policy_name, adopter_party))
+    for href, control_id, policy_name in _load_claims(adopter_dir / ADOPTER_CLAIMS_FILE):
+        claims.append((href, control_id, policy_name, adopter_party))
 
     limits = [{
         "name": "two-publisher-conflict",
@@ -2140,9 +2770,21 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     for g in guards:
         policy_owner.setdefault(g["member_name"], g["source_party"])
 
-    controls_edge = next((e for e in edges if e["kind"] == "controls"), None)
+    # Every controls parent's catalogue, keyed on the party that publishes
+    # it (ticket 38: a control key is (source, id), and an adopter's own
+    # bespoke catalogue is a controls parent like any other). The BASELINE's
+    # catalogue is the first controls parent that is not the adopter itself
+    # -- the regulator's, ADR-0013's one authority for a bare id.
+    controls_edges = [e for e in edges if e["kind"] == "controls"]
+    controls_edge = next((e for e in controls_edges if e["party"] != adopter_party), None)
+    catalogs: dict[str, set[str]] = {}
+    catalog_props: dict[str, dict[str, dict[str, str]]] = {}
+    for e in controls_edges:
+        controls = _catalog_controls(Path(parent_trees[e["party"]]))
+        catalog_props[e["party"]] = controls
+        catalogs[e["party"]] = set(controls)
     nist_root: Path | None = None
-    catalog_ids: set[str] = set()
+    baseline_source: str | None = controls_edge["party"] if controls_edge else None
     baseline_ids: set[str] = set()
     baseline_name = party_doc["baseline"]
     if controls_edge is None:
@@ -2154,7 +2796,6 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         })
     else:
         nist_root = Path(parent_trees[controls_edge["party"]])
-        catalog_ids = _catalog_ids(nist_root)
         resolved = _baseline_ids(nist_root, baseline_name)
         if resolved is None:
             refusals.append({
@@ -2166,16 +2807,21 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         else:
             baseline_ids = resolved
 
-    added_controls = party_doc.get("overlay", {}).get("controls", []) or []
-    refusals += _unknown_id_refusals(added_controls, catalog_ids, f"{adopter_party} overlay.controls")
-    selected_set = baseline_ids | {c for c in added_controls if c in catalog_ids}
+    added_specs = [(str(spec), _control_spec(str(spec), baseline_source))
+                   for spec in party_doc.get("overlay", {}).get("controls", []) or []]
+    refusals += _unknown_control_refusals(added_specs, catalogs, f"{adopter_party} overlay.controls")
+    selected_set: set[ControlKey] = {(str(baseline_source), cid) for cid in baseline_ids}
+    selected_set |= {key for _spelled, key in added_specs if key[1] in catalogs.get(key[0], set())}
 
-    covered, claim_refusals = resolve_claims(claims, policy_owner, catalog_ids)
+    covered, claim_refusals = resolve_claims(claims, policy_owner, catalogs, baseline_source)
     refusals += claim_refusals
 
     prev_header = _previous_header(adopter_dir)
-    prev_hole_ids = set(prev_header.get("holes", [])) if prev_header is not None else None
-    prev_selected = set(prev_header.get("selected-controls", [])) if prev_header is not None else None
+    prev_source = _header_controls_source(prev_header, adopter_party) or baseline_source
+    prev_holes = ({_decode_control(h, prev_source) for h in prev_header.get("holes", [])}
+                  if prev_header is not None else None)
+    prev_selected = ({_decode_control(c, prev_source) for c in prev_header.get("selected-controls", [])}
+                     if prev_header is not None else None)
     prev_baseline_name = prev_header.get("baseline") if prev_header is not None else None
     prev_baseline_ids = (
         _baseline_ids(nist_root, prev_baseline_name)
@@ -2186,17 +2832,13 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         set(prev_header.get("ungoverned-namespaces", [])) if prev_header is not None else None
     )
 
-    hole_entries, hole_refusals = compute_holes(selected_set, covered, prev_hole_ids)
-    refusals += hole_refusals
-    refusals += check_selected_set(selected_set, prev_selected)
-    refusals += check_baseline_widening(baseline_ids, prev_baseline_ids, prev_baseline_name, baseline_name)
+    hole_entries = compute_holes(selected_set, covered, prev_holes)
+    refusals += check_selected_set(selected_set, prev_selected, baseline_source)
 
     # -----------------------------------------------------------------
-    # ticket 15: the governed namespace lint
+    # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
     # -----------------------------------------------------------------
-    ungoverned_entries, ungoverned_refusals = compute_ungoverned(
-        set(ungoverned_namespaces(adopter_dir)), prev_ungoverned_ids)
-    refusals += ungoverned_refusals
+    ungoverned_entries = compute_ungoverned(set(ungoverned_namespaces(adopter_dir)), prev_ungoverned_ids)
 
     # -----------------------------------------------------------------
     # ticket 16: pricing and threat parents re-price, and never apply
@@ -2220,6 +2862,31 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         prices = []
         refusals.append({"kind": "missing-instrument", "subject": adopter_party,
                          "detail": str(e), "needs_composition": True})
+
+    # -----------------------------------------------------------------
+    # ticket 38: a hole is priced, not counted
+    # -----------------------------------------------------------------
+    reporting = _reporting_currency(party_doc)
+    # What this party is on the hook for, signed under its own tag beside the
+    # cage it bought (ticket 36; ticket 14 answer 2). Computed here because
+    # its total is also the base an ungoverned namespace takes its share of.
+    exposure = exposure_section(prices, adopter_party, band, reporting)
+    price_ungoverned(ungoverned_entries, adopter_dir, adopter_party, reporting,
+                     exposure["total"] if exposure else None,
+                     _composition_as_of(edges, parent_trees))
+    hole_prices = _regime_hole_prices(prices)
+    _price_holes(hole_entries, hole_prices, adopter_party, reporting)
+    refusals += _price_bespoke_holes(hole_entries, adopter_party, adopter_dir,
+                                     catalog_props.get(adopter_party, {}), band, reporting,
+                                     (party_doc.get("overlay", {}) or {}).get("floor"))
+    _decorate_regime_holes(prices, hole_entries, selected_set, covered)
+    deltas = compute_deltas(
+        hole_entries, ungoverned_entries,
+        baseline_widening_delta(baseline_ids, prev_baseline_ids, prev_baseline_name, baseline_name,
+                                baseline_source, hole_prices, adopter_party, reporting),
+        adopter_party, reporting)
+    # Ticket 69: a premium pin that opened or closed as an untagged-pin hole.
+    deltas += untagged_pin_deltas(prices, adopter_party, reporting)
 
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
@@ -2252,7 +2919,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     # are what the NEXT run's compute_holes() compares against. A closed
     # hole drops out of the recorded set: if it becomes a hole again later
     # it is "new" again, not "recorded" (spec.md names no reopened case).
-    recorded_hole_ids = sorted(e["control_id"] for e in hole_entries if e["status"] != "closed")
+    recorded_hole_ids = sorted(_encode_control((e["source"], e["control_id"]), baseline_source)
+                               for e in hole_entries if e["status"] != "closed")
     # Same shape: the recorded (open) set the NEXT run compares against.
     # A closed namespace drops out -- if it goes ungoverned again later it
     # is "new" again, not "recorded" (compute_ungoverned names no reopened
@@ -2265,7 +2933,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "baseline": baseline_name,
         "governed-namespaces": governed_namespaces(adopter_dir),
         "holes": recorded_hole_ids,
-        "selected-controls": sorted(selected_set),
+        "selected-controls": sorted(_encode_control(k, baseline_source) for k in selected_set),
         "ungoverned-namespaces": recorded_ungoverned,
     }
     # Which versioned rule picked the tier (ADR-0021). Recorded only where the
@@ -2274,14 +2942,11 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     selection_policy = _selection_policy_version(adopter_dir)
     if selection_policy is not None:
         header["selection-policy"] = selection_policy
-    # What this party is on the hook for, signed under its own tag beside the
-    # cage it bought (ticket 36; ticket 14 answer 2). It lands on the RENDERED
-    # header, not only in the evidence document, so `composition.py verify`
-    # re-derives it byte for byte from the same parents: an exposure an insurer
-    # prices a layer against is a fact a verifier can re-compute, not a summary
-    # written once. Absent -- never zero -- where nothing priced.
-    exposure = exposure_section(prices, adopter_party, band,
-                                 _reporting_currency(party_doc))
+    # The exposure lands on the RENDERED header, not only in the evidence
+    # document, so `composition.py verify` re-derives it byte for byte from
+    # the same parents: an exposure an insurer prices a layer against is a
+    # fact a verifier can re-compute, not a summary written once. Absent --
+    # never zero -- where nothing priced.
     if exposure is not None:
         header["exposure"] = exposure
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
@@ -2297,6 +2962,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "holes": hole_entries,
         "ungoverned": ungoverned_entries,
         "prices": prices,
+        "deltas": deltas,
         "limits": limits,
     }
     return document, rendered
@@ -2436,6 +3102,88 @@ def _adopter_copy(name: str, dest: Path) -> Path:
     return work
 
 
+def _insurer_copy(dest: Path, *, git: bool) -> Path:
+    """Ticket 69's could-not-look fixtures: the real insurer's party.yaml and
+    quote/ tree in a scratch directory with NO tag -- `git init` and nothing
+    else when `git`, which is the shape a CI checkout without `fetch-tags`
+    has; no git metadata at all otherwise. Both read `unobserved`: a checkout
+    that cannot show the publisher's tags cannot call a pin untagged. No
+    fixture here ever claims a signature."""
+    src = DEFAULT_ESTATE_CLONE / "insurer"
+    dest.mkdir(parents=True)
+    (dest / "party.yaml").write_text((src / "party.yaml").read_text())
+    shutil.copytree(src / "quote", dest / "quote")
+    if git:
+        subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    return dest
+
+
+def _insurer_clone(dest: Path) -> Path:
+    """Ticket 69's untagged fixture, half one: a real `git clone` of the
+    insurer, so the publisher's OWN tags travel -- its real annotated v1.0.0
+    and nothing invented. A checkout like this one is the only kind that can
+    honestly say a pin is untagged."""
+    subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "insurer"), str(dest)],
+                   check=True, capture_output=True)
+    return dest
+
+
+def _quote_at_untagged_major(tree: Path, adopter: str, major: str) -> None:
+    """Ticket 69's untagged fixture, half two: the quote the insurer already
+    publishes, copied to a MAJOR it has never tagged, so the pin below points
+    at a real quote file no tag of the publisher's signs. No tag is created,
+    deleted, renamed or edited here: the tag namespace stays exactly the
+    publisher's own."""
+    src = tree / "quote" / adopter / "v1"
+    dest = tree / "quote" / adopter / major
+    shutil.copytree(src, dest)
+    doc = json.loads((dest / "feed.json").read_text())
+    doc["version"] = f"{major.lstrip('v')}.0.0"
+    (dest / "feed.json").write_text(json.dumps(doc, indent=2) + "\n")
+
+
+def _bump_feed_pin(work: Path, party: str, name: str, version: str) -> None:
+    """Move ONE adopter feed pin, the edit a Renovate PR would make."""
+    doc = yaml.safe_load((work / "party.yaml").read_text())
+    for edge in doc["inherits"]:
+        if edge.get("kind") == "feed" and edge.get("party") == party and edge.get("name") == name:
+            edge["version"] = version
+    (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+
+def _flatten_tag(tree: Path, tag: str) -> None:
+    """Overwrite `refs/tags/<tag>` onto the commit it resolves to -- exactly
+    what `actions/checkout`'s second fetch does to an annotated tag object,
+    and why release.yml re-fetches the real ref before verifying it. The tag
+    name and the commit stay the publisher's own; only the object the local
+    ref points at changes, which is the whole point of the fixture."""
+    commit = subprocess.run(["git", "-C", str(tree), "rev-parse", f"{tag}^{{commit}}"],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(tree), "update-ref", f"refs/tags/{tag}", commit],
+                   check=True, capture_output=True)
+
+
+def _tag_shape_repo(dest: Path, *, tag: str | None, annotated: bool, flatten: bool = False) -> Path:
+    """A throwaway repo of this fixture's own -- no publisher's name on it --
+    carrying one commit and at most one tag, to read the SHAPES a checkout can
+    present back: no tag, a lightweight tag, an annotated tag, and an
+    annotated tag flattened onto its commit the way `actions/checkout`'s
+    second fetch flattens one (release.yml re-fetches the ref for exactly this
+    reason). Nothing here is signed and nothing claims to be."""
+    dest.mkdir(parents=True)
+    git = ["git", "-C", str(dest), "-c", "user.name=fixture", "-c", "user.email=fixture@invalid",
+           "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"]
+    subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "fixture"], check=True,
+                   capture_output=True)
+    if tag:
+        subprocess.run(git + (["tag", "-a", tag, "-m", tag] if annotated else ["tag", tag]),
+                       check=True, capture_output=True)
+        if flatten:
+            _flatten_tag(dest, tag)
+    return dest
+
+
 def _with_restate(work: Path, restate: list[dict]) -> None:
     doc = yaml.safe_load((work / "party.yaml").read_text())
     doc["overlay"]["restate"] = restate
@@ -2525,15 +3273,46 @@ def _write_fixture_platform(root: Path, real_platform: Path, claims: list[tuple[
     _write_component_definition(root / "oscal" / "component-definition.json", claims)
 
 
-def _write_component_definition(path: Path, claims: list[tuple[str, str]]) -> None:
+def _write_component_definition(path: Path, claims: list[tuple[str, str]],
+                                source: str = "../fixture-nist/catalog/catalog.json") -> None:
+    """`source` is the enclosing block's href naming the catalogue the bare
+    ids belong to (ADR-0013) -- the fixture regulator's by default."""
     path.parent.mkdir(parents=True, exist_ok=True)
     comp_def = {"component-definition": {"components": [{"control-implementations": [{
+        "source": source,
         "implemented-requirements": [
             {"control-id": control_id, "props": [{"name": "Check_Id", "value": policy_name}]}
             for control_id, policy_name in claims
         ],
     }]}]}}
     path.write_text(json.dumps(comp_def))
+
+
+def _write_small_catalog(root: Path, controls: dict[str, dict[str, str]]) -> None:
+    """A minimal OSCAL catalogue under `<root>/catalog/`: flat controls, each
+    with the props given (a bespoke control names its `scenario` there). The
+    shape a second controls parent -- or an adopter pinning itself -- ships."""
+    catalog_dir = Path(root) / "catalog"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    doc = {"catalog": {"uuid": "b" * 8, "groups": [{"id": "bespoke", "controls": [
+        {"id": cid, "props": [{"name": k, "value": v} for k, v in props.items()]}
+        for cid, props in controls.items()
+    ]}]}}
+    (catalog_dir / "catalog.json").write_text(json.dumps(doc))
+    (catalog_dir / "CATALOG_VERSION.json").write_text(json.dumps({"file": "catalog.json"}))
+
+
+def _write_workload(work: Path, namespace: str, name: str) -> None:
+    """One Deployment manifest in `namespace` -- what the ungoverned share
+    counts (ticket 38)."""
+    doc = {"apiVersion": "apps/v1", "kind": "Deployment",
+           "metadata": {"name": name, "namespace": namespace}, "spec": {}}
+    (work / "gitops" / "apps").mkdir(parents=True, exist_ok=True)
+    (work / "gitops" / "apps" / f"workload-{namespace}-{name}.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+
+def _hole(document: dict, control_id: str) -> dict:
+    return next(h for h in document["holes"] if h["control_id"] == control_id)
 
 
 def _write_fixture_ico(root: Path, real_ico: Path) -> None:
@@ -2570,7 +3349,8 @@ def _write_fixture_ico(root: Path, real_ico: Path) -> None:
 
 def _write_fixture_adopter(work: Path, baseline: str, controls_add: list[str] | None = None,
                             add: list[dict] | None = None, own_claims: list[tuple[str, str]] | None = None,
-                            nist_party: str = "fixture-nist", impl_party: str = "fixture-platform") -> None:
+                            nist_party: str = "fixture-nist", impl_party: str = "fixture-platform",
+                            extra_inherits: list[dict] | None = None) -> None:
     party_doc = {
         "party": "fixture-adopter14", "roles": ["adopter"], "baseline": baseline,
         # A synthetic party is still a party: it signs its own appetite band
@@ -2581,6 +3361,7 @@ def _write_fixture_adopter(work: Path, baseline: str, controls_add: list[str] | 
         "inherits": [
             {"party": nist_party, "kind": "controls", "version": "1.0.0"},
             {"party": impl_party, "kind": "implementations", "version": "1.0.0"},
+            *(extra_inherits or []),
         ],
         "overlay": {"add": add or [], "restate": [], "controls": controls_add or []},
     }
@@ -2639,9 +3420,9 @@ def selfcheck() -> None:
           "platform's two formerly-dangling claims are fixed, zero refusals")
 
     assert {"outcome", "parents", "members", "refusals", "restatements", "cages",
-            "holes", "ungoverned", "prices", "limits"} <= document.keys(), document.keys()
+            "holes", "ungoverned", "prices", "deltas", "limits"} <= document.keys(), document.keys()
     print("OK document: carries outcome, parents[], members[], refusals[], restatements[], "
-          "cages[], holes[], ungoverned[], prices[], limits[]")
+          "cages[], holes[], ungoverned[], prices[], deltas[], limits[]")
 
     # --- prices[] is populated on the real driftwood's first-ever composition
     # too, with nothing to compare a bump against yet (an honest "no move") ---
@@ -2747,6 +3528,187 @@ def selfcheck() -> None:
           "control id; the premium it buys is a cost and is not counted in it"
           % (exposure["total"], exposure["currency"], len(exposure["regimes"])))
 
+    # ======================================================================
+    # eco-system ticket 69: an untagged pin is a priced hole
+    # ======================================================================
+    # The real insurer clone carries its signed v1.x.y tag, so the real
+    # driftwood's premium entry reads `signed` and carries no hole. The
+    # untagged case is a real CLONE of the insurer -- the publisher's own tags
+    # travel -- carrying the quote it already publishes at a major it has
+    # never tagged, with driftwood's pin moved onto it: the quote still
+    # prices, the pin is a hole of its own premium under driftwood's own
+    # perspective and currency, printed as a delta and never a refusal; a
+    # second composition records it; a checkout that cannot show the
+    # publisher's tags (no git metadata, no tag at all, a flattened tag) is a
+    # could-not-look that opens nothing and closes nothing; and a pin back
+    # onto the version the insurer's real signed tag carries closes it. No
+    # fixture here claims a signature: the only signed tag read is the
+    # insurer's real one.
+    if quote_path.exists():
+        real_premium = next(e for e in document["prices"] if e["kind"] == "premium")
+        sig = real_premium["pin_signature"]
+        assert sig["state"] == "signed" and re.match(r"^v1\.\d+\.\d+$", sig["tag"] or ""), sig
+        assert real_premium["hole"] is None, real_premium["hole"]
+        assert not [d for d in document["deltas"] if d["kind"].endswith("untagged-pin")], document["deltas"]
+        print("OK pin signature: the real driftwood's quote pin resolves to the insurer's signed "
+              "tag %s on the checkout, and carries no hole" % sig["tag"])
+
+        # The three shapes a checkout can present, read at the pure seam on
+        # this fixture's own throwaway repos: only the annotated tag object is
+        # an observation. Red before the fix: a tagless checkout and a
+        # flattened tag both read `untagged` and booked a hole of the whole
+        # premium into a signed artefact.
+        with tempfile.TemporaryDirectory() as td:
+            shapes = Path(td)
+            for label, kwargs, want in (
+                    ("a checkout with no tag at all", dict(tag=None, annotated=False), "unobserved"),
+                    ("a lightweight tag", dict(tag="v1.0.0", annotated=False), "unobserved"),
+                    ("an annotated tag flattened onto its commit",
+                     dict(tag="v1.0.0", annotated=True, flatten=True), "unobserved"),
+                    ("an annotated tag carrying no signature block",
+                     dict(tag="v1.0.0", annotated=True), "untagged")):
+                repo = _tag_shape_repo(shapes / label.replace(" ", "-"), **kwargs)  # type: ignore[arg-type]
+                got = pin_signature_state(repo, "fixture-publisher", "fixture-feed", "v1")
+                assert got["state"] == want, (label, got)
+            # and a pre-release pin reads rather than raising on its own tag
+            pre = _tag_shape_repo(shapes / "pre-release", tag="v1.0.0-rc1", annotated=True)
+            assert pin_signature_state(pre, "fixture-publisher", "fixture-feed",
+                                        "v1.0.0-rc1")["state"] == "untagged"
+        print("OK pin signature: only a checkout that can show the publisher's tag namespace may "
+              "say `untagged` -- no tag at all, a lightweight tag and a flattened annotated tag "
+              "all read `unobserved`; an annotated tag with no signature block is untagged")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            untagged = _insurer_clone(root / "insurer-untagged")
+            _quote_at_untagged_major(untagged, "driftwood", "v2")
+            tagless = _insurer_copy(root / "insurer-tagless", git=True)
+            _quote_at_untagged_major(tagless, "driftwood", "v2")
+            bare = _insurer_copy(root / "insurer-bare", git=False)
+            _quote_at_untagged_major(bare, "driftwood", "v2")
+            flattened = _insurer_clone(root / "insurer-flattened")
+            _flatten_tag(flattened, "v1.0.0")
+            trees = {**parent_trees, "insurer": untagged}
+            work = _adopter_copy("driftwood", root)
+            _bump_feed_pin(work, "insurer", "quote-driftwood", "v2")
+
+            def _premium(doc: dict) -> dict:
+                return next(e for e in doc["prices"] if e["kind"] == "premium")
+
+            def _pin_deltas(doc: dict) -> list[dict]:
+                return [d for d in doc["deltas"] if d["kind"].endswith("untagged-pin")]
+
+            def _commit(doc: dict, rendered: dict[str, str]) -> None:
+                _commit_header(work, rendered)
+                (work / "composed" / "evidence.json").write_text(json.dumps(doc))
+
+            # 1. untagged: priced as a hole of the premium, never refused
+            doc1, rendered1 = compose(work, trees)
+            assert doc1["outcome"] == "composed", doc1["refusals"]
+            p1 = _premium(doc1)
+            assert p1["pin_signature"]["state"] == "untagged", p1["pin_signature"]
+            assert p1["pin_signature"]["tag"] is None, p1["pin_signature"]
+            hole = p1["hole"]
+            assert hole is not None and hole["kind"] == UNTAGGED_PIN_HOLE_KIND, hole
+            assert hole["status"] == "new", hole
+            assert hole["source"] == "insurer" and hole["name"] == "quote-driftwood", hole
+            assert hole["version"] == "v2", hole
+            assert hole["perspective"] == "driftwood" and hole["currency"] == "GBP", hole
+            assert hole["amount"] == p1["amount"] and hole["amount"] > 0, (hole, p1["amount"])
+            assert hole["priced_by"], hole
+            d1 = _pin_deltas(doc1)
+            assert len(d1) == 1 and d1[0]["kind"] == "new-untagged-pin", doc1["deltas"]
+            assert d1[0]["source"] == "insurer" and d1[0]["name"] == "quote-driftwood", d1
+            assert d1[0]["version"] == "v2", d1
+            assert d1[0]["perspective"] == "driftwood" and d1[0]["currency"] == "GBP", d1
+            assert d1[0]["amount"] == p1["amount"] and d1[0]["priced_by"] == hole["priced_by"], d1
+            assert "amount" in d1[0] and "detail" in d1[0], d1
+            print("OK untagged pin: a quote pinned at a version no tag on the insurer's checkout "
+                  "signs composes (no refusal) with a hole of its own premium (%.2f %s) under "
+                  "driftwood's perspective, printed as a new-untagged-pin delta"
+                  % (hole["amount"], hole["currency"]))
+
+            # 2. recorded: the last signed artefact already carried the hole
+            _commit(doc1, rendered1)
+            doc2, rendered2 = compose(work, trees)
+            assert doc2["outcome"] == "composed", doc2["refusals"]
+            assert _premium(doc2)["hole"]["status"] == "recorded", _premium(doc2)["hole"]
+            assert _premium(doc2)["hole"]["amount"] == p1["amount"], _premium(doc2)["hole"]
+            assert _pin_deltas(doc2) == [], doc2["deltas"]
+            print("OK untagged pin: a second composition records the hole and prints no delta")
+
+            # 3. unobserved: a checkout that cannot show the publisher's tags
+            # -- no git metadata, and no tag at all (the shape `actions/checkout`
+            # leaves without `fetch-tags: true`) -- is a could-not-look that
+            # neither opens a hole nor closes the recorded one
+            _commit(doc2, rendered2)
+            rendered3: dict[str, str] = {}
+            for tree, expected in ((bare, "no git"), (tagless, "no tag at all")):
+                doc3, rendered3 = compose(work, {**parent_trees, "insurer": tree})
+                assert doc3["outcome"] == "composed", doc3["refusals"]
+                p3 = _premium(doc3)
+                assert p3["pin_signature"]["state"] == "unobserved", p3["pin_signature"]
+                assert expected in p3["pin_signature"]["detail"], p3["pin_signature"]
+                assert p3["hole"]["status"] == "recorded", p3["hole"]
+                assert _pin_deltas(doc3) == [], doc3["deltas"]
+                fresh = _adopter_copy("driftwood", root / f"fresh-{expected.replace(' ', '-')}")
+                _bump_feed_pin(fresh, "insurer", "quote-driftwood", "v2")
+                doc3b, _ = compose(fresh, {**parent_trees, "insurer": tree})
+                assert _premium(doc3b)["pin_signature"]["state"] == "unobserved", _premium(doc3b)
+                assert _premium(doc3b)["hole"] is None, _premium(doc3b)["hole"]
+                assert _pin_deltas(doc3b) == [], doc3b["deltas"]
+            print("OK unobserved pin: a parent tree with no git metadata, and a checkout carrying "
+                  "no tag at all, both read `unobserved` -- they keep a recorded hole and open "
+                  "none, a could-not-look and never a signature")
+
+            # 3b. the defect this fix closes: driftwood's real, SIGNED pin
+            # against an insurer checkout whose annotated tag a second fetch
+            # flattened. A checkout like that is what the adopters' workflows
+            # produce, and reading it as `untagged` books a six-figure hole
+            # into a signed artefact over a signature that is really there.
+            flat_work = _adopter_copy("driftwood", root / "flattened")
+            doc_flat, _ = compose(flat_work, {**parent_trees, "insurer": flattened})
+            p_flat = _premium(doc_flat)
+            assert p_flat["pin_signature"]["state"] == "unobserved", p_flat["pin_signature"]
+            assert p_flat["hole"] is None, p_flat["hole"]
+            assert _pin_deltas(doc_flat) == [], doc_flat["deltas"]
+            print("OK unobserved pin: a real signed tag flattened onto its commit by a second "
+                  "fetch reads `unobserved` and books NO hole -- a fabricated hole is worse than "
+                  "a missed one, and the fetch is the workflow's to fix (ticket 69)")
+
+            # 4. closed: the pin moves back onto the version the insurer's real
+            # signed tag carries, and the recorded hole closes itself
+            _bump_feed_pin(work, "insurer", "quote-driftwood", "v1")
+            doc4, rendered4 = compose(work, parent_trees)
+            assert doc4["outcome"] == "composed", doc4["refusals"]
+            p4 = _premium(doc4)
+            assert p4["pin_signature"]["state"] == "signed", p4["pin_signature"]
+            assert p4["hole"]["status"] == "closed", p4["hole"]
+            d4 = _pin_deltas(doc4)
+            assert len(d4) == 1 and d4[0]["kind"] == "closed-untagged-pin", doc4["deltas"]
+            assert d4[0]["amount"] == p1["amount"], d4
+            assert sig["tag"] in d4[0]["detail"], d4
+            _commit(doc4, rendered4)
+            doc5, _ = compose(work, parent_trees)
+            assert _premium(doc5)["hole"] is None and _pin_deltas(doc5) == [], doc5["deltas"]
+            print("OK closed pin: composing against the insurer's real signed tag closes the "
+                  "hole, prints one closed-untagged-pin delta, and the next composition "
+                  "carries no hole -- the hole heals itself when the tag lands")
+
+            # 5. the rendered policies never change on a signature state move.
+            # Compared across untagged, recorded and unobserved, which are the
+            # same pin against the same quote read three ways -- the closed
+            # case moves the pin itself, so its render is not the same input.
+            # (The header records the parent SHAs, which differ between the
+            # fixture insurer trees, so it is compared without.)
+            moved = [k for k in rendered1
+                     if k != "composed/HEADER.yaml"
+                     and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
+            assert not moved, moved
+            print("OK untagged pin: the rendered artefact is byte-identical across untagged, "
+                  "recorded and unobserved -- signature state lives in the evidence, never the "
+                  "render")
+
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
     assert _sum_prices([{"amount": 1.0}, {"amount": 2.0}], "driftwood", "GBP") == 3.0
@@ -2800,7 +3762,7 @@ def selfcheck() -> None:
         _assert_only_known_dangling(doc_v3["refusals"], "ico v3 weights")
         regime = next(e for e in doc_v3["prices"] if _parent_key(e) == "penalty-schema")
         assert regime["holes"], "ico v3 publishes control_weights; the breakdown must appear"
-        assert all({"source", "id", "weight", "amount"} == set(h) for h in regime["holes"]), regime
+        assert all({"source", "id", "weight", "amount", "status"} == set(h) for h in regime["holes"]), regime
         assert abs(sum(h["weight"] for h in regime["holes"]) - 1.0) < 1e-9, regime["holes"]
         assert abs(regime["total"] - sum(h["amount"] for h in regime["holes"])) < 1e-6, regime
         assert regime["amount"] == regime["total"], regime
@@ -3233,20 +4195,32 @@ def selfcheck() -> None:
         print("OK compute_holes: a first composition (nothing committed yet) records every "
               "hole and refuses on none")
 
-        # --- a second composition with one NEW hole refuses, naming it ---
+        # --- a second composition with one NEW hole COMPOSES and prints the
+        # hole as a priced delta (ticket 38; ADR-0020: a missing behaviour is
+        # priced, never refused). This fixture pins no regime feed, so the
+        # delta carries no amount and says why -- a named absence, never a
+        # zero and never a refusal ---
         added = Path(td) / "run2-new-hole"
         shutil.copytree(base, added)
         doc_added = yaml.safe_load((added / "party.yaml").read_text())
         doc_added["overlay"]["controls"] = ["aa-3"]
         (added / "party.yaml").write_text(yaml.safe_dump(doc_added, sort_keys=False))
         doc2, _ = compose(added, fixture_trees)
-        assert doc2["outcome"] == "refused", doc2
-        new_holes = [r for r in doc2["refusals"] if r["kind"] == "new-hole"]
-        assert len(new_holes) == 1 and new_holes[0]["subject"] == "aa-3", doc2["refusals"]
-        assert new_holes[0]["needs_composition"] is True
-        assert {"control_id": "aa-1.1", "status": "recorded"} in doc2["holes"]
-        print("OK compute_holes: a second composition with one new hole refuses and names it "
-              "(aa-3, added via overlay.controls, an adopter-added control with no claim yet)")
+        assert doc2["outcome"] == "composed", doc2
+        assert not [r for r in doc2["refusals"] if r["kind"] == "new-hole"], doc2["refusals"]
+        new_hole = _hole(doc2, "aa-3")
+        assert new_hole["status"] == "new" and new_hole["source"] == "fixture-nist", new_hole
+        assert new_hole["perspective"] == "fixture-adopter14" and new_hole["currency"] == "GBP"
+        assert _hole(doc2, "aa-1.1")["status"] == "recorded", doc2["holes"]
+        new_deltas = [d for d in doc2["deltas"] if d["kind"] == "new-hole"]
+        assert len(new_deltas) == 1 and new_deltas[0]["control_id"] == "aa-3", doc2["deltas"]
+        assert new_deltas[0]["source"] == "fixture-nist", new_deltas
+        assert new_deltas[0]["amount"] is None and new_deltas[0]["priced_by"] is None, new_deltas
+        assert new_deltas[0]["perspective"] == "fixture-adopter14", new_deltas
+        assert new_deltas[0]["currency"] == "GBP", new_deltas
+        print("OK compute_holes: a second composition with one new hole composes and prints it "
+              "as a priced delta (aa-3, added via overlay.controls, no claim yet) -- no "
+              "refusal; with no regime feed pinned the amount is a named absence, not a zero")
 
         # --- the SAME added control, but filled in the same run by the
         # adopter's own claim against its own overlay.add member: never
@@ -3267,7 +4241,7 @@ def selfcheck() -> None:
         assert doc3["outcome"] == "composed", doc3
         assert "aa-3" not in {h["control_id"] for h in doc3["holes"]}, doc3["holes"]
         assert "composed/policies/v1.0.0/own-policy.yaml" in files3, files3.keys()
-        print("OK resolve_claims: an adopter-added control refuses as a new hole when unfilled "
+        print("OK resolve_claims: an adopter-added control is a priced new hole when unfilled "
               "(above), and an adopter claim in its own component-definition -- against its own "
               "overlay.add member -- fills it in the same run, so it is never even a hole")
 
@@ -3280,8 +4254,9 @@ def selfcheck() -> None:
         _write_component_definition(closes / ADOPTER_CLAIMS_FILE, [("aa-1.1", "own-policy")])
         doc4, _ = compose(closes, fixture_trees)
         assert doc4["outcome"] == "composed", doc4
-        assert {"control_id": "aa-1.1", "status": "closed"} in doc4["holes"], doc4["holes"]
-        assert {"control_id": "aa-2", "status": "recorded"} in doc4["holes"], doc4["holes"]
+        assert _hole(doc4, "aa-1.1")["status"] == "closed", doc4["holes"]
+        assert _hole(doc4, "aa-2")["status"] == "recorded", doc4["holes"]
+        assert [d["kind"] for d in doc4["deltas"]] == ["closed-hole"], doc4["deltas"]
         print("OK compute_holes: a second composition with a hole filled (aa-1.1, by an "
               "adopter claim added since the last signed artefact) marks it closed")
 
@@ -3300,7 +4275,10 @@ def selfcheck() -> None:
         print("OK check_selected_set: TINY drops aa-1.1 and aa-2 from SMALL's selected set, and "
               "a removed control refuses, naming both")
 
-        # --- a widened baseline refuses, with no override ---
+        # --- a widened baseline composes and prints as a priced delta, beside
+        # the new hole it opens (ticket 38; reversals 9-10: widening is priced,
+        # never refused, and there is no override flag because there is
+        # nothing to override) ---
         widened = Path(td) / "run2-widened"
         shutil.copytree(base, widened)
         doc_widened = yaml.safe_load((widened / "party.yaml").read_text())
@@ -3308,14 +4286,19 @@ def selfcheck() -> None:
         (widened / "party.yaml").write_text(yaml.safe_dump(doc_widened, sort_keys=False))
         _write_baseline_configmap(widened, "BIG")
         doc6, _ = compose(widened, fixture_trees)
-        assert doc6["outcome"] == "refused", doc6
-        widening = [r for r in doc6["refusals"] if r["kind"] == "baseline-widening"]
-        assert len(widening) == 1 and widening[0]["subject"] == "SMALL -> BIG", doc6["refusals"]
-        assert widening[0]["needs_composition"] is True
+        assert doc6["outcome"] == "composed", doc6
+        assert not [r for r in doc6["refusals"] if r["kind"] == "baseline-widening"], doc6["refusals"]
+        widening = [d for d in doc6["deltas"] if d["kind"] == "baseline-widening"]
+        assert len(widening) == 1 and widening[0]["subject"] == "SMALL -> BIG", doc6["deltas"]
+        assert widening[0]["added"] == 1 and widening[0]["priced"] == 0, widening
+        assert widening[0]["amount"] is None, widening
+        assert [d["control_id"] for d in doc6["deltas"] if d["kind"] == "new-hole"] == ["aa-3"]
+        assert _hole(doc6, "aa-3")["status"] == "new", doc6["holes"]
         removed_on_widen = [r for r in doc6["refusals"] if r["kind"] == "removed-control"]
-        assert removed_on_widen == [], doc6["refusals"]  # nothing left; only widening fires
-        print("OK check_baseline_widening: SMALL -> BIG refuses with no override, and does not "
-              "also fire as a removal (nothing left the selected set)")
+        assert removed_on_widen == [], doc6["refusals"]  # nothing left the selected set
+        print("OK baseline_widening_delta: SMALL -> BIG composes and prints one widening delta "
+              "(1 control added, 0 of them named by a pinned weight, so no amount) beside the "
+              "new hole it opens; nothing refuses, and a removal does not also fire")
 
         # --- an adopter claim against a PARENT's policy refuses ---
         cross = Path(td) / "run2-cross-party-claim"
@@ -3330,7 +4313,7 @@ def selfcheck() -> None:
         # aa-2 still counts as COVERED -- a claim exists, invalid or not
         # (spec.md: "no claim", not "no valid claim") -- so it closes as a
         # hole even though the claim that closed it is itself refused.
-        assert {"control_id": "aa-2", "status": "closed"} in doc7["holes"], doc7["holes"]
+        assert _hole(doc7, "aa-2")["status"] == "closed", doc7["holes"]
         print("OK resolve_claims: an adopter claim against fixture-platform's own member-a "
               "refuses (ADR-0017) -- 'fixture-adopter14 claims aa-2 is evidenced by "
               "\"member-a\", which fixture-platform ships, not fixture-adopter14' -- and still "
@@ -3390,17 +4373,20 @@ def selfcheck() -> None:
         _write_namespace(base, "acme", institution=True, governed=False)
         doc1, rendered1 = compose(base, fixture_trees)
         assert doc1["outcome"] == "composed", doc1
-        assert doc1["ungoverned"] == [{"namespace": "acme", "status": "recorded"}], doc1["ungoverned"]
+        assert [(e["namespace"], e["status"]) for e in doc1["ungoverned"]] == [("acme", "recorded")], doc1["ungoverned"]
+        assert "price" in doc1["ungoverned"][0], doc1["ungoverned"]
+        assert doc1["deltas"] == [], doc1["deltas"]   # recorded on a first composition: no move
         _commit_header(base, rendered1)
         print("OK compute_ungoverned: a first composition (nothing committed yet) records a "
-              "pre-existing ungoverned namespace and refuses on none")
+              "pre-existing ungoverned namespace, priced, and refuses on none")
 
         # --- an unchanged second run: still recorded, still no refusal ---
         again = Path(td) / "run1-again"
         shutil.copytree(base, again)
         doc2, _ = compose(again, fixture_trees)
         assert doc2["outcome"] == "composed", doc2
-        assert doc2["ungoverned"] == [{"namespace": "acme", "status": "recorded"}], doc2["ungoverned"]
+        assert [(e["namespace"], e["status"]) for e in doc2["ungoverned"]] == [("acme", "recorded")], doc2["ungoverned"]
+        assert doc2["deltas"] == [], doc2["deltas"]
         print("OK compute_ungoverned: a recorded ungoverned namespace records and does not refuse")
 
         # --- it gains the label since the last signed artefact: closed ---
@@ -3410,7 +4396,9 @@ def selfcheck() -> None:
         doc3, _ = compose(labelled, fixture_trees)
         assert doc3["outcome"] == "composed", doc3
         assert doc3["ungoverned"] == [{"namespace": "acme", "status": "closed"}], doc3["ungoverned"]
-        print("OK compute_ungoverned: a namespace that gains the label prints as closed")
+        assert [d["kind"] for d in doc3["deltas"]] == ["closed-ungoverned-namespace"], doc3["deltas"]
+        print("OK compute_ungoverned: a namespace that gains the label prints as closed, and as "
+              "a closed-ungoverned-namespace delta")
 
         # --- a genuinely NEW ungoverned namespace (absent from the last
         # signed artefact, which recorded none) refuses and names it ---
@@ -3424,14 +4412,32 @@ def selfcheck() -> None:
         new_ns = Path(td) / "run2-new"
         shutil.copytree(clean_base, new_ns)
         _write_namespace(new_ns, "acme", institution=True, governed=False)
+        _write_namespace(new_ns, "home", institution=True, governed=True)
+        _write_workload(new_ns, "acme", "reset-a")
+        for i in range(3):
+            _write_workload(new_ns, "home", f"app-{i}")
+        _write_workload(new_ns, "flux-system", "infra")  # no institution label: not counted
         doc5, _ = compose(new_ns, fixture_trees)
-        assert doc5["outcome"] == "refused", doc5
-        new_refusals = [r for r in doc5["refusals"] if r["kind"] == "new-ungoverned-namespace"]
-        assert len(new_refusals) == 1 and new_refusals[0]["subject"] == "acme", doc5["refusals"]
-        assert new_refusals[0]["needs_composition"] is True
-        assert {"namespace": "acme", "status": "new"} in doc5["ungoverned"], doc5["ungoverned"]
+        assert doc5["outcome"] == "composed", doc5
+        assert not [r for r in doc5["refusals"] if r["kind"] == "new-ungoverned-namespace"], doc5["refusals"]
+        acme = next(e for e in doc5["ungoverned"] if e["namespace"] == "acme")
+        assert acme["status"] == "new", acme
+        price = acme["price"]
+        assert price["perspective"] == "fixture-adopter14" and price["currency"] == "GBP", price
+        assert price["workloads"] == 1 and price["workloads_total"] == 4, price
+        assert price["share"] == 0.25, price
+        # No signed composed artefact names acme (a fixture is not a signed
+        # repo), and this fixture pins no feed that prices its residual: both
+        # are named limits, the ramp stays at 1.0 and the amount is absent.
+        assert price["since"] is None and price["ramp"] == 1.0, price
+        assert price["as_of"] is None and price["base"] is None and price["amount"] is None, price
+        assert len(price["limits"]) == 2, price["limits"]
+        new_deltas = [d for d in doc5["deltas"] if d["kind"] == "new-ungoverned-namespace"]
+        assert len(new_deltas) == 1 and new_deltas[0]["namespace"] == "acme", doc5["deltas"]
+        assert new_deltas[0]["amount"] is None, new_deltas
         print("OK compute_ungoverned: a new ungoverned namespace (absent from the last signed "
-              "artefact) refuses and names it")
+              "artefact) composes and is priced as its workload share (1 of 4 institution "
+              "workloads = 0.25) with the two things it cannot yet read named as limits")
 
         # --- the header carries the recorded ungoverned set, and stripping
         # it leaves every other rendered file unchanged; nothing in the
@@ -3452,6 +4458,255 @@ def selfcheck() -> None:
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
+
+    # ======================================================================
+    # eco-system ticket 38: a hole is priced, not counted
+    # ======================================================================
+
+    # --- the ramp and the bound, as pure arithmetic: a share of the residual,
+    # ramped by the EOL feed's own eol_ramp from `since`, never above the
+    # whole residual ---
+    assert ungoverned_price(1000.0, 1, 4, 1.0) == (250.0, False)
+    assert ungoverned_price(1000.0, 1, 4, 5.0) == (1000.0, True)   # 1250 bounded at the residual
+    assert ungoverned_price(1000.0, 4, 4, 1.0) == (1000.0, False)
+    assert ungoverned_price(1000.0, 0, 0, 3.0) == (0.0, False)     # nothing inside prices nothing
+    r3d = _ramp("2026-08-25", "2026-08-28")
+    assert 1.0 < r3d < 1.01 and math.isclose(r3d, 1.0 + 3 / 365.0), r3d
+    assert _ramp("2026-08-25", "2026-08-20") == 1.0            # as_of before since: no ramp
+    assert _ramp(None, "2026-08-28") == 1.0 and _ramp("2026-08-25", None) == 1.0
+    assert _ramp("2020-01-01", "2030-01-01") == 5.0            # capped at +4x, the feed's own cap
+    print("OK ungoverned_price/_ramp: workload share x the EOL feed's own ramp from since, "
+          "bounded at the whole uncaged residual; no since or no as_of ramps nothing (1.0)")
+
+    # --- the one live ramp case: tuppence-reset, recorded ungoverned since
+    # tuppence's first signed composed artefact. `since` is READ off the first
+    # signed tag whose header names it, never typed; the date below is that
+    # tag's own date, so this assert is a fact about the clone, not a fixture ---
+    tuppence = DEFAULT_ESTATE_CLONE / "tuppence"
+    since, since_limit = _first_signed_since(tuppence, "tuppence-reset")
+    signed = _signed_tags(tuppence)
+    if signed:
+        assert since is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", since), (since, since_limit)
+        assert since in {d for _t, d in signed}, (since, signed)
+        assert _first_signed_since(tuppence, "no-such-namespace") == (
+            None, "no signed composed artefact names no-such-namespace"), "an unnamed namespace has no since"
+        doc_t, rendered_t = compose(tuppence, parent_trees)
+        _assert_only_known_dangling(doc_t["refusals"], "real tuppence")
+        reset = next(e for e in doc_t["ungoverned"] if e["namespace"] == "tuppence-reset")
+        assert reset["status"] == "recorded", reset
+        p = reset["price"]
+        _ns, counts = _namespace_facts(tuppence)
+        assert p["workloads"] == counts.get("tuppence-reset", 0) > 0, (p, counts)
+        assert p["workloads_total"] == sum(n for ns, n in counts.items() if ns in _ns), (p, counts)
+        assert p["share"] == p["workloads"] / p["workloads_total"], p
+        assert p["since"] == since and p["as_of"] and p["ramp"] == _ramp(since, p["as_of"]), p
+        header_t = yaml.safe_load(rendered_t["composed/HEADER.yaml"])
+        assert p["base"] == header_t["exposure"]["total"], (p["base"], header_t["exposure"]["total"])
+        assert p["amount"] == min(p["base"], p["base"] * p["share"] * p["ramp"]), p
+        assert p["perspective"] == "tuppence" and p["currency"] == "GBP", p
+        assert p["limits"] == [], p["limits"]
+        assert not [r for r in doc_t["refusals"] if r["kind"] == "new-ungoverned-namespace"]
+        print("OK ungoverned[]: the real tuppence-reset prices at %.2f %s -- %d of %d institution "
+              "workloads (share %.2f) x ramp %.4f from since %s (the first signed tag naming it) "
+              "as of %s, of a %.2f residual%s"
+              % (p["amount"], p["currency"], p["workloads"], p["workloads_total"], p["share"],
+                 p["ramp"], p["since"], p["as_of"], p["base"],
+                 ", bounded at the whole residual" if p["bounded"] else ""))
+    else:
+        print("OK ungoverned[]: the tuppence clone carries no signed tag, so tuppence-reset's "
+              "since could not be read here (named: %s)" % since_limit)
+
+    # --- (source, id): claims and holes resolve across EVERY controls parent,
+    # an adopter's own catalogue included; the header encodes the source only
+    # where it is not the baseline's own, so the real estate's header shape
+    # is byte-stable ---
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        nist_root = root / "fixture-nist"
+        _write_fixture_catalog(nist_root)
+        platform_root = root / "fixture-platform"
+        _write_fixture_platform(platform_root, parent_trees["platform"], claims=[("aa-1", "member-a")])
+        _write_small_catalog(root / "fixture-nist2", {"cc-1": {}, "aa-2": {}})   # aa-2 collides on purpose
+        fixture_trees = {"fixture-nist": nist_root, "fixture-platform": platform_root,
+                         "fixture-nist2": root / "fixture-nist2"}
+        second = {"party": "fixture-nist2", "kind": "controls", "version": "1.0.0"}
+
+        two = root / "two-sources"
+        _write_fixture_adopter(two, "SMALL", controls_add=["fixture-nist2:cc-1"], extra_inherits=[second])
+        docA, renderedA = compose(two, fixture_trees)
+        assert docA["outcome"] == "composed", docA
+        keys = {(h["source"], h["control_id"]): h["status"] for h in docA["holes"]}
+        assert keys == {("fixture-nist", "aa-1.1"): "recorded", ("fixture-nist", "aa-2"): "recorded",
+                        ("fixture-nist2", "cc-1"): "recorded"}, keys
+        headerA = yaml.safe_load(renderedA["composed/HEADER.yaml"])
+        assert headerA["holes"] == ["aa-1.1", "aa-2", "fixture-nist2:cc-1"], headerA["holes"]
+        assert "fixture-nist2:cc-1" in headerA["selected-controls"] and "aa-1" in headerA["selected-controls"]
+        _commit_header(two, renderedA)
+        docB, _ = compose(two, fixture_trees)          # the encoding round-trips
+        assert {(h["source"], h["control_id"]): h["status"] for h in docB["holes"]} == keys, docB["holes"]
+        assert docB["deltas"] == [], docB["deltas"]
+        print("OK (source, id): a control added from a second controls parent is a hole keyed on "
+              "its own source; the header encodes `source:id` only off the baseline's catalogue "
+              "and round-trips as recorded")
+
+        # A bare id resolves against the baseline's catalogue and nowhere else:
+        # `aa-2` bare is fixture-nist's, `fixture-nist2:aa-2` is the other one.
+        amb = root / "bare-vs-namespaced"
+        _write_fixture_adopter(amb, "SMALL", controls_add=["fixture-nist2:aa-2", "cc-1"], extra_inherits=[second])
+        docC, _ = compose(amb, fixture_trees)
+        assert docC["outcome"] == "refused", docC
+        unknown = [r for r in docC["refusals"] if r["kind"] == "unknown-control-id"]
+        assert len(unknown) == 1 and "cc-1" in unknown[0]["subject"], docC["refusals"]
+        assert ("fixture-nist2", "aa-2") in {(h["source"], h["control_id"]) for h in docC["holes"]}
+        print("OK (source, id): a bare id resolves against the baseline's catalogue only (bare cc-1 "
+              "is unknown there), and fixture-nist2:aa-2 is a different control from aa-2")
+
+        # A claim is keyed on (source, id) by its source href: the same bare id
+        # claimed under fixture-nist2's href covers fixture-nist2:cc-1 and not
+        # fixture-nist's aa-2.
+        claimed = root / "claim-source"
+        _write_fixture_adopter(claimed, "SMALL", controls_add=["fixture-nist2:cc-1"],
+                                add=[{"version": "1.0.0", "manifest": own_member}], extra_inherits=[second])
+        _write_component_definition(claimed / ADOPTER_CLAIMS_FILE, [("cc-1", "own-policy")],
+                                     source="../fixture-nist2/catalog/catalog.json")
+        docD, _ = compose(claimed, fixture_trees)
+        assert docD["outcome"] == "composed", docD
+        assert ("fixture-nist2", "cc-1") not in {(h["source"], h["control_id"]) for h in docD["holes"]}
+        _write_component_definition(claimed / ADOPTER_CLAIMS_FILE, [("cc-1", "own-policy")],
+                                     source="../fixture-nist/catalog/catalog.json")
+        docE, _ = compose(claimed, fixture_trees)
+        assert [r["kind"] for r in docE["refusals"]] == ["unknown-control-id"], docE["refusals"]
+        assert ("fixture-nist2", "cc-1") in {(h["source"], h["control_id"]) for h in docE["holes"]}
+        print("OK resolve_claims: a claim resolves on (source, id) through its source href -- "
+              "cc-1 under fixture-nist2's href fills fixture-nist2:cc-1; the same id under "
+              "fixture-nist's href is unknown there and fills nothing")
+
+        # --- a bespoke control: the adopter pins ITSELF as a controls parent,
+        # ships a small OSCAL catalogue, and prices the hole with a scenario it
+        # signs. No scenario is the one remaining refusal (an instrument fault,
+        # ADR-0020) ---
+        self_edge = {"party": "fixture-adopter14", "kind": "controls", "version": "0.0.0"}
+        bespoke = root / "bespoke"
+        _write_fixture_adopter(bespoke, "SMALL", controls_add=["fixture-adopter14:zz-1"],
+                                extra_inherits=[self_edge])
+        _write_small_catalog(bespoke, {"zz-1": {"scenario": "scenarios/zz-1.json"}})
+        (bespoke / "scenarios").mkdir()
+        shutil.copy(PLATFORM_DIR / scenario_rel, bespoke / "scenarios" / "zz-1.json")
+        docF, renderedF = compose(bespoke, fixture_trees)     # no tree for the self-pin: adopter_dir is it
+        assert docF["outcome"] == "composed", docF
+        zz = _hole(docF, "zz-1")
+        assert zz["source"] == "fixture-adopter14" and zz["status"] == "recorded", zz
+        assert zz["amount"] and zz["amount"] > 0 and "scenarios/zz-1.json" in zz["priced_by"], zz
+        assert zz["perspective"] == "fixture-adopter14" and zz["currency"] == "GBP", zz
+        assert "fixture-adopter14:zz-1" in yaml.safe_load(renderedF["composed/HEADER.yaml"])["holes"]
+        self_parent = next(p for p in docF["parents"] if p["party"] == "fixture-adopter14")
+        assert self_parent["kind"] == "controls" and self_parent["sha"], self_parent
+        print("OK bespoke: an adopter pinning itself as a controls parent adds fixture-adopter14:zz-1 "
+              "as a hole priced by its own signed scenario (%.2f %s), the self-pin resolving to "
+              "the adopter's own tree" % (zz["amount"], zz["currency"]))
+
+        _write_small_catalog(bespoke, {"zz-1": {}})           # the scenario prop goes
+        docG, _ = compose(bespoke, fixture_trees)
+        assert docG["outcome"] == "refused", docG
+        faults = [r for r in docG["refusals"] if r["kind"] == "missing-instrument"]
+        assert len(faults) == 1 and "zz-1" in faults[0]["subject"], docG["refusals"]
+        assert "scenario" in faults[0]["detail"], faults
+        assert [r["kind"] for r in docG["refusals"]] == ["missing-instrument"], docG["refusals"]
+        print("OK bespoke: the same control with no signed scenario refuses as a missing "
+              "instrument naming zz-1 -- the one hole-shaped refusal that remains (ADR-0020)")
+
+        _write_component_definition(bespoke / ADOPTER_CLAIMS_FILE, [("zz-1", "own-policy")],
+                                     source="catalog/catalog.json")
+        docH_yaml = yaml.safe_load((bespoke / "party.yaml").read_text())
+        docH_yaml["overlay"]["add"] = [{"version": "1.0.0", "manifest": own_member}]
+        (bespoke / "party.yaml").write_text(yaml.safe_dump(docH_yaml, sort_keys=False))
+        docH, _ = compose(bespoke, fixture_trees)
+        assert docH["outcome"] == "composed", docH
+        assert "zz-1" not in {h["control_id"] for h in docH["holes"]}, docH["holes"]
+        print("OK bespoke: a bespoke control the adopter's own claim covers is no hole, so it "
+              "needs no scenario and nothing refuses")
+
+        # --- the self-pin listed FIRST in inherits[] (an order an adopter is
+        # free to write). The recorded header keys its bare ids to the first
+        # controls parent that is NOT the adopter, exactly as compose() keys
+        # baseline_source, so an unchanged tree re-composes clean: no
+        # removed-control refusal, no new-hole delta (the 2026-09-04 review's
+        # blocking defect: reading the FIRST controls parent decoded every
+        # bare id as the adopter's own and refused the whole baseline) ---
+        first = root / "bespoke-self-first"
+        _write_fixture_adopter(first, "SMALL", controls_add=["fixture-adopter14:zz-1"],
+                                extra_inherits=[self_edge])
+        first_yaml = yaml.safe_load((first / "party.yaml").read_text())
+        first_yaml["inherits"] = [self_edge, *[e for e in first_yaml["inherits"]
+                                               if e["party"] != "fixture-adopter14"]]
+        (first / "party.yaml").write_text(yaml.safe_dump(first_yaml, sort_keys=False))
+        _write_small_catalog(first, {"zz-1": {"scenario": "scenarios/zz-1.json"}})
+        (first / "scenarios").mkdir()
+        shutil.copy(PLATFORM_DIR / scenario_rel, first / "scenarios" / "zz-1.json")
+        docI, renderedI = compose(first, fixture_trees)
+        assert docI["outcome"] == "composed" and docI["refusals"] == [] and docI["deltas"] == [], docI
+        assert docI["parents"][0]["party"] == "fixture-adopter14", docI["parents"]
+        headerI = yaml.safe_load(renderedI["composed/HEADER.yaml"])
+        assert "aa-2" in headerI["holes"] and "fixture-adopter14:zz-1" in headerI["holes"], headerI["holes"]
+        _commit_header(first, renderedI)
+        docJ, _ = compose(first, fixture_trees)
+        assert docJ["outcome"] == "composed", docJ["refusals"]
+        assert docJ["refusals"] == [] and docJ["deltas"] == [], (docJ["refusals"], docJ["deltas"])
+        assert {h["status"] for h in docJ["holes"]} == {"recorded"}, docJ["holes"]
+        print("OK _header_controls_source: with the self-pin listed first in inherits[], an "
+              "unchanged tree re-composes clean -- bare header ids decode to the first controls "
+              "parent that is not the adopter, as compose() keys them, so nothing refuses as "
+              "removed and nothing prints as a new hole")
+
+        # --- a band in one currency cannot price a bespoke hole labelled in
+        # another: this path takes no rate, so it refuses as a missing
+        # instrument naming both, never a relabelled (minted) amount ---
+        first_yaml["appetite"]["tolerance"]["currency"] = "USD"
+        (first / "party.yaml").write_text(yaml.safe_dump(first_yaml, sort_keys=False))
+        docK, _ = compose(first, fixture_trees)
+        faults = [r for r in docK["refusals"] if r["kind"] == "missing-instrument"]
+        assert len(faults) == 1 and "zz-1" in faults[0]["subject"], docK["refusals"]
+        assert "USD" in faults[0]["detail"] and "GBP" in faults[0]["detail"], faults
+        assert _hole(docK, "zz-1")["amount"] is None, _hole(docK, "zz-1")
+        print("OK bespoke: an appetite band in USD cannot price a bespoke hole reported in GBP -- "
+              "no rate is taken on this path, so it refuses as a missing instrument naming both "
+              "currencies rather than relabelling the residual")
+
+    # --- the regime entry's holes[] carry each hole's status next to its
+    # weighted amount, and a widening against the real catalogue prints the
+    # number of added controls a pinned weight actually prices ---
+    with tempfile.TemporaryDirectory() as td:
+        work = _adopter_copy("driftwood", Path(td))
+        doc0, rendered0 = compose(work, parent_trees)
+        _assert_only_known_dangling(doc0["refusals"], "real widening, before")
+        regime0 = next(e for e in doc0["prices"] if _parent_key(e) == "penalty-schema")
+        statuses = {(h["source"], h["id"]): h["status"] for h in regime0["holes"]}
+        assert statuses and set(statuses.values()) <= {"new", "recorded", "closed", "covered", "unselected"}, statuses
+        open_keys = {(h["source"], h["control_id"]) for h in doc0["holes"] if h["status"] != "closed"}
+        for key, status in statuses.items():
+            assert (status in ("new", "recorded")) == (key in open_keys), (key, status)
+        priced_holes = [h for h in doc0["holes"] if h["amount"] is not None]
+        assert priced_holes and all(h["priced_by"] for h in priced_holes), doc0["holes"][:3]
+        assert all(math.isclose(h["amount"], next(r["amount"] for r in regime0["holes"]
+                                                  if (r["source"], r["id"]) == (h["source"], h["control_id"])))
+                   for h in priced_holes)
+        _commit_header(work, rendered0)
+        doc_yaml = yaml.safe_load((work / "party.yaml").read_text())
+        doc_yaml["baseline"] = "HIGH"
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_yaml, sort_keys=False))
+        _write_baseline_configmap(work, "HIGH")
+        doc1, _ = compose(work, parent_trees)
+        _assert_only_known_dangling(doc1["refusals"], "real widening, after")
+        widening = next(d for d in doc1["deltas"] if d["kind"] == "baseline-widening")
+        new_holes = [d for d in doc1["deltas"] if d["kind"] == "new-hole"]
+        assert widening["subject"] == "MODERATE -> HIGH" and widening["added"] == len(new_holes) > 0, widening
+        assert widening["priced"] == len([d for d in new_holes if d["amount"] is not None]), widening
+        assert widening["perspective"] == "driftwood" and widening["currency"] == "GBP", widening
+        print("OK deltas[]: driftwood MODERATE -> HIGH composes and prints one widening delta -- "
+              "%d controls added, %d of them named by ico's pinned weights (amount %s), each "
+              "added control a new-hole delta beside it; the regime entry's holes[] carry status"
+              % (widening["added"], widening["priced"],
+                 "none" if widening["amount"] is None else "%.2f" % widening["amount"]))
 
     # ======================================================================
     # ticket 16: pricing and threat parents re-price, and never apply
@@ -3589,17 +4844,25 @@ def selfcheck() -> None:
         "prefixed or upper-case id is a hard failure, not a hole; the real estate's first "
         "composition records 285 holes and refuses on none -- platform's own two formerly-"
         "dangling claims (ac-6, cm-6) are now fixed, so a real first composition composes "
-        "clean; a new hole refuses and names it; a closed hole is marked so; "
-        "an adopter-added control refuses unfilled and is filled by the adopter's own claim "
-        "against its own overlay.add member; a removed control and a widened baseline both "
-        "refuse with no override; a claim against a parent's policy refuses; and the header "
-        "carries the recorded hole ids and the selected control set, in a file that strips away "
-        "clean. TICKET 15: a Namespace with no institution label is ignored entirely; the first "
-        "composition records a pre-existing ungoverned namespace and refuses on none; a "
+        "clean; a new hole composes and prints as a priced delta; a closed hole is marked so; "
+        "an adopter-added control is a priced hole unfilled and is filled by the adopter's own "
+        "claim against its own overlay.add member; a removed control refuses and a widened "
+        "baseline prints as a priced delta; a claim against a parent's policy refuses; and the "
+        "header carries the recorded hole ids and the selected control set, in a file that "
+        "strips away clean. TICKET 15: a Namespace with no institution label is ignored "
+        "entirely; the first composition records a pre-existing ungoverned namespace; a "
         "recorded one records and does not refuse; one that gains the governed label prints as "
-        "closed; a genuinely new one refuses and names it; and the header carries the recorded "
-        "ungoverned set, in a file that strips away clean, with neither namespace set ever read "
-        "by anything composition renders. TICKET 16: an ico penalty-schema bump and a threat-"
+        "closed; a genuinely new one composes, priced as its workload share; and the header "
+        "carries the recorded ungoverned set, in a file that strips away clean, with neither "
+        "namespace set ever read by anything composition renders. ECO-SYSTEM TICKET 38: the "
+        "new-hole, baseline-widening and new-ungoverned-namespace refusals are gone and each "
+        "prints as a deltas[] entry under the adopter's perspective and currency; an ungoverned "
+        "namespace prices as its workload share of the uncaged residual, ramped by the EOL "
+        "feed's own eol_ramp from the first signed tag naming it and bounded at the whole "
+        "residual (tuppence-reset is the live case); claims and holes resolve on (source, id) "
+        "across every controls parent, an adopter's own catalogue included; a bespoke control "
+        "prices by the scenario its adopter signs, and one with no scenario is the one "
+        "hole-shaped refusal left, a missing instrument. TICKET 16: an ico penalty-schema bump and a threat-"
         "register bump each move the priced exposure through the estate's own converters, "
         "printing old/new price and old/proposed tier every run; on the real bands neither "
         "changes a tier; a fixture band that a bump crosses prints a proposed tier; every "
@@ -3621,7 +4884,15 @@ def selfcheck() -> None:
         "appetite as the attachment, and the breakdown by regime name and control id -- and the "
         "insurer's signed quote books as ONE `premium` contract cost line under the adopter's "
         "perspective, is left out of the exposure it was priced from, and refuses as a missing "
-        "instrument if it insures another party or books its premium on another party's sheet."
+        "instrument if it insures another party or books its premium on another party's sheet. "
+        "ECO-SYSTEM TICKET 69: the premium entry reads the pin's signature state off the "
+        "insurer tree's own tags; an untagged pin composes with a hole of its own premium under "
+        "the adopter's perspective and currency, printed as a new-untagged-pin delta, recorded "
+        "on the next composition, kept open under an unobserved tree, and closed by the first "
+        "signed tag that carries it -- never a refusal and never a claimed signature; and only "
+        "a checkout that can show the publisher's tag namespace says `untagged` at all, so a "
+        "tagless checkout, a lightweight tag and a flattened annotated tag read `unobserved` "
+        "rather than booking a hole over a signature that is really there."
     )
 
 

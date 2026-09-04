@@ -7,10 +7,20 @@
 #    generated-corpus/ tree byte-for-byte (manifest compared minus wall_clock,
 #    which is measured, not enforced, and legitimately differs run to run).
 # 3. a sample generated entry is a real Pod the kyverno CLI can parse and
-#    evaluate without erroring -- SKIPs (exit 0) if kyverno is absent, same
-#    convention as verify-rederive-bumps.sh and verify-gate.sh.
+#    evaluate without erroring -- SKIPs (exit 3, could not look) if kyverno is
+#    absent, same convention as verify-rederive-bumps.sh and verify-gate.sh.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+
+# Ticket 76 (every green rests on an observation): the kyverno-absent branch below used to
+# print SKIP and exit 0, which talk/verify-all.sh grades PASS -- a green on the absence of the
+# instrument. A could-not-look is exit 3 (lib.sh's `skip`). And because that branch only runs on
+# a machine without the CLI, it was never itself tested: `selfcheck_absent` re-runs this script
+# with kyverno unreachable and requires exit 3 with a SKIP: last line, so every run observes the
+# branch. `--selfcheck` runs that leg alone.
+. ../lib.sh
+SELF="$PWD/${BASH_SOURCE##*/}"
+if [ "${1:-}" = "--selfcheck" ]; then selfcheck_absent "$SELF" kyverno; exit 0; fi
 
 echo "== 1. corpus_generator.py --selfcheck =="
 python3 corpus_generator.py --selfcheck
@@ -32,9 +42,9 @@ echo "ok  regenerated spine/ and manifest.yaml (minus wall_clock) match the comm
 
 echo
 if ! command -v kyverno >/dev/null; then
-  echo "SKIP (step 3): kyverno CLI not found -- cannot prove a generated entry evaluates"
-  exit 0
+  skip "step 3 could not look -- kyverno CLI not found, so a generated entry was never proved to evaluate (steps 1 and 2 held)"
 fi
+selfcheck_absent "$SELF" kyverno
 
 echo "== 3. a sample generated entry is a real Pod kyverno can evaluate =="
 # A glob, not `ls | head -1`: under `set -o pipefail` head closes the pipe on the first

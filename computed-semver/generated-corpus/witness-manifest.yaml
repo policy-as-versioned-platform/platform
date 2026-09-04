@@ -20,7 +20,6 @@ entries:
     - absent
     - absent
     - absent
-    - absent
     pin_inside: false
   present_in_spine: true
 - witness: legal-department
@@ -28,7 +27,6 @@ entries:
   file: computed-semver/corpus/fixtures/legal-department.yaml
   shape:
     outcomes:
-    - absent
     - absent
     - absent
     - absent
@@ -60,7 +58,6 @@ entries:
     - absent
     - absent
     - absent
-    - absent
     pin_inside: false
   present_in_spine: true
 - witness: no-owner
@@ -80,7 +77,6 @@ entries:
     - absent
     - absent
     - absent
-    - absent
     pin_inside: false
   present_in_spine: true
 - witness: unknown-department
@@ -88,7 +84,6 @@ entries:
   file: computed-semver/corpus/fixtures/unknown-department.yaml
   shape:
     outcomes:
-    - absent
     - absent
     - absent
     - absent

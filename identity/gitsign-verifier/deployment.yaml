@@ -69,6 +69,21 @@ spec:
               value: "60"          # knob: below the Kustomization interval, above the fetch cost
             - name: GITSIGN_CACHE
               value: /cache
+            # The trust instant's tolerance (ticket 73, ADR-0027). git writes the tag object,
+            # tagger line included, BEFORE gitsign asks Fulcio for a certificate, so the
+            # certificate's notBefore is one second after the tagger time on about half of
+            # correctly signed tags (driftwood v1.1.0, ludlow v1.1.0, ico v3.0.0 among the seven
+            # newest on 2026-09-02). The chain is evaluated at the LATER of the tagger time and
+            # notBefore, allowed only while notBefore - tagger time is within this many seconds;
+            # a larger gap is rejected, naming this knob. The bound is 60 because: the observed gap
+            # is 1s; the honest causes of a gap are the runner's clock against Fulcio's plus the
+            # OIDC-token and Fulcio round trips with retries, all seconds not minutes; and the one
+            # thing a bound buys is a limit on how far a tag may claim to predate the certificate
+            # that signs it, so it stays an order of magnitude under the certificate's own
+            # ten-minute life. verify-source-verification.sh section 4b reads THIS value, never a
+            # literal of its own, and proves a real racy tag at it and a rejection at 0.
+            - name: GITSIGN_TAGGER_SKEW_SECONDS
+              value: "60"
           volumeMounts:
             - { name: verifier, mountPath: /app }
             - { name: cache, mountPath: /cache }

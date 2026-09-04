@@ -29,8 +29,12 @@ refuse).
 ./verify-rederive-bumps.sh
 ```
 
-SKIPs (exit 0) if the `kyverno` CLI isn't installed, matching
-`verify-shift-left.sh`'s convention.
+SKIPs (exit 3, could-not-look) if the `kyverno` CLI isn't installed: exit 0
+would be graded PASS by `talk/verify-all.sh`, a green on the absence of the
+instrument. `./verify-rederive-bumps.sh --selfcheck` runs that branch on a
+machine that does have the CLI, by re-running the script with kyverno
+unreachable and requiring exit 3 (`lib.sh`'s `selfcheck_absent`); the normal
+run does the same before it looks.
 
 ## Result
 
