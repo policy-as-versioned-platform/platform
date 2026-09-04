@@ -115,8 +115,11 @@ def check(evidence_path: Path, adopter_dir: Path) -> tuple[int, str, dict | None
 def selfcheck() -> None:
     import tempfile
 
-    def line(source, tier, kind="feed"):
-        return {"source": source, "kind": kind, "proposed_tier": tier, "changed": False}
+    def line(source, tier, kind="feed", name=None):
+        p = {"source": source, "kind": kind, "proposed_tier": tier, "changed": False}
+        if name is not None:
+            p["name"] = name
+        return p
 
     def plant(tmp: Path, declared: str | None, prices: list[dict], floor: str | None = None,
               namespace: bool = True) -> tuple[int, str, dict | None]:
@@ -219,6 +222,25 @@ def selfcheck() -> None:
         assert tier_pr.read_overlay_floor(adopter / "party.yaml") is None, \
             "an overlay that declares no floor of its own declares no floor"
 
+        # 14. TWO priced lines from ONE publisher of ONE kind, told apart only by
+        #     ADR-0019's `name` -- a shape composition composes and party/schema.json
+        #     puts no uniqueness constraint on. Until 2026-09-04 the party fold read
+        #     the values of a dict keyed `source/kind`, so the second line overwrote
+        #     the first, `required` was computed off the collapsed set, and this
+        #     check graded a Namespace `bound` that was LOOSER than a real priced
+        #     line. That is a false PASS on the one property this check exists for.
+        two_feeds = [line("ico", "isolated", name="penalty-schema"),
+                     line("ico", "baseline", name="breach-register")]
+        rc, last, v = plant(tmp, "baseline", two_feeds)
+        assert rc == 1 and v["required"] == "isolated" and v["bound"] is False, (
+            "a second named feed from the same publisher cannot swallow a stricter line",
+            rc, last, v)
+        assert sorted(v["lines"]) == ["ico/feed/breach-register", "ico/feed/penalty-schema"], v
+        rc, last, v = plant(tmp, "baseline", list(reversed(two_feeds)))
+        assert rc == 1 and v["required"] == "isolated", ("nor in the other order", rc, last, v)
+        rc, last, _ = plant(tmp, "isolated", two_feeds)
+        assert rc == 0, ("declared at the strictest of the two, it is bound", rc, last)
+
     print("ok  tier binding: driftwood's committed shape (isolated over {isolated, baseline, "
           "isolated}) is bound; restricted or baseline over a stricter line is REFUSED and told "
           "what to declare; tighter or equal is bound; no declaration is isolated by default; "
@@ -226,7 +248,8 @@ def selfcheck() -> None:
           "`overlay:`; an off-ladder tier is a missing instrument while ADR-0022's `infra` is a "
           "legitimate declaration that binds; a premium-only document binds nothing and says so; "
           "no Namespace, two governed Namespace documents in one file, or no evidence is "
-          "could-not-look")
+          "could-not-look; and two named feeds from ONE publisher of one kind fold to the "
+          "STRICTER of them, in either order, rather than collapsing onto one key")
 
 
 def main(argv: list[str]) -> int:

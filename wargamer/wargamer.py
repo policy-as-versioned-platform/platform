@@ -187,6 +187,28 @@ def rank(tier):
     return DECLARABLE.index(tier)
 
 
+def _line_key(price, taken):
+    """A display name for one priced line that no OTHER priced line can take.
+
+    ADR-0019 made `feed` one kind carrying a `name`, composition's `_parent_key`
+    identifies a feed by that name, and party/schema.json constrains nothing about
+    `inherits[]` being unique per source -- so `source/kind` alone is not an
+    identity. `source/kind/name` is, for everything the estate composes today; the
+    `#n` suffix is the belt and braces for a document that repeats even that, so
+    that a line can never be silently dropped from the display of what was folded.
+    """
+    base = f"{price.get('source')}/{price.get('kind')}"
+    name = price.get("name")
+    if name is not None:
+        base = f"{base}/{name}"
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}#{n}" in taken:
+        n += 1
+    return f"{base}#{n}"
+
+
 def select_party_tier(prices, current=None, floor=None):
     """One tier for the PARTY from every priced line, and whether writing it
     would tighten the declaration.
@@ -214,7 +236,17 @@ def select_party_tier(prices, current=None, floor=None):
 
     Raises ValueError for a tier a price may not select or a Namespace may not
     declare (a missing instrument: the proposer cannot tell tighter from looser
-    and must not guess)."""
+    and must not guess).
+
+    The fold runs over the priced tiers THEMSELVES, never over `lines`, which is
+    a display of them. Until 2026-09-04 `lines` was keyed `source/kind` and the
+    fold read its values, so two priced lines from one publisher of one kind --
+    which ADR-0019 admits, `feed` being one kind carrying a `name`, and which
+    party/schema.json puts no uniqueness constraint on -- collapsed onto one key
+    and the LAST one won instead of the strictest. A stricter line vanished, and
+    tier_binding.bind() then computed `required` off the collapsed set and graded
+    a looser Namespace `bound`: a false PASS on this ticket's central property."""
+    tiers = []
     lines = {}
     for price in prices:
         tier = price.get("proposed_tier")
@@ -223,14 +255,15 @@ def select_party_tier(prices, current=None, floor=None):
         if tier not in LADDER:
             raise ValueError(f"{price.get('source')}/{price.get('kind')} prices tier {tier!r}, "
                              f"which is not on the ladder {list(LADDER)}")
-        lines[f"{price.get('source')}/{price.get('kind')}"] = tier
+        tiers.append(tier)
+        lines[_line_key(price, lines)] = tier
     if floor is not None and floor not in LADDER:
         raise ValueError(f"declared floor {floor!r} is not on the ladder {list(LADDER)}")
     if current is not None and current not in DECLARABLE:
         raise ValueError(f"the Namespace declares tier {current!r}, which is not one a Namespace "
                          f"may declare {list(DECLARABLE)} -- tighter or looser cannot be told")
 
-    strictest = max(lines.values(), key=LADDER.index) if lines else None
+    strictest = max(tiers, key=LADDER.index) if tiers else None
     tier, clamped = strictest, False
     if floor is not None and (tier is None or LADDER.index(floor) > LADDER.index(tier)):
         tier, clamped = floor, True
@@ -468,6 +501,25 @@ def selfcheck():
     assert sel["tier"] == "isolated" and sel["strictest_line"] == "isolated", sel
     assert sel["held"] is True, ("a per-line crossing on an isolated party writes nothing", sel)
     assert "insurer/premium" not in sel["lines"], ("an unpriced line selects nothing", sel)
+    # TWO priced lines from ONE publisher of ONE kind, told apart only by ADR-0019's
+    # `name`. Until 2026-09-04 the fold read the values of a dict keyed `source/kind`,
+    # so these collapsed onto one key and the LAST one won: the stricter line vanished
+    # and tier_binding.bind() graded a looser Namespace `bound` -- a false PASS on this
+    # ticket's central property. The fold runs over the priced tiers themselves now.
+    two_feeds = [{"source": "ico", "kind": "feed", "name": "penalty-schema",
+                  "proposed_tier": "isolated"},
+                 {"source": "ico", "kind": "feed", "name": "breach-register",
+                  "proposed_tier": "baseline"}]
+    sel = select_party_tier(two_feeds, current="baseline")
+    assert sel["tier"] == "isolated" and sel["held"] is False, (
+        "two named feeds from one publisher must fold to the STRICTEST, not the last", sel)
+    assert sorted(sel["lines"]) == ["ico/feed/breach-register", "ico/feed/penalty-schema"], (
+        "each priced line must survive into the display of what was folded", sel)
+    assert select_party_tier(list(reversed(two_feeds)), current="baseline")["tier"] == "isolated", \
+        "the fold cannot depend on the order the lines were composed in"
+    # even a document that repeats source/kind/name drops no line from the display
+    dupes = [dict(two_feeds[0]), dict(two_feeds[0], proposed_tier="baseline")]
+    assert len(select_party_tier(dupes, current="baseline")["lines"]) == 2, "no line is dropped"
     # strictest line wins over the crossing line's own tier
     sel = select_party_tier([line("feeds", "restricted", True), line("ico", "quarantine")],
                             current="baseline")
