@@ -94,11 +94,20 @@ def governed_namespace_spans(text: str) -> list[tuple[int, int]]:
     carries `governed: "true"`. Document-scoped so a multi-document file
     (tuppence/reset/workloads.yaml declares an ungoverned Namespace beside its
     workloads) is read a document at a time, not as one blob -- and so that a
-    file carrying TWO governed Namespaces is counted as two, not one."""
+    file carrying TWO governed Namespaces is counted as two, not one. A
+    separator is `---` alone or `---` followed by whitespace and a comment; the
+    first cut matched only the bare form, and a commented separator merged two
+    governed Namespaces into one span."""
     lines = text.splitlines(keepends=True)
     starts, ends, cur = [], [], 0
+    # A document separator is `---` alone on the line, or `---` followed by
+    # whitespace and anything else (`--- # the second app` is a separator YAML
+    # reads as one, and reading it as content merged two governed Namespaces
+    # into one span, so the ambiguity guard below never fired). `----` and
+    # `---foo` are not separators.
+    separator = re.compile(r"^---(\s.*)?$")
     for i, line in enumerate(lines):
-        if line.rstrip() == "---":
+        if separator.match(line.rstrip("\n")):
             starts.append(cur)
             ends.append(i)
             cur = i + 1
