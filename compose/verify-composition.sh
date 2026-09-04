@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Beat: the composition seam (policy-composition tickets 12-15). ADR-0012
-# (self-signed, pinned SHA) / ADR-0013 (baselines, control ids, holes) /
-# ADR-0014 (the governed namespace) / ADR-0016 (kind-aware render, the
-# resolver key) / ADR-0017 (claim ownership) / ADR-0018 (the Namespace
-# manifest is the governed declaration).
+# Beat: the composition seam (policy-composition tickets 12-15; eco-system
+# ticket 38). ADR-0012 (self-signed, pinned SHA) / ADR-0013 (baselines,
+# control ids) / ADR-0014 (the governed namespace) / ADR-0016 (kind-aware
+# render, the resolver key) / ADR-0017 (claim ownership) / ADR-0018 (the
+# Namespace manifest is the governed declaration) / ADR-0020 (a missing
+# behaviour is priced; only a missing instrument refuses). Since ticket 38 a
+# new hole, a widened baseline and a new ungoverned namespace are PRICED
+# deltas, and the selfcheck proves they compose rather than refuse.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -11,9 +14,28 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
 have python3 || fail "python3 required"
+# The estate this seam composes against is the directory holding the eight
+# clones. Named explicitly so a nested worktree of the platform clone
+# (`.estate-clone/platform/.work/<ticket>`) still finds it.
+export PAVC_ESTATE_CLONE="${PAVC_ESTATE_CLONE:-$(cd "$HERE/../.." && pwd)}"
 
-say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, refusal)"
+say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
+
+say "1b. the three refusals ticket 38 deleted are gone from the source, and no new one took their place"
+python3 - "$HERE/composition.py" <<'PY' || fail "a deleted refusal kind is still emitted by composition.py"
+import re, sys
+src = open(sys.argv[1]).read().split("\ndef selfcheck()", 1)[0]
+# A refusal dict carries needs_composition; a deltas[] entry of the same
+# name does not -- that is the whole point of the change.
+refusal_kinds = {m.group(1) for m in re.finditer(r'"kind":\s*"([a-z-]+)"', src)
+                 if "needs_composition" in src[m.end():m.end() + 400]}
+gone = {"new-hole", "baseline-widening", "new-ungoverned-namespace"}
+still = sorted(refusal_kinds & gone)
+if still:
+    print(f"still emitted as a refusal: {still}"); sys.exit(1)
+print("refusal kinds emitted:", ", ".join(sorted(refusal_kinds)))
+PY
 
 say "2. the header's pinned parent contains the policy versions the set renders"
 # The 2026-08-29 review: composed/HEADER.yaml named platform 1.1.1 at 58ef9c57
@@ -22,7 +44,9 @@ say "2. the header's pinned parent contains the policy versions the set renders"
 # run; this is where it is read. A `commit` that carries the rendered versions
 # can only exist once cut-release.yml has cut the tag in Actions (hard rule 3),
 # so an open limit is a could-not-look naming the tag it waits for, never a 0.
-ADOPTER="${ADOPTER:-$HERE/../../driftwood}"
+# Through PAVC_ESTATE_CLONE, not `$HERE/../..`: a `..` under a symlinked
+# nested worktree resolves physically to `.work/`, where no adopter lives.
+ADOPTER="${ADOPTER:-$PAVC_ESTATE_CLONE/driftwood}"
 if [ ! -d "$ADOPTER" ]; then
   echo "SKIP: no adopter tree at $ADOPTER to compose, so the pin/render pair cannot be read"
   exit 3

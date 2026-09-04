@@ -139,7 +139,7 @@
         "controls": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 },
-          "description": "Bare catalogue control ids (ticket 14; ADR-0013, ADR-0017) this party adds to its selected baseline, beyond what the baseline name already selects. May only grow: a composition refuses on any id that leaves the last signed composed artefact's selected set. Optional; defaults to none."
+          "description": "Control ids this party adds to its selected baseline, beyond what the baseline name already selects (ticket 14; ADR-0013, ADR-0017; eco-system ticket 38). A bare id (`ac-6.10`) is the baseline's own catalogue's, exact-string; `party:id` (`driftwood:dw-1`) names a control in another pinned controls parent's catalogue, including a small bespoke catalogue this party publishes and pins as a controls parent of itself. An added control nothing claims is an ordinary hole: priced and printed as a delta, never refused (ticket 38 deleted the new-hole refusal); a bespoke hole with no signed scenario is a missing instrument and refuses (ADR-0020). May only grow: a composition still refuses on any id that leaves the last signed composed artefact's selected set, because a removal is an exemption by another name. Optional; defaults to none."
         },
         "floor": {
           "enum": ["baseline", "restricted", "quarantine", "isolated"],
