@@ -155,7 +155,76 @@ def wargame(intel=None):
     return wargame_enforcement(intel) + wargame_scenarios(intel)
 
 
-def wargame_cage_tier(prices, org):
+# --- the party's one tier (ticket 78; ADR-0022) --------------------------------
+# Loosest first. `infra` is deliberately absent: only a platform-role party
+# declares it, on a Namespace manifest, never through a price -- the same
+# ladder driftwood/selection-policy/selection_policy.py publishes.
+LADDER = ("baseline", "restricted", "quarantine", "isolated")
+FAIL_CLOSED = LADDER[-1]     # a governed Namespace with no tier renders isolated
+
+
+def select_party_tier(prices, current=None, floor=None):
+    """One tier for the PARTY from every priced line, and whether writing it
+    would tighten the declaration.
+
+    A price line is one regime's view; a Namespace carries one tier for every
+    pod in it, so the declaration cannot be looser than its worst-priced
+    regime. The rule (the stated interim, pending PE-05 / ticket 75 Q4 on a
+    summed residual): the strictest `proposed_tier` across `prices[]`, clamped
+    up to the party's declared `overlay.floor`, and never looser than what the
+    governed Namespace declares today. driftwood's published selection-policy
+    package records the same rule as `select_party()`; the hub's
+    verify/tier-binding/ check folds every shape on the ladder through both and
+    refuses a disagreement (the two-implementations guard, ADR-0021).
+
+    `held` is True when the fold does not tighten the current declaration --
+    the proposer then writes nothing. A missing declaration is `isolated` by
+    ADR-0022, and the one write that neither tightens nor loosens it is the
+    explicit `isolated` line, which is allowed. A loosening is a different
+    question this proposer does not yet ask: it needs the party's aggregate
+    residual and a PR body that says so, and neither exists yet.
+
+    Raises ValueError for a tier off the ladder (a missing instrument: the
+    proposer cannot tell tighter from looser and must not guess)."""
+    lines = {}
+    for price in prices:
+        tier = price.get("proposed_tier")
+        if tier is None:
+            continue                       # an unpriced line (a premium) selects nothing
+        if tier not in LADDER:
+            raise ValueError(f"{price.get('source')}/{price.get('kind')} prices tier {tier!r}, "
+                             f"which is not on the ladder {list(LADDER)}")
+        lines[f"{price.get('source')}/{price.get('kind')}"] = tier
+    if floor is not None and floor not in LADDER:
+        raise ValueError(f"declared floor {floor!r} is not on the ladder {list(LADDER)}")
+    if current is not None and current not in LADDER:
+        raise ValueError(f"the Namespace declares tier {current!r}, which is not on the ladder "
+                         f"{list(LADDER)} -- tighter or looser cannot be told")
+
+    strictest = max(lines.values(), key=LADDER.index) if lines else None
+    tier, clamped = strictest, False
+    if floor is not None and (tier is None or LADDER.index(floor) > LADDER.index(tier)):
+        tier, clamped = floor, True
+    effective = current if current is not None else FAIL_CLOSED
+    if tier is None:
+        held = True
+        basis = "no line prices a tier, so there is nothing to declare"
+    else:
+        tightens = LADDER.index(tier) > LADDER.index(effective)
+        explicit_default = current is None and tier == FAIL_CLOSED
+        held = not (tightens or explicit_default)
+        basis = (f"strictest priced line is {strictest!r} across {sorted(lines)}"
+                 + (f", clamped up to the declared floor {floor!r}" if clamped else "")
+                 + f"; the Namespace declares {current!r}"
+                 + (f" (none: {FAIL_CLOSED} by default, ADR-0022)" if current is None else "")
+                 + ("; held -- the proposer only tightens" if held else
+                    f"; {tier!r} is tighter, so it is proposed"))
+    return {"tier": tier, "strictest_line": strictest, "lines": lines, "floor": floor,
+            "clamped_to_floor": clamped, "current": current, "effective_current": effective,
+            "held": held, "basis": basis}
+
+
+def wargame_cage_tier(prices, org, selection=None):
     """Ticket 16's `prices[]` -> cage-tier drift rows, in the SAME row shape
     wargame_enforcement() uses (kind/org/control/tolerance/risk_bought_current/
     drift) -- so proposer_bounds.confidence()/bound() gate a tier drift with no
@@ -164,7 +233,11 @@ def wargame_cage_tier(prices, org):
     exposure moved relative to what it was, the same shape a band-crossing is
     for an enforcement flip. Deliberately NOT folded into wargame() -- see
     tier_pr.py's own docstring for why a real adopter run must call this
-    explicitly rather than pick up the war-gamer's demo fixture."""
+    explicitly rather than pick up the war-gamer's demo fixture.
+
+    `selection` is select_party_tier()'s answer for this party. A line still
+    drifts on its own (that is the question the ledger keys on), but what a
+    proposal WRITES is the party's tier, carried on every row (ticket 78)."""
     rows = []
     for price in prices:
         rows.append({
@@ -175,6 +248,7 @@ def wargame_cage_tier(prices, org):
             "risk_bought_current": price.get("new_price"),
             "drift": bool(price.get("changed")),
             "price": price,
+            "selection": selection,
         })
     return rows
 
@@ -196,8 +270,12 @@ def propose(row):
         "title": f"[war-gamer] re-tune {row['control']} ({row['org']}): "
                  f"{row['deployed']} -> {row['implied']}",
         "actor": "wargamer-agent",
-        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log",
-        "signed": True,               # stamped at commit time by propose-policy-pr.sh
+        # No `signed` field: a signature is a property of the commit, put there by
+        # gitsign in the workflow that lands it and observed by `gitsign verify`
+        # against the adopter's own identity regexp -- never a literal a proposal
+        # document says about itself (ticket 76 item 6, ticket 78).
+        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log, "
+                    "stamped by the landing workflow, not claimed here",
         "from_evidence": row["evidence"],
         "change": {
             "target": row.get("policy_file", row["control"]),
@@ -223,20 +301,37 @@ def _propose_tier(row):
     every entry."""
     price = row["price"]
     slug = f"tier-{row['org']}-{row['kind']}-{price['source']}-{price['kind']}".replace("@", "-").replace(".", "-")
+    # What the proposal WRITES is the party's tier, never the line's own
+    # (ticket 78): the strictest priced line, clamped to the floor, and only if
+    # it tightens what the Namespace declares. The line's own move stays in
+    # `price` for the body. Without a selection (a caller that has not read the
+    # Namespace) the line's tier is all there is to say.
+    selection = row.get("selection")
+    if selection:
+        change_to = selection["tier"]
+        change_from = selection["current"] if selection["current"] is not None \
+            else f"none ({FAIL_CLOSED} by default)"
+    else:
+        change_to, change_from = price.get("proposed_tier"), price.get("old_tier")
     return {
         "branch": f"wargamer/retune-{slug}",
         "title": f"[war-gamer] cage-tier re-tune ({row['org']}, {price['source']}/{price['kind']}): "
-                 f"{price['old_tier']} -> {price['proposed_tier']}",
+                 f"{change_from} -> {change_to}",
         "actor": "wargamer-agent",
-        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log",
-        "signed": True,
+        # No `signed` literal (see propose()): propose-tier.yml signs the commit
+        # with gitsign and verifies it against the adopter's own regexp.
+        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log, "
+                    "stamped by the landing workflow, not claimed here",
         "from_evidence": {"source": price["source"], "kind": price["kind"],
                            "old_version": price.get("old_version"), "new_version": price.get("new_version")},
         "change": {
             "label": "posture.acme.io/tier",
-            "from": price["old_tier"],
-            "to": price["proposed_tier"],
+            "from": change_from,
+            "to": change_to,
+            "line_from": price.get("old_tier"),
+            "line_to": price.get("proposed_tier"),
         },
+        "party_selection": selection,
         # What moved the tier, for the PR body tier_pr.py writes: the price
         # itself, under its own perspective and currency (ADR-0021).
         "price": {
@@ -320,18 +415,73 @@ def selfcheck():
         assert p["merged"] is False and p["auto_merge"] is False, p
         # carries the version cross-check gate:
         assert "cross-check" in p["required_gate"], p
-        # carries the war-gamer's own attestable identity:
-        assert p["signed"] is True and "Rekor" in p["identity"], p
+        # names the identity mechanism, and CLAIMS no signature: `signed` is
+        # not a field a proposal may carry -- the commit is signed by the
+        # landing workflow and verified there (ticket 76 item 6, ticket 78).
+        assert "signed" not in p, ("a proposal must not claim to be signed", p)
+        assert "Rekor" in p["identity"], p
         # traces to the evidence it was proposed from:
         assert p["from_evidence"], p
     # the SAFETY property, structurally: the agent has no way to merge/dispose.
     assert not hasattr(sys.modules[__name__], "merge"), "war-gamer must expose no merge()"
     assert not hasattr(sys.modules[__name__], "dispose"), "war-gamer must expose no dispose()"
 
+    # 4. THE PROPOSER CAN ONLY TIGHTEN (ticket 78; ADR-0022): the party's one
+    #    tier is the strictest priced line, clamped to the floor, and never
+    #    looser than the Namespace declares.
+    def line(source, tier, changed=False):
+        return {"source": source, "kind": "feed", "proposed_tier": tier, "changed": changed}
+
+    driftwood_today = [line("feeds", "restricted", True), line("ico", "isolated"),
+                       line("twin", "isolated"), {"source": "insurer", "kind": "premium",
+                                                  "proposed_tier": None}]
+    sel = select_party_tier(driftwood_today, current="isolated")
+    assert sel["tier"] == "isolated" and sel["strictest_line"] == "isolated", sel
+    assert sel["held"] is True, ("a per-line crossing on an isolated party writes nothing", sel)
+    assert "insurer/premium" not in sel["lines"], ("an unpriced line selects nothing", sel)
+    # strictest line wins over the crossing line's own tier
+    sel = select_party_tier([line("feeds", "restricted", True), line("ico", "quarantine")],
+                            current="baseline")
+    assert sel["tier"] == "quarantine" and sel["held"] is False, sel
+    # the floor clamps up, never down
+    assert select_party_tier([line("feeds", "restricted", True)], current="baseline",
+                             floor="quarantine")["tier"] == "quarantine"
+    assert select_party_tier([line("feeds", "restricted", True)], current="baseline",
+                             floor="quarantine")["clamped_to_floor"] is True
+    assert select_party_tier([line("feeds", "isolated", True)], current="baseline",
+                             floor="restricted")["tier"] == "isolated"
+    # equal is held: a write that does not tighten is not a write
+    assert select_party_tier([line("feeds", "restricted", True)], current="restricted")["held"]
+    # an undeclared tier is isolated by default; only the explicit isolated line may land
+    assert select_party_tier([line("feeds", "restricted", True)], current=None)["held"] is True
+    assert select_party_tier([line("feeds", "isolated", True)], current=None)["held"] is False
+    # nothing priced: nothing to declare
+    assert select_party_tier([{"source": "insurer", "kind": "premium", "proposed_tier": None}],
+                             current="baseline")["held"] is True
+    # off-ladder anything is a missing instrument, never a guess
+    for bad in (lambda: select_party_tier([line("feeds", "paranoid", True)], current="baseline"),
+                lambda: select_party_tier([line("feeds", "isolated", True)], current="infra"),
+                lambda: select_party_tier([line("feeds", "isolated", True)], floor="deny")):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an off-ladder tier was not refused")
+    # the party tier is what a proposal writes; the line's own move is kept beside it
+    tier_rows = wargame_cage_tier([line("feeds", "restricted", True), line("ico", "quarantine")],
+                                  "driftwood", selection=sel)
+    tier_prop = propose(tier_rows[0])
+    assert tier_prop["change"]["to"] == "quarantine" and tier_prop["change"]["from"] == "baseline", tier_prop
+    assert tier_prop["change"]["line_to"] == "restricted", tier_prop
+    assert "signed" not in tier_prop, tier_prop
+
     print(
         "ok  collected v1->v3 signed feed + %d-scenario library (human-seed + AI); "
         "war-game: driftwood cart-PII £%.0f>£%.0f band -> Audit->Deny drift, ludlow steady; "
-        "%d scenario-path drift(s); proposed %d signed PR(s), 0 merged, all carry the gate."
+        "%d scenario-path drift(s); proposed %d PR(s) claiming no signature of their own, 0 merged, "
+        "all carry the gate; the party tier is the strictest priced line, clamped to the floor, "
+        "never looser than the Namespace declares (ticket 78)."
         % (len(intel["library"]["risks"]), dw["risk_bought_current"], dw["tolerance"],
            sum(1 for r in scn if r["drift"]), len(props))
     )

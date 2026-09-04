@@ -33,6 +33,35 @@ echo "ok  tampered feed fixture correctly rejected"
 say "3. the feed->PR seam: collect -> war-game -> propose-never-dispose"
 python3 "$here/wargamer.py" selfcheck || fail "wargamer selfcheck failed"
 
+say "3b. the proposer can only tighten (ticket 78): party fold, floor, current declaration"
+# tier_pr.py's selfcheck is a real bare-repo remote plus a stub gh: a per-line
+# crossing on a party declared isolated lands NOTHING, the strictest priced
+# line is what gets written, the declared floor clamps it up, and the current
+# tier is read off the Namespace rather than the price line's old_tier.
+python3 "$here/tier_pr.py" selfcheck || fail "tier_pr selfcheck failed (the proposer loosened, or landed a held proposal)"
+python3 - "$here" <<'PY' || fail "select_party_tier does not fold the party tighten-only"
+import sys
+sys.path.insert(0, sys.argv[1])
+import wargamer
+line = lambda s, t, c=False: {"source": s, "kind": "feed", "proposed_tier": t, "changed": c}  # noqa: E731
+# driftwood's only reachable crossing today: threat-register baseline->restricted beside two isolated lines
+sel = wargamer.select_party_tier([line("feeds", "restricted", True), line("ico", "isolated"),
+                                  line("twin", "isolated")], current="isolated")
+assert sel["tier"] == "isolated" and sel["held"], sel
+assert wargamer.select_party_tier([line("feeds", "restricted", True), line("ico", "quarantine")],
+                                  current="baseline")["tier"] == "quarantine"
+assert wargamer.select_party_tier([line("feeds", "restricted", True)], current="baseline",
+                                  floor="quarantine")["tier"] == "quarantine"
+assert wargamer.select_party_tier([line("feeds", "restricted", True)], current="quarantine")["held"]
+print("ok  strictest line wins, the floor clamps up, and nothing looser than the Namespace declares is written")
+PY
+
+say "3c. no proposal claims its own signature (ticket 76 item 6): the commit is signed, not the document"
+if grep -nE '"signed":\s*True' "$here/wargamer.py" "$here/tier_pr.py"; then
+  fail "a 'signed: True' literal is back in the proposer -- a signature is gitsign's to make and verify, never a field"
+fi
+echo "ok  no 'signed: True' literal under wargamer/; propose-tier.yml signs the commit and verifies it"
+
 say "4. the war-game drift report (enforcement + human/device scenarios)"
 python3 "$here/wargamer.py" wargame | python3 -c "
 import json, sys
