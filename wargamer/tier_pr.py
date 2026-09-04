@@ -74,32 +74,68 @@ _KIND_NAMESPACE = re.compile(r"""^kind:\s*["']?Namespace["']?\s*$""")
 _GOVERNED_TRUE = re.compile(
     r"""^(\s*)policy-as-versioned\.dev/governed:\s*["']?true["']?\s*$""")
 _TIER_LINE = re.compile(r"""^(\s*)posture\.acme\.io/tier:\s*\S.*$""")
+_TIER_VALUE = re.compile(r"""^\s*posture\.acme\.io/tier:\s*["']?([^"'\s#]+)""")
+_OVERLAY_FLOOR = re.compile(r"""^(\s+)floor:\s*["']?([^"'\s#]+)""")
+
+
+class AmbiguousDeclaration(ValueError):
+    """One file declares more than one governed Namespace. Which document
+    carries the party's tier is not this module's guess to make (ADR-0020: a
+    reader that cannot tell must not answer). Found 2026-09-04: the ambiguity
+    guard counted FILES, so a second governed Namespace declared looser in the
+    SAME file was invisible and every check silently passed on the first."""
 
 
 # --------------------------------------------------------------------------
 # finding the declaration -- by the governed label, never by a path
 # --------------------------------------------------------------------------
-def governed_namespace_span(text: str) -> tuple[int, int] | None:
-    """The (start, end) line span of the YAML document in `text` that is a
-    Namespace AND carries `governed: "true"`, or None. Document-scoped so a
-    multi-document file (tuppence/reset/workloads.yaml declares an
-    ungoverned Namespace beside its workloads) is read a document at a
-    time, not as one blob."""
+def governed_namespace_spans(text: str) -> list[tuple[int, int]]:
+    """EVERY (start, end) line span in `text` that is a Namespace document AND
+    carries `governed: "true"`. Document-scoped so a multi-document file
+    (tuppence/reset/workloads.yaml declares an ungoverned Namespace beside its
+    workloads) is read a document at a time, not as one blob -- and so that a
+    file carrying TWO governed Namespaces is counted as two, not one. A
+    separator is `---` alone or `---` followed by whitespace and a comment; the
+    first cut matched only the bare form, and a commented separator merged two
+    governed Namespaces into one span."""
     lines = text.splitlines(keepends=True)
     starts, ends, cur = [], [], 0
+    # A document separator is `---` alone on the line, or `---` followed by
+    # whitespace and anything else (`--- # the second app` is a separator YAML
+    # reads as one, and reading it as content merged two governed Namespaces
+    # into one span, so the ambiguity guard below never fired). `----` and
+    # `---foo` are not separators.
+    separator = re.compile(r"^---(\s.*)?$")
     for i, line in enumerate(lines):
-        if line.rstrip() == "---":
+        if separator.match(line.rstrip("\n")):
             starts.append(cur)
             ends.append(i)
             cur = i + 1
     starts.append(cur)
     ends.append(len(lines))
+    hits = []
     for start, end in zip(starts, ends):
         doc = lines[start:end]
         if any(_KIND_NAMESPACE.match(x) for x in doc) and \
                 any(_GOVERNED_TRUE.match(x) for x in doc):
-            return start, end
-    return None
+            hits.append((start, end))
+    return hits
+
+
+def governed_namespace_span(text: str) -> tuple[int, int] | None:
+    """THE governed Namespace document's span, or None where `text` declares
+    none. Raises AmbiguousDeclaration where it declares more than one: two
+    declarations in one file is a question, and answering it with the first one
+    is how a looser second declaration goes unread."""
+    hits = governed_namespace_spans(text)
+    if not hits:
+        return None
+    if len(hits) > 1:
+        at = ", ".join(f"lines {s + 1}-{e}" for s, e in hits)
+        raise AmbiguousDeclaration(
+            f"{len(hits)} governed Namespace documents in one file ({at}) -- which one "
+            f"carries this party's tier is not this module's guess to make")
+    return hits[0]
 
 
 def _candidate_manifests(adopter_dir: Path) -> list[Path]:
@@ -117,10 +153,12 @@ def _candidate_manifests(adopter_dir: Path) -> list[Path]:
 
 
 def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
-    """Every manifest in the adopter's own repo that declares a governed
-    Namespace. The proposer knows no path: `gitops/apps/namespace.yaml` is
-    where all three adopters happen to keep it today, and an adopter that
-    moves it is still proposed against.
+    """Every governed Namespace DECLARATION in the adopter's own repo, as the
+    path of the manifest carrying it -- one entry per governed Namespace
+    document, so a single file declaring two appears twice and `len(...) > 1`
+    means what every caller reads it to mean. The proposer knows no path:
+    `gitops/apps/namespace.yaml` is where all three adopters happen to keep it
+    today, and an adopter that moves it is still proposed against.
 
     ponytail: a line-level read, not a YAML parse -- a GitHub runner is not
     promised pyyaml (the same reason rejection-decay.yaml is read by hand).
@@ -131,9 +169,74 @@ def find_governed_namespaces(adopter_dir: Path) -> list[Path]:
             text = path.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        if governed_namespace_span(text):
-            hits.append(path)
+        hits.extend(path for _ in governed_namespace_spans(text))
     return hits
+
+
+def name_declarations(hits: list[Path], adopter_dir: Path) -> str:
+    """The hits as a human-readable list, saying when one FILE carries more than
+    one of them -- otherwise a two-document file reads as the same path twice."""
+    counts: dict[str, int] = {}
+    for h in hits:
+        rel = str(h.relative_to(adopter_dir))
+        counts[rel] = counts.get(rel, 0) + 1
+    return ", ".join(f"{rel} ({n} documents in it)" if n > 1 else rel
+                     for rel, n in sorted(counts.items()))
+
+
+def declared_tier(text: str) -> str | None:
+    """The `posture.acme.io/tier` the governed Namespace document in `text`
+    declares today, or None where it declares none (which ADR-0022 renders as
+    `isolated`). Read from the Namespace, never from a price line's `old_tier`:
+    the line records what a regime priced last time, the Namespace records what
+    the party signed (ticket 78).
+
+    Raises AmbiguousDeclaration where `text` declares two governed Namespaces."""
+    span = governed_namespace_span(text)
+    if span is None:
+        return None
+    lines = text.splitlines()
+    for i in range(*span):
+        found = _TIER_VALUE.match(lines[i])
+        if found:
+            return found.group(1)
+    return None
+
+
+def read_overlay_floor(party_yaml: Path) -> str | None:
+    """`overlay.floor` from the party artefact, or None. The one tighten-only
+    floor an adopter may declare (ADR-0022); selection clamps up to it.
+
+    ponytail: a line-level read of the top-level `overlay:` block, for the same
+    reason the rest of this module reads YAML by hand (a runner is not promised
+    pyyaml). A floor nested any deeper than `overlay:` -> `  floor:` is not a
+    shape party_artefact.py's schema admits, and this reads only that shape: the
+    key must be a DIRECT child of `overlay:`, at the same indent as the block's
+    own first key. Matching `floor:` at any depth (which is what this did until
+    2026-09-04) let `overlay: {add: [{floor: baseline}]}` -- a decoy nested under
+    a list item, not a declaration -- win over the real floor above it."""
+    if not party_yaml.exists():
+        return None
+    in_overlay = False
+    block_indent: int | None = None
+    for line in party_yaml.read_text().splitlines():
+        if line.lstrip().startswith("#") or not line.strip():
+            continue
+        if not line[0].isspace():
+            in_overlay = line.split(":", 1)[0].strip() == "overlay"
+            block_indent = None
+            continue
+        if not in_overlay:
+            continue
+        indent = len(line) - len(line.lstrip())
+        if block_indent is None:
+            block_indent = indent          # the overlay block's own key indent
+        if indent != block_indent:
+            continue                       # nested deeper than a direct child: not the floor
+        found = _OVERLAY_FLOOR.match(line)
+        if found:
+            return found.group(2)
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -213,6 +316,10 @@ def apply_tier_declaration(text: str, tier: str) -> tuple[str, bool]:
     governed label where it is not. Every other byte of the file, comments
     included, is untouched.
 
+    Raises AmbiguousDeclaration where `text` declares two governed Namespaces:
+    rewriting the first and leaving the second is exactly the silent partial
+    write this must not do.
+
     ponytail: a line edit inside the governed document's span, so the
     Namespace's own commentary survives a re-tune. A trailing `# comment` on
     the tier line itself does not. Upgrade to a round-tripping YAML editor
@@ -280,9 +387,36 @@ def _money(price: dict, field: str) -> str:
     return f"{value:,.2f} {price.get('currency') or '???'}"
 
 
+def _party_paragraph(p: dict) -> str:
+    """The party-level selection, spelled out for the reviewer (ticket 78):
+    which lines priced what, which was strictest, whether the floor clamped,
+    what the Namespace declared, and that this proposer only tightens."""
+    sel = p.get("party_selection")
+    if not sel:
+        return ""
+    lines = ", ".join(f"{k} -> `{v}`" for k, v in sorted(sel["lines"].items())) or "none"
+    floor = f"`{sel['floor']}`" if sel.get("floor") else "none declared"
+    clamped = " (the floor clamped the write up)" if sel.get("clamped_to_floor") else ""
+    current = f"`{sel['current']}`" if sel.get("current") else \
+        f"nothing (`{wargamer.FAIL_CLOSED}` by default, ADR-0022)"
+    return (
+        f"**Party selection (tighten-only, ADR-0022):** one Namespace carries one tier for "
+        f"every pod in it, so the declaration is the **strictest** `proposed_tier` across "
+        f"this party's priced lines -- {lines} -- clamped to the declared floor ({floor}){clamped}. "
+        f"The Namespace declared {current}. This proposal writes `{sel['tier']}`, which is "
+        f"tighter. The proposer never writes a looser tier: a loosening would need the "
+        f"party's aggregate residual and a body that argues it, and this proposer does not "
+        f"yet ask that question (ticket 78).\n\n"
+    )
+
+
 def _pr_body(p: dict) -> str:
     c = p["change"]
     price = p.get("price") or {}
+    line_move = ""
+    if c.get("line_from") is not None and (c["line_from"], c["line_to"]) != (c["from"], c["to"]):
+        line_move = (f" The line itself moved `{c['line_from']}` -> `{c['line_to']}`; the "
+                     f"declaration moves to the party's tier (below).")
     return (
         f"{p.get('ledger_marker', '')}\n\n"
         f"Proposed by the war-gamer's cage-tier drift (ADR-0015, ADR-0022). "
@@ -290,10 +424,11 @@ def _pr_body(p: dict) -> str:
         f"-- the governed Namespace declaration, not a pod label -- "
         f"`{c['from']}` -> `{c['to']}`. `cage-tier` renders that onto every pod in the "
         f"namespace through `namespaceObject`, so the pod label follows this merge and "
-        f"cannot be set anywhere else.\n\n"
+        f"cannot be set anywhere else.{line_move}\n\n"
         f"**The price that moved it:** {price.get('source', '?')}/{price.get('kind', '?')} "
         f"{_money(price, 'from')} -> {_money(price, 'to')} "
         f"under the `{price.get('perspective', p.get('org', '?'))}` perspective.\n\n"
+        f"{_party_paragraph(p)}"
         f"**Priced under:** selection policy `{p.get('policy_version') or 'none published'}`, "
         f"curve `{p.get('curve_hash') or 'none published'}`.\n\n"
         f"Evidence: {json.dumps(p['from_evidence'], sort_keys=True)}\n\n"
@@ -318,7 +453,11 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     p["manifest"] = result["manifest"]
 
     text = ns_path.read_text()
-    new_text, changed = apply_tier_declaration(text, p["change"]["to"])
+    try:
+        new_text, changed = apply_tier_declaration(text, p["change"]["to"])
+    except AmbiguousDeclaration as e:
+        result["error"] = f"{ns_path}: {e} -- nothing landed"
+        return result
     if not changed:
         result["error"] = (f"{ns_path} no longer declares a governed Namespace "
                             f"-- nothing to land")
@@ -336,11 +475,27 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     _git("checkout", "-q", "-B", p["branch"], f"origin/{base}", cwd=adopter_dir)
     # Re-read AFTER the checkout: the edit must land on what `base` declares
     # today, not on whatever the working tree happened to be on.
-    new_text, changed = apply_tier_declaration(ns_path.read_text(), p["change"]["to"])
+    on_base = ns_path.read_text()
+    try:
+        new_text, changed = apply_tier_declaration(on_base, p["change"]["to"])
+    except AmbiguousDeclaration as e:
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result["error"] = f"{ns_path} on origin/{base}: {e} -- nothing landed"
+        return result
     if not changed:
         _git("checkout", "-q", base, cwd=adopter_dir)
         result["error"] = (f"{ns_path} declares no governed Namespace on origin/{base} "
                             f"-- nothing to land")
+        return result
+    # ...and tighten-only is re-judged against what origin/base declares NOW,
+    # not what the working tree declared when run() folded the party: a
+    # declaration that moved under this run must not be loosened by it.
+    if not _tightens(declared_tier(on_base), p["change"]["to"]):
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result.update(held="tighten-only", current_tier=declared_tier(on_base),
+                      party_tier=p["change"]["to"],
+                      why=f"origin/{base} declares {declared_tier(on_base)!r}; "
+                          f"{p['change']['to']!r} does not tighten it")
         return result
     rel = ns_path.relative_to(adopter_dir)
     ns_path.write_text(new_text)
@@ -352,6 +507,23 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     result["landed"] = _open_or_update_pr(p, base, repo)
     _git("checkout", "-q", base, cwd=adopter_dir)
     return result
+
+
+def _tightens(current: str | None, tier: str) -> bool:
+    """Would writing `tier` tighten a Namespace that declares `current`? The
+    same rule wargamer.select_party_tier() folds with, applied once more at the
+    moment of the write. None declared is `isolated` by default, and only the
+    explicit `isolated` line may be written over it."""
+    ladder = wargamer.LADDER
+    # `tier` is what a price selected, so it must be on LADDER. `current` is what the
+    # Namespace DECLARES, so it may also be ADR-0022's `infra` -- which is tighter than
+    # every rung a price can reach, so nothing tightens it and False is the right answer
+    # for the same reason it is the right answer for a tier nobody can rank.
+    if tier not in ladder or (current is not None and current not in ladder):
+        return False
+    if current is None:
+        return tier == wargamer.FAIL_CLOSED
+    return ladder.index(tier) > ladder.index(current)
 
 
 def run(adopter_dir: Path, evidence_path: Path, org: str,
@@ -385,7 +557,46 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
     evidence = json.loads(evidence_path.read_text())
     prices = evidence.get("prices", [])
     repo = repo or os.environ.get("GITHUB_REPOSITORY")
-    rows = wargamer.wargame_cage_tier(prices, org) if prices else []
+
+    # The declaration is found, never known: the manifest carrying
+    # `policy-as-versioned.dev/governed: "true"` on a Namespace, wherever the
+    # adopter keeps it (ADR-0022). Two of them is an ambiguity this proposer
+    # refuses to guess at -- it says which two and lands nothing.
+    ns_hits = find_governed_namespaces(adopter_dir)
+    ns_error = None
+    if not ns_hits:
+        ns_error = (f"no manifest under {adopter_dir} declares a Namespace with "
+                    f'{GOVERNED_LABEL}: "true" -- there is no tier declaration to propose against')
+    elif len(ns_hits) > 1:
+        # Counted per DECLARATION, not per file: two governed Namespace documents in
+        # one manifest is the same ambiguity as two manifests (found 2026-09-04).
+        ns_error = (f"{len(ns_hits)} governed Namespace declarations under {adopter_dir} "
+                    f"({name_declarations(ns_hits, adopter_dir)}) -- "
+                    f"which one carries this party's tier is not this proposer's guess to make")
+
+    # The selection is over the PARTY, not the price line (ticket 78; ADR-0022):
+    # the strictest proposed_tier across prices[], clamped to the party's own
+    # overlay.floor, and never looser than what the governed Namespace declares
+    # today. A line still drifts on its own -- that is the question the ledger
+    # keys on -- but what gets WRITTEN is the party's tier, and when that tier
+    # does not tighten the declaration nothing is written at all.
+    selection = None
+    if prices and not ns_error:
+        current = declared_tier(ns_hits[0].read_text())
+        floor = read_overlay_floor(adopter_dir / "party.yaml")
+        try:
+            selection = wargamer.select_party_tier(prices, current=current, floor=floor)
+        except ValueError as e:
+            ns_error = f"missing instrument: {e}"
+    rows = wargamer.wargame_cage_tier(prices, org, selection=selection) if prices else []
+    if selection and selection["held"]:
+        print(f"note: proposer holds -- {selection['basis']}", file=sys.stderr)
+        return [{"branch": wargamer.propose(row)["branch"],
+                 "proposal_kind": "pull_request", "held": "tighten-only",
+                 "line": row["control"], "line_tier": row["price"].get("proposed_tier"),
+                 "party_tier": selection["tier"], "current_tier": selection["current"],
+                 "why": selection["basis"]}
+                for row in rows if row["drift"]]
 
     # The ledger is DERIVED from closed-unmerged PRs on this repo's own dedupe
     # branches (ADR-0024). Offline it comes back empty AND SAYS SO on STDERR.
@@ -403,20 +614,6 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
     else:
         rejections, ledger_note = rejection_ledger.derive(repo, today)
         print(f"note: {ledger_note}", file=sys.stderr)
-
-    # The declaration is found, never known: the manifest carrying
-    # `policy-as-versioned.dev/governed: "true"` on a Namespace, wherever the
-    # adopter keeps it (ADR-0022). Two of them is an ambiguity this proposer
-    # refuses to guess at -- it says which two and lands nothing.
-    ns_hits = find_governed_namespaces(adopter_dir)
-    ns_error = None
-    if not ns_hits:
-        ns_error = (f"no manifest under {adopter_dir} declares a Namespace with "
-                    f'{GOVERNED_LABEL}: "true" -- there is no tier declaration to propose against')
-    elif len(ns_hits) > 1:
-        ns_error = (f"{len(ns_hits)} governed Namespace manifests under {adopter_dir} "
-                    f"({', '.join(str(h.relative_to(adopter_dir)) for h in ns_hits)}) -- "
-                    f"which one carries this party's tier is not this proposer's guess to make")
 
     disp = proposer_bounds.bound(rows, rejections)
     landed = []
@@ -655,6 +852,193 @@ def selfcheck() -> None:
                                      "silence this one", reraised)
         assert any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
 
+        # --- 4b. the proposer can only TIGHTEN (ticket 78; ADR-0022). The
+        #     selection is over the PARTY, not the price line: a per-line
+        #     crossing on a party whose declaration is already `isolated`
+        #     (driftwood's threat-register line, baseline -> restricted, beside
+        #     two lines that already select isolated) must write NOTHING --
+        #     no branch, no commit, no PR -- and say why. ---
+        def _declare(tier_line: str | None) -> None:
+            ns.write_text(
+                'apiVersion: v1\n'
+                'kind: Namespace\n'
+                'metadata:\n'
+                '  name: driftwood\n'
+                '  labels:\n'
+                '    app.kubernetes.io/part-of: driftwood\n'
+                '    # the governed declaration -- the tier is declared next to it\n'
+                '    policy-as-versioned.dev/governed: "true"\n'
+                + (f'    posture.acme.io/tier: "{tier_line}"\n' if tier_line else '')
+            )
+            _git("add", "-A", cwd=work)
+            _git("commit", "-q", "-m", f"declare {tier_line}", cwd=work)
+            _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+
+        def _line(source, kind, old_tier, new_tier, changed, old_price=1_000, new_price=90_000):
+            return {"source": source, "kind": kind, "old_version": "v1", "new_version": "v2",
+                    "old_price": old_price, "new_price": new_price, "currency": "GBP",
+                    "perspective": "driftwood", "old_tier": old_tier, "proposed_tier": new_tier,
+                    "changed": changed, "proposed_as": "label"}
+
+        def _fresh():
+            state = json.loads(gh_state.read_text())
+            state["pr"] = None
+            state["closed"] = []
+            gh_state.write_text(json.dumps(state))
+            gh_log.write_text("")
+
+        _git("checkout", "-q", "main", cwd=work)
+        _declare("isolated")
+        _fresh()
+        crossing_on_isolated = [
+            _line("feeds", "feed", "baseline", "restricted", True),        # the crossing
+            _line("ico", "feed", "isolated", "isolated", False),           # already isolated
+            _line("twin", "twin", "isolated", "isolated", False),          # already isolated
+        ]
+        evidence.write_text(json.dumps({"prices": crossing_on_isolated}))
+        held = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                             org="driftwood", rejections_path=None, base="main",
+                             dry_run=False)
+        assert len(held) == 1 and held[0].get("held") == "tighten-only", \
+            ("a per-line crossing on a party declared isolated must be HELD, not landed", held)
+        assert "landed" not in held[0] and "error" not in held[0], held
+        assert held[0]["party_tier"] == "isolated" and held[0]["current_tier"] == "isolated", held
+        assert held[0]["line_tier"] == "restricted", held
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), \
+            ("nothing looser may be proposed -- no PR", _read_log(gh_log))
+        feeds_branch = "wargamer/retune-tier-driftwood-cage-tier-feeds-feed"
+        no_branch = _git("show-ref", "--verify", "--quiet", f"refs/heads/{feeds_branch}",
+                         cwd=work, check=False)
+        assert no_branch.returncode != 0, "a held proposal must create no branch"
+        main_ns = _git("show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "isolated"' in main_ns, main_ns
+
+        # --- 4c. strictest line wins: the crossing line prices `restricted`,
+        #     a sibling line already prices `quarantine`, the declaration says
+        #     `baseline` -- the write is `quarantine`, the party's strictest,
+        #     never the crossing line's own tier, and the body says so. ---
+        _declare("baseline")
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "baseline", "restricted", True),
+            _line("ico", "feed", "quarantine", "quarantine", False),
+        ]}))
+        strict = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                               org="driftwood", rejections_path=None, base="main",
+                               dry_run=False)
+        assert len(strict) == 1 and strict[0]["landed"]["action"] == "created", strict
+        ns_strict = _git("show", f"{feeds_branch}:gitops/apps/namespace.yaml",
+                         cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "quarantine"' in ns_strict, \
+            ("the party's strictest line must be written, not the crossing line's", ns_strict)
+        body = next(c for c in _read_log(gh_log) if c[:2] == ["pr", "create"])
+        body = body[body.index("--body") + 1]
+        assert "strictest" in body and "`baseline` -> `quarantine`" in body, \
+            ("the PR body must say the write is the party's strictest line", body)
+        assert "feeds/feed" in body and "ico/feed" in body, body
+
+        # --- 4d. the floor clamps: one crossing line prices `restricted`, the
+        #     party's own overlay.floor is `quarantine` -- the write is the
+        #     floor (ADR-0022: selection clamps up to the floor). ---
+        _fresh()
+        (work / "party.yaml").write_text(
+            'party: driftwood\n'
+            'roles: [risk-bearer, adopter]\n'
+            'overlay:\n'
+            '  add: []\n'
+            '  restate: []\n'
+            '  floor: quarantine\n'
+            'publishes: []\n'
+        )
+        _git("add", "-A", cwd=work)
+        _git("commit", "-q", "-m", "declare a floor", cwd=work)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "baseline", "restricted", True),
+        ]}))
+        floored = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                org="driftwood", rejections_path=None, base="main",
+                                dry_run=False)
+        assert len(floored) == 1 and floored[0]["landed"]["action"] == "created", floored
+        ns_floor = _git("show", f"{feeds_branch}:gitops/apps/namespace.yaml",
+                        cwd=work, capture=True).stdout
+        assert 'posture.acme.io/tier: "quarantine"' in ns_floor, \
+            ("the declared floor must clamp the write up", ns_floor)
+        (work / "party.yaml").unlink()
+        _git("add", "-A", cwd=work)
+        _git("commit", "-q", "-m", "drop the floor", cwd=work)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+
+        # --- 4e. the current declaration is read from the Namespace, not from
+        #     the price line's `old_tier`: the line says it moved from
+        #     `baseline`, the Namespace already declares `quarantine`, the line
+        #     lands at `restricted` -- looser than what is declared, so HELD. ---
+        _declare("quarantine")
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "baseline", "restricted", True),
+        ]}))
+        stale = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                              org="driftwood", rejections_path=None, base="main",
+                              dry_run=False)
+        assert len(stale) == 1 and stale[0].get("held") == "tighten-only", stale
+        assert stale[0]["current_tier"] == "quarantine", stale
+        # ...and the same line on a Namespace declared `baseline` lands, as a
+        # proposal from `baseline` (what is declared) to `restricted`.
+        _declare("baseline")
+        _fresh()
+        moved = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                              org="driftwood", rejections_path=None, base="main",
+                              dry_run=False)
+        assert len(moved) == 1 and moved[0]["landed"]["action"] == "created", moved
+        assert 'posture.acme.io/tier: "restricted"' in _git(
+            "show", f"{feeds_branch}:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+
+        # --- 4f. TWO governed Namespace documents in ONE manifest (ticket 78
+        #     review, 2026-09-04). The ambiguity guard counted FILES, so a second
+        #     governed Namespace declared LOOSER in the same file was invisible:
+        #     the proposer read the first, and apply_tier_declaration() rewrote
+        #     the first and left the second exactly as it was. Two declarations
+        #     is a question, so nothing lands and the reason names the file. ---
+        two_docs = ns.read_text() + (          # 4e left main declaring `baseline`
+            '---\n'
+            'apiVersion: v1\n'
+            'kind: Namespace\n'
+            'metadata:\n'
+            '  name: driftwood-batch\n'
+            '  labels:\n'
+            '    policy-as-versioned.dev/governed: "true"\n'
+            '    posture.acme.io/tier: "baseline"\n')
+        assert len(governed_namespace_spans(two_docs)) == 2, \
+            "two governed Namespace documents in one file must be counted as two"
+        try:
+            apply_tier_declaration(two_docs, "quarantine")
+        except AmbiguousDeclaration:
+            pass
+        else:
+            raise AssertionError("apply_tier_declaration must refuse to rewrite only the first "
+                                 "of two governed Namespace documents")
+        ns.write_text(two_docs)
+        _git("add", "-A", cwd=work)
+        _git("commit", "-q", "-m", "a second governed Namespace in the same file", cwd=work)
+        _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "baseline", "quarantine", True),
+        ]}))
+        ambiguous = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  org="driftwood", rejections_path=None, base="main",
+                                  dry_run=False)
+        assert len(ambiguous) == 1 and "landed" not in ambiguous[0], ambiguous
+        assert "2 governed Namespace declarations" in ambiguous[0]["error"], ambiguous
+        assert "2 documents in it" in ambiguous[0]["error"], \
+            ("the reason must say the two declarations are in one file", ambiguous)
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), \
+            ("an ambiguous declaration proposes nothing", _read_log(gh_log))
+        assert 'posture.acme.io/tier: "quarantine"' not in _git(
+            "show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+        _declare("baseline")     # back to one declaration for what follows
+
         # --- 5. structural safety: this module has no way to merge/dispose,
         #     and no way to open an issue either ---
         me = sys.modules[__name__]
@@ -693,10 +1077,18 @@ def selfcheck() -> None:
         "a price still flagged proposed_as=issue opens a PULL REQUEST -- no issue path "
         "exists any more (ADR-0022); yesterday's closed-unmerged PR SUPPRESSES the identical "
         "proposal while one priced under another curve does not (the ledger is derived, "
-        "nothing records the no); no merge()/approve()/dispose() anywhere in this module, and "
-        "no DISPOSING GH CALL either -- the argv this module builds is read, a planted "
-        "`_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and a planted /merge REST path "
-        "are both caught, and a `gh pr create` is not."
+        "nothing records the no); the proposer can only TIGHTEN (ticket 78): a per-line "
+        "crossing on a party declared isolated lands nothing (no branch, no PR), the party's "
+        "strictest priced line is what gets written and the body says so, the declared "
+        "overlay.floor clamps the write up (read only as a direct child of `overlay:`, so a "
+        "decoy nested deeper is not a floor), and the current tier is read off the Namespace "
+        "(a line landing looser than the declaration is held); TWO governed Namespace "
+        "DOCUMENTS in one manifest is counted as two and lands nothing, and "
+        "apply_tier_declaration refuses to rewrite the first and leave the second; "
+        "no merge()/approve()/dispose() "
+        "anywhere in this module, and no DISPOSING GH CALL either -- the argv this module "
+        "builds is read, a planted `_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and "
+        "a planted /merge REST path are both caught, and a `gh pr create` is not."
     )
 
 
