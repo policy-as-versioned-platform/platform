@@ -291,6 +291,11 @@ DEFAULT_ESTATE_CLONE = Path(os.environ["PAVC_ESTATE_CLONE"]) if os.environ.get("
 
 sys.path.insert(0, str(PLATFORM_DIR / "party"))
 import party_artefact  # noqa: E402
+# Ticket 77 item 1: the one "a pinned tree must carry the section the pin is used for" rule,
+# stated once in party/pin_content.py and applied here, in the insurer's pricer, and (restated
+# in git plumbing, because the hub is not a party and pins no platform) in the hub's
+# verify/feed-contract.
+import pin_content  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -2666,6 +2671,17 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         except Refused as e:
             missing.append(f"{party}/{kind}@{version}: {e}")
             continue
+        # Ticket 77 item 1. The pin resolves; does the tree it names CARRY what this pin is
+        # used for? Until now nothing asked, so a pin could resolve to a tag whose tree could
+        # not have produced the number priced from it -- which is exactly how the insurer came
+        # to attribute three quotes to `exposure v1.1.0`, a tag with no exposure section in it.
+        # A self-pin is exempt: its tree IS the tree under composition (above), so there is no
+        # other tree for the content to be missing from.
+        if party != adopter_party:
+            lacks = pin_content.refusal_for_pin(str(tree), party, kind, edge.get("name"), version)
+            if lacks:
+                missing.append(f"{party}/{kind}@{version}: {lacks}")
+                continue
         parent = {"party": party, "kind": kind, "version": version, "sha": sha}
         if kind == "feed":
             parent = {"party": party, "kind": kind, "name": edge["name"], "version": version, "sha": sha}

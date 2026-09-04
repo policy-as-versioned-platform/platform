@@ -22,6 +22,9 @@ export PAVC_ESTATE_CLONE="${PAVC_ESTATE_CLONE:-$(cd "$HERE/../.." && pwd)}"
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 
+say "1a. the ONE pin-content rule (ticket 77 item 1): a pinned tree must carry the section the pin is used for"
+python3 "$HERE/../party/pin_content.py" --selfcheck || fail "party/pin_content.py --selfcheck"
+
 say "1b. the three refusals ticket 38 deleted are gone from the source, and no new one took their place"
 python3 - "$HERE/composition.py" <<'PY' || fail "a deleted refusal kind is still emitted by composition.py"
 import re, sys
