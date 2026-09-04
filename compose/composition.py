@@ -240,6 +240,20 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     missing instrument (ADR-0020), because only the party that invented the
     control can say what missing it costs.
 
+ECO-SYSTEM TICKET 69 (ticket 58 Q5(b); ADR-0020): AN UNTAGGED PIN IS A
+PRICED HOLE. The premium edge reads the pin's signature state off the
+parent tree's OWN tags (`pin_signature` on the entry: `signed` when a tag
+of the pinned form carries a signature block, `untagged` when none does,
+`unobserved` when the tree has no git metadata to read). Untagged, the pin
+is a `hole` on the premium entry -- the premium itself, booked as paid
+against a quote no tag signs, under the adopter's own perspective and
+currency -- printed as a `new-untagged-pin` delta, recorded on the next
+composition, and closed (a `closed-untagged-pin` delta) by the first
+signed tag that carries it, with no edit. Unobserved opens nothing and
+closes nothing. Nothing here refuses, and nothing here claims a signature
+VERIFIES: the identity-pinned verification against the publisher's real
+remote is the hub's verify/feed-contract/verify-untagged-pin-is-priced.sh.
+
 Usage:
     composition.py compose <adopter-dir> [--estate-clone DIR] [--out DIR]
     composition.py verify <adopter-dir> [--estate-clone DIR]
@@ -305,7 +319,12 @@ CONTROL_KEY_SEP = ":"
 BESPOKE_SCENARIO_PROP = "scenario"
 # The deltas[] kinds: what replaced the three refusals, plus their closings.
 DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
-               "new-ungoverned-namespace", "closed-ungoverned-namespace")
+               "new-ungoverned-namespace", "closed-ungoverned-namespace",
+               "new-untagged-pin", "closed-untagged-pin")
+# Ticket 69: what a premium entry's `pin_signature.state` may read, and the
+# kind of the hole an untagged pin opens on that entry.
+PIN_SIGNATURE_STATES = ("signed", "untagged", "unobserved")
+UNTAGGED_PIN_HOLE_KIND = "untagged-pin"
 
 # Where an unpinned parent kind's version lives inside the PARTY'S OWN clone
 # -- ticket 11's forward note: "the seam/resolver (ticket 12) must resolve
@@ -2234,10 +2253,123 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
 # --------------------------------------------------------------------------
 
 
+def _pin_tag_pattern(name: str, version: str) -> re.Pattern:
+    """The tag forms that sign a feed pin: `<name>/vX.Y.Z` or bare `vX.Y.Z`
+    (a single tag line for every feed, ticket 14 answer 4). A bare-major pin
+    (`v1`) is signed by any `v1.x.y`; a full version must match exactly. The
+    same rule the hub's feed_contract.py resolves a pin by."""
+    v = version.lstrip("v")
+    ver = re.escape(v) if "." in v else rf"{re.escape(v)}\.\d+\.\d+"
+    return re.compile(rf"^(?:{re.escape(name)}/)?v{ver}$")
+
+
+def _tag_version_key(tag: str) -> list[int]:
+    return [int(x) for x in tag.rsplit("v", 1)[1].split(".")]
+
+
+def pin_signature_state(tree: Path | None, party: str, name: str, version: str) -> dict:
+    """Ticket 69. What the parent tree's OWN tags say about the pin:
+    `signed` when the highest tag of the pinned form is an annotated tag
+    carrying a signature block, `untagged` when no such tag does (none of
+    the form, or one with no block), `unobserved` when the tree carries no
+    git metadata to read a tag off. Presence of the block is what is read
+    here, the same reading `_signed_tags` makes for the adopter's own tags;
+    whether it VERIFIES under the pinned identity is the hub check's, and
+    this module never claims it. Never a refusal."""
+    if tree is None or not (Path(tree) / ".git").exists():
+        return {"state": "unobserved", "tag": None,
+                "detail": f"the {party} parent tree carries no git metadata, so no tag could be "
+                          f"read for {name}@{version}; the signature state is unobserved, not absent"}
+    listed = subprocess.run(
+        ["git", "-C", str(tree), "for-each-ref", "--format=%(refname:short) %(objecttype)",
+         "refs/tags"], capture_output=True, text=True)
+    pattern = _pin_tag_pattern(name, version)
+    refs = [line.split() for line in listed.stdout.splitlines()]
+    hits = sorted((tag, kind) for tag, kind in (r for r in refs if len(r) == 2)
+                  if pattern.match(tag))
+    if not hits:
+        return {"state": "untagged", "tag": None,
+                "detail": f"no tag of the form {name}/v* or v* signs @{version} on the {party} "
+                          f"parent's checkout"}
+    tag, kind = max(hits, key=lambda h: _tag_version_key(h[0]))
+    if kind == "tag":
+        body = subprocess.run(["git", "-C", str(tree), "cat-file", "-p", tag],
+                              capture_output=True, text=True).stdout
+        if "-----BEGIN" in body:
+            return {"state": "signed", "tag": tag,
+                    "detail": f"tag {tag} on the {party} checkout carries a signature block"}
+    return {"state": "untagged", "tag": tag,
+            "detail": f"tag {tag} exists on the {party} checkout but carries no signature "
+                      f"block, so it signs nothing"}
+
+
+def _previous_pin_hole(prev_prices: list[dict], party: str, name: str) -> dict | None:
+    """The open (new or recorded) untagged-pin hole the last signed composed
+    artefact carried on this premium edge, or None."""
+    for e in prev_prices or []:
+        if e.get("kind") == "premium" and e.get("source") == party and e.get("name") == name:
+            hole = e.get("hole")
+            if isinstance(hole, dict) and hole.get("status") in ("new", "recorded"):
+                return hole
+            return None
+    return None
+
+
+def untagged_pin_hole(signature: dict, prev_hole: dict | None, *, party: str, name: str,
+                      version: str, perspective: str, currency: str, amount: float) -> dict | None:
+    """The hole an untagged premium pin opens on its own entry (ticket 69):
+    the premium, booked as paid against a quote no tag signs, under the
+    adopter's own perspective and currency. `new` on first sight, `recorded`
+    once the last signed artefact carried it, `closed` when a signed tag now
+    carries the pin, None when there is nothing to report. An unobserved
+    state keeps a recorded hole open and opens none: a could-not-look is
+    never a signature and never a closure."""
+    state = signature["state"]
+    priced_by = (f"{party} {name}@{version}: the premium the pin books, paid against a quote "
+                 f"no signed tag carries")
+    base = {"kind": UNTAGGED_PIN_HOLE_KIND, "source": party, "name": name, "version": version,
+            "perspective": perspective, "currency": currency}
+    if state == "untagged":
+        return {**base, "status": "recorded" if prev_hole else "new", "amount": amount,
+                "priced_by": priced_by, "detail": signature["detail"]}
+    if prev_hole is None:
+        return None
+    if state == "unobserved":
+        return {**base, "status": "recorded", "amount": amount, "priced_by": priced_by,
+                "detail": f"{signature['detail']}; the recorded hole stays open"}
+    return {**base, "status": "closed", "amount": amount, "priced_by": priced_by,
+            "detail": f"{signature['detail']}; the hole the last signed artefact recorded is closed"}
+
+
+def untagged_pin_deltas(prices: list[dict], perspective: str, currency: str) -> list[dict]:
+    """deltas[] for the premium entries whose untagged-pin hole opened or
+    closed since the last signed composed artefact (ticket 69), in the same
+    shape compute_deltas prints a control hole's move."""
+    deltas: list[dict] = []
+    for e in prices:
+        hole = e.get("hole") if e.get("kind") == "premium" else None
+        if not isinstance(hole, dict) or hole.get("status") not in ("new", "closed"):
+            continue
+        deltas.append({
+            "kind": f"{hole['status']}-untagged-pin", "source": hole["source"],
+            "name": hole["name"], "version": hole["version"],
+            "perspective": perspective, "currency": currency,
+            "amount": hole["amount"], "priced_by": hole["priced_by"],
+            "detail": (f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']} and "
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is booked "
+                       f"as paid against an unsigned quote" if hole["status"] == "new" else
+                       f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']}; "
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is again "
+                       f"paid against a signed quote"),
+        })
+    return deltas
+
+
 def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  perspective_doc: dict, reporting_currency: str,
                  prev_version: str | None,
-                 parent_trees: dict[str, Path] | None = None) -> dict:
+                 parent_trees: dict[str, Path] | None = None,
+                 prev_prices: list[dict] | None = None) -> dict:
     """One `kind: premium` prices[] entry, read off the insurer's own signed
     quote feed. There is no arithmetic here on purpose: the premium is a
     CONTRACT COST -- what this adopter pays, booked under its own perspective
@@ -2280,6 +2412,15 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                        f"and currency, so there is no cost line to book")
     amount, fx = _converted(float(premium["amount"]), native, reporting_currency,
                              _feed_as_of(path), parent_trees)
+    # Ticket 69: the pin's signature state, read off the parent tree's own
+    # tags (`tree` as passed, never the platform fallback: the platform's
+    # tags sign nothing of the insurer's), and the hole an untagged pin is.
+    signature = pin_signature_state(tree if tree != PLATFORM_DIR else None, edge["party"], name,
+                                    str(edge["version"]))
+    hole = untagged_pin_hole(
+        signature, _previous_pin_hole(prev_prices or [], edge["party"], name),
+        party=edge["party"], name=name, version=str(edge["version"]),
+        perspective=adopter_party, currency=reporting_currency, amount=amount)
     return _price_entry(
         edge["party"], "premium", adopter_party, reporting_currency, amount, perspective_doc,
         name=name,
@@ -2293,6 +2434,8 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
         valid_from=payload.get("valid_from"),
         valid_until=payload.get("valid_until"),
         priced_against=payload.get("priced_against") or [],
+        pin_signature=signature,
+        hole=hole,
         **fx,
     )
 
@@ -2393,7 +2536,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             prices.append(price_quote(
                 edge, adopter_party, parent_trees.get(edge["party"]),
                 perspective_doc=perspective_doc, reporting_currency=reporting,
-                prev_version=prev_version, parent_trees=parent_trees))
+                prev_version=prev_version, parent_trees=parent_trees,
+                prev_prices=prev_prices))
             continue
         prices.append(price_parent(
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
@@ -2699,6 +2843,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         baseline_widening_delta(baseline_ids, prev_baseline_ids, prev_baseline_name, baseline_name,
                                 baseline_source, hole_prices, adopter_party, reporting),
         adopter_party, reporting)
+    # Ticket 69: a premium pin that opened or closed as an untagged-pin hole.
+    deltas += untagged_pin_deltas(prices, adopter_party, reporting)
 
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
@@ -2912,6 +3058,20 @@ def _adopter_copy(name: str, dest: Path) -> Path:
     if (src / ".github").is_dir():
         shutil.copytree(src / ".github", work / ".github")
     return work
+
+
+def _insurer_copy(dest: Path, *, git: bool) -> Path:
+    """Ticket 69's fixture: the real insurer's party.yaml and quote/ tree in
+    a scratch directory with NO tag -- `git init` and nothing else when
+    `git`, so the tree is observable and untagged; no git metadata at all
+    otherwise, so it is unobserved. No fixture here ever claims a signature."""
+    src = DEFAULT_ESTATE_CLONE / "insurer"
+    dest.mkdir(parents=True)
+    (dest / "party.yaml").write_text((src / "party.yaml").read_text())
+    shutil.copytree(src / "quote", dest / "quote")
+    if git:
+        subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    return dest
 
 
 def _with_restate(work: Path, restate: list[dict]) -> None:
@@ -3257,6 +3417,122 @@ def selfcheck() -> None:
           "(%.2f %s), its appetite as the attachment and the %s breakdown by regime name and "
           "control id; the premium it buys is a cost and is not counted in it"
           % (exposure["total"], exposure["currency"], len(exposure["regimes"])))
+
+    # ======================================================================
+    # eco-system ticket 69: an untagged pin is a priced hole
+    # ======================================================================
+    # The real insurer clone carries its signed v1.x.y tag, so the real
+    # driftwood's premium entry reads `signed` and carries no hole. A copy of
+    # the same insurer tree with NO tag is the untagged case: the quote still
+    # prices, the pin is a hole of its own premium under driftwood's own
+    # perspective and currency, printed as a delta and never a refusal; a
+    # second composition records it; a tree with no git metadata is a
+    # could-not-look that opens nothing and closes nothing; and composing
+    # again against the real signed clone closes it. No fixture here claims a
+    # signature: the only signed tag read is the insurer's real one.
+    if quote_path.exists():
+        real_premium = next(e for e in document["prices"] if e["kind"] == "premium")
+        sig = real_premium["pin_signature"]
+        assert sig["state"] == "signed" and re.match(r"^v1\.\d+\.\d+$", sig["tag"] or ""), sig
+        assert real_premium["hole"] is None, real_premium["hole"]
+        assert not [d for d in document["deltas"] if d["kind"].endswith("untagged-pin")], document["deltas"]
+        print("OK pin signature: the real driftwood's quote pin resolves to the insurer's signed "
+              "tag %s on the checkout, and carries no hole" % sig["tag"])
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            untagged = _insurer_copy(root / "insurer-untagged", git=True)
+            bare = _insurer_copy(root / "insurer-bare", git=False)
+            trees = {**parent_trees, "insurer": untagged}
+            work = _adopter_copy("driftwood", root)
+
+            def _premium(doc: dict) -> dict:
+                return next(e for e in doc["prices"] if e["kind"] == "premium")
+
+            def _pin_deltas(doc: dict) -> list[dict]:
+                return [d for d in doc["deltas"] if d["kind"].endswith("untagged-pin")]
+
+            def _commit(doc: dict, rendered: dict[str, str]) -> None:
+                _commit_header(work, rendered)
+                (work / "composed" / "evidence.json").write_text(json.dumps(doc))
+
+            # 1. untagged: priced as a hole of the premium, never refused
+            doc1, rendered1 = compose(work, trees)
+            assert doc1["outcome"] == "composed", doc1["refusals"]
+            p1 = _premium(doc1)
+            assert p1["pin_signature"]["state"] == "untagged", p1["pin_signature"]
+            assert p1["pin_signature"]["tag"] is None, p1["pin_signature"]
+            hole = p1["hole"]
+            assert hole is not None and hole["kind"] == UNTAGGED_PIN_HOLE_KIND, hole
+            assert hole["status"] == "new", hole
+            assert hole["source"] == "insurer" and hole["name"] == "quote-driftwood", hole
+            assert hole["version"] == "v1", hole
+            assert hole["perspective"] == "driftwood" and hole["currency"] == "GBP", hole
+            assert hole["amount"] == p1["amount"] and hole["amount"] > 0, (hole, p1["amount"])
+            assert hole["priced_by"], hole
+            d1 = _pin_deltas(doc1)
+            assert len(d1) == 1 and d1[0]["kind"] == "new-untagged-pin", doc1["deltas"]
+            assert d1[0]["source"] == "insurer" and d1[0]["name"] == "quote-driftwood", d1
+            assert d1[0]["version"] == "v1", d1
+            assert d1[0]["perspective"] == "driftwood" and d1[0]["currency"] == "GBP", d1
+            assert d1[0]["amount"] == p1["amount"] and d1[0]["priced_by"] == hole["priced_by"], d1
+            assert "amount" in d1[0] and "detail" in d1[0], d1
+            print("OK untagged pin: a quote pinned at a version no tag on the insurer's checkout "
+                  "signs composes (no refusal) with a hole of its own premium (%.2f %s) under "
+                  "driftwood's perspective, printed as a new-untagged-pin delta"
+                  % (hole["amount"], hole["currency"]))
+
+            # 2. recorded: the last signed artefact already carried the hole
+            _commit(doc1, rendered1)
+            doc2, rendered2 = compose(work, trees)
+            assert doc2["outcome"] == "composed", doc2["refusals"]
+            assert _premium(doc2)["hole"]["status"] == "recorded", _premium(doc2)["hole"]
+            assert _premium(doc2)["hole"]["amount"] == p1["amount"], _premium(doc2)["hole"]
+            assert _pin_deltas(doc2) == [], doc2["deltas"]
+            print("OK untagged pin: a second composition records the hole and prints no delta")
+
+            # 3. unobserved: no git metadata to read a tag off -- a could-not-look
+            # that neither opens a hole nor closes the recorded one
+            _commit(doc2, rendered2)
+            doc3, _ = compose(work, {**parent_trees, "insurer": bare})
+            assert doc3["outcome"] == "composed", doc3["refusals"]
+            p3 = _premium(doc3)
+            assert p3["pin_signature"]["state"] == "unobserved", p3["pin_signature"]
+            assert "no git" in p3["pin_signature"]["detail"], p3["pin_signature"]
+            assert p3["hole"]["status"] == "recorded", p3["hole"]
+            assert _pin_deltas(doc3) == [], doc3["deltas"]
+            fresh = _adopter_copy("driftwood", root / "fresh")
+            doc3b, _ = compose(fresh, {**parent_trees, "insurer": bare})
+            assert _premium(doc3b)["pin_signature"]["state"] == "unobserved", _premium(doc3b)
+            assert _premium(doc3b)["hole"] is None, _premium(doc3b)["hole"]
+            assert _pin_deltas(doc3b) == [], doc3b["deltas"]
+            print("OK unobserved pin: a parent tree with no git metadata reads `unobserved`, "
+                  "keeps a recorded hole and opens none -- a could-not-look, never a signature")
+
+            # 4. closed: the real clone's signed tag now signs the pin
+            doc4, rendered4 = compose(work, parent_trees)
+            assert doc4["outcome"] == "composed", doc4["refusals"]
+            p4 = _premium(doc4)
+            assert p4["pin_signature"]["state"] == "signed", p4["pin_signature"]
+            assert p4["hole"]["status"] == "closed", p4["hole"]
+            d4 = _pin_deltas(doc4)
+            assert len(d4) == 1 and d4[0]["kind"] == "closed-untagged-pin", doc4["deltas"]
+            assert d4[0]["amount"] == p1["amount"], d4
+            assert sig["tag"] in d4[0]["detail"], d4
+            _commit(doc4, rendered4)
+            doc5, _ = compose(work, parent_trees)
+            assert _premium(doc5)["hole"] is None and _pin_deltas(doc5) == [], doc5["deltas"]
+            print("OK closed pin: composing against the insurer's real signed tag closes the "
+                  "hole, prints one closed-untagged-pin delta, and the next composition "
+                  "carries no hole -- the hole heals itself when the tag lands")
+
+            # 5. the rendered policies never change on a signature state move (the
+            # header records the parent SHAs, which differ between the fixture
+            # insurer tree and the real clone, so it is compared without)
+            moved = [k for k in rendered1 if k != "composed/HEADER.yaml" and rendered1[k] != rendered4.get(k)]
+            assert not moved, moved
+            print("OK untagged pin: the rendered artefact is byte-identical across untagged, "
+                  "recorded and closed -- signature state lives in the evidence, never the render")
 
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
@@ -4433,7 +4709,12 @@ def selfcheck() -> None:
         "appetite as the attachment, and the breakdown by regime name and control id -- and the "
         "insurer's signed quote books as ONE `premium` contract cost line under the adopter's "
         "perspective, is left out of the exposure it was priced from, and refuses as a missing "
-        "instrument if it insures another party or books its premium on another party's sheet."
+        "instrument if it insures another party or books its premium on another party's sheet. "
+        "ECO-SYSTEM TICKET 69: the premium entry reads the pin's signature state off the "
+        "insurer tree's own tags; an untagged pin composes with a hole of its own premium under "
+        "the adopter's perspective and currency, printed as a new-untagged-pin delta, recorded "
+        "on the next composition, kept open under an unobserved tree, and closed by the first "
+        "signed tag that carries it -- never a refusal and never a claimed signature."
     )
 
 
