@@ -1,39 +1,59 @@
 #!/usr/bin/env python3
 """render-orphan-guard.py — the orphan-guard, rendered from the version array.
 
-## It was a Deny, and it is not any more (eco-system ticket 89)
+## It was a Deny, and it is a REPORT and a CAGE now (eco-system ticket 89)
 
 The owner, 2026-09-02 (ticket 75 Q5): "something could find itself unable to run, but that's
 only because it doesn't fit the cage, not because we deliberately deny it. So, in Kubernetes
 Parlance, we've built a Mutating admission controller more than a Approving admission and
 control." This rule shipped `validationActions: [Deny]` with the message "so it cannot run".
-It is `Audit` now. Nothing in this estate is deliberately denied.
+Nothing in this estate is deliberately denied, so it is a PAIR now:
 
-Demoting it leaves NO pod uncaged, and that is the whole reason the demotion is safe. This
-rule matches a pod that CLAIMS a policy version, and every claiming pod is already caged by
-`graded/policies/cage-tier.yaml`, which renders its Namespace's declared tier onto it and
-falls closed to `isolated` for a Namespace that declares nothing -- since ticket 63
-(2026-09-04) for an UNGOVERNED Namespace too. So an orphan claim is admitted into a cage, not
-into the open.
+  * `orphan_guard()` -- the same ValidatingPolicy, `Audit`. It refuses nothing and it still
+    reports the orphan claim by name.
+  * `orphan_cage()` -- a `MutatingPolicy` that puts the same pod on the BOTTOM RUNG.
+
+## The cage is not optional, and the first attempt at this ticket got that wrong
+
+The demotion was first shipped ALONE, on the reasoning that "every claiming pod is already
+caged by `cage-tier`". That is false of the served estate, and the review caught it. Every
+SERVED copy of `cage-tier` carries an `only-this-policy-version` matchCondition -- see
+`distribution/policies/v4.0.0/cage-tier.yaml` and each adopter's
+`composed/policies/v4.0.0/cage-tier.yaml`. An orphan claim is BY DEFINITION a version no
+served line carries, so it matches no `cage-tier` anywhere. Demoted alone, the pod ran with no
+tier, no caged marker, no PriorityClass, no limits, no hardening and no NetworkPolicy: the
+"Namespace fell closed, pod fell open" hole ADR-0022 promoted the other guard to `Deny` to
+close, re-opened through this one. Worse, it was attacker-selectable -- any pod opted out of
+every versioned rule by claiming a bogus version, which is a self-service exemption and
+principle 1 bans those.
+
+The measurement that produced the wrong reasoning was taken against
+`graded/policies/cage-tier.yaml`, which matches ANY claim -- and which `graded/up.sh` says in
+its own header is never applied: it "applies ONLY the rendered, versioned copies -- never the
+graded/policies/ authoring copies". So it measured a configuration that exists nowhere.
+
+Re-measured against the SERVED bodies, the same fact makes the pair SAFE: the served
+`cage-tier` matches only claims IN the array and `orphan_cage()` matches only claims NOT in
+it, from the same array. The two populations are disjoint by construction, so the two
+mutations never contend for a field, and the label-and-dials incoherence that ruled out a
+second writer does not arise. `verify-orphan-guard.sh` proves the disjointness by running both
+bodies over the same three pods.
 
 ## What the Audit report is FOR
 
-An orphan claim is a claim no served policy version self-scopes to, so the pod runs governed
-by none of the versioned rules. Under the doctrine that is a PRICED HOLE (ADR-0026: a hole is
-priced, never refused), and this report is the observation the price is computed from. It is
-not an exemption ledger and it is not a count that decides anything: it is the fact.
+An orphan claim is a claim no served policy version self-scopes to, so the pod is governed by
+none of the versioned rules even though it is caged. Under the doctrine that is a PRICED HOLE
+(ADR-0026: a hole is priced, never refused), and this report is the observation the price is
+computed from. It is not an exemption ledger and it is not a count that decides anything: it
+is the fact. A report and a mutation do not contend for a field, so the pair is safe where two
+mutations would not be.
 
-## What is NOT done here, and why it is not
+## What is still NOT done here
 
-The tighter answer -- an undeclared claim selects the BOTTOM RUNG specifically, rather than
-its Namespace's tier -- belongs inside `cage-tier`'s own `tier` expression, with the
-allow-list ranged in from this same array. It is deliberately NOT a second MutatingPolicy
-beside this one. Measured, not assumed (kyverno 1.18.2, `kyverno apply`, 2026-09-05): with
-`cage-tier` and a second mutating policy that writes `posture.acme.io/tier: isolated` both
-matching one pod, the pod came out labelled `isolated` while carrying `cage-baseline`'s
-PriorityClass -- the label-and-dials incoherence H8-03 exists to prevent, arrived at from the
-other direction. One writer per field, or none. `cage-tier` is a versioned policy body, so
-that change is a new declared line with the engine's computed bump, which ticket 84 owns.
+An orphan claim gets the bottom rung from a policy BESIDE `cage-tier`, not from `cage-tier`'s
+own `tier` expression. Folding it in there -- with the allow-list ranged in from this same
+array -- is the tidier answer and remains ticket 84's, because `cage-tier` is a versioned
+policy body and that is a new declared line with the engine's computed bump.
 
 flux-operator's ResourceSet (versions.yaml) renders the orphan-guard live by
 ranging `spec.inputs[0].versions[]`. This is its offline twin: the verify-*.sh
@@ -45,7 +65,8 @@ hand-maintains an allow-list, so the runnable-version set cannot drift from the
 declared-version set. That is the whole point of the orphan-guard.
 
 Usage:
-    render-orphan-guard.py [versions.yaml]        # print the ValidatingPolicy
+    render-orphan-guard.py [versions.yaml]        # print the Audit ValidatingPolicy
+    render-orphan-guard.py --cage [versions.yaml] # print the bottom-rung MutatingPolicy
     render-orphan-guard.py --retire 2.0.0 [file]  # simulate retiring a version
     render-orphan-guard.py --selfcheck            # runnable asserts
 """
@@ -57,7 +78,11 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import cage_body as cb  # noqa: E402
+
 LABEL = "policy-as-versioned.dev/policy-version"
+CAGE_NAME = "policy-version-orphan-cage"
 
 # cs-22: the identity FAMILY label (never the version-pin label above). The
 # orphan guard has no per-policy version of its own -- it is numbered by the
@@ -127,9 +152,10 @@ def orphan_guard(allowed: list[str]) -> dict:
                 "expression": "variables.allowed.exists(v, v == variables.claimed)",
                 "message": "policy-version not in the platform-declared version array (orphan): "
                            "no ResourceSet element declares it, so no served policy version "
-                           "governs this pod. It runs, caged at its Namespace's declared tier, "
-                           "and the rules it escapes are a priced hole (ADR-0026). Nothing is "
-                           "denied.",
+                           "governs this pod -- every served cage-tier is scoped to its own "
+                           "version. It runs, caged on the bottom rung by "
+                           f"{CAGE_NAME}, and the rules it escapes are a priced hole "
+                           "(ADR-0026). Nothing is denied.",
             }],
         },
     }
@@ -137,6 +163,36 @@ def orphan_guard(allowed: list[str]) -> dict:
 
 def _allow_expr(vs: list[str]) -> str:
     return "[" + ", ".join(f"'{v}'" for v in vs) + "]"
+
+
+def orphan_cage(allowed: list[str], spec: dict | None = None) -> dict:
+    """A MutatingPolicy that puts a pod claiming an undeclared version on the bottom rung.
+
+    Disjoint from every SERVED `cage-tier` by construction: those match only claims IN this
+    same array (`only-this-policy-version`), this matches only claims NOT in it. So the two
+    mutations never see the same pod and never contend for a field.
+
+    `UPDATE` is matched, gated on the pod already carrying the caged marker -- the same shape
+    and the same two reasons as the governed-namespace cage: a pod this policy caged has its
+    sidecar resident so the mutation is byte-identical, while a pod it never caged is left
+    alone, and without `UPDATE` a caged pod could relabel its way out of the reach cage."""
+    if not allowed:
+        raise SystemExit("refusing to render an orphan cage with an empty allow-list")
+    return cb.bottom_rung_policy(
+        CAGE_NAME,
+        [{"apiGroups": [""], "apiVersions": ["v1"],
+          "operations": ["CREATE", "UPDATE"], "resources": ["pods"]}],
+        [
+            {"name": "claims-an-undeclared-version",
+             "expression": (f"object.metadata.?labels['{LABEL}'].orValue('') != '' && "
+                            f"!({_allow_expr(allowed)}.exists(v, "
+                            f"v == object.metadata.labels['{LABEL}']))")},
+            {"name": "create-or-already-caged",
+             "expression": (f"request.operation == 'CREATE' || "
+                            f"object.metadata.?labels['{cb.CAGED_LABEL}'].orValue('') == 'true'")},
+        ],
+        spec=spec,
+    )
 
 
 def selfcheck() -> None:
@@ -176,6 +232,42 @@ def selfcheck() -> None:
     msg = og["spec"]["validations"][0]["message"]
     assert "cannot run" not in msg, msg
     assert "Nothing is denied" in msg, msg
+    assert CAGE_NAME in msg, "the report must name the policy that actually cages the pod"
+
+    # ...and the cage that makes the demotion safe. The report alone left an orphan claim
+    # uncaged, because every SERVED cage-tier is scoped to its own version.
+    oc = orphan_cage(vs)
+    assert oc["kind"] == "MutatingPolicy", oc["kind"]
+    assert "validationActions" not in oc["spec"] and "validations" not in oc["spec"], oc["spec"]
+    assert "Deny" not in yaml.safe_dump(oc), "a refusal survived in the cage body"
+    assert oc["metadata"]["labels"][IDENTITY_LABEL] == IDENTITY, oc["metadata"]
+    tier = next(v for v in oc["spec"]["variables"] if v["name"] == "tier")
+    assert tier["expression"] == f"'{cb.BOTTOM_RUNG}'", tier
+    # The allow-list is the SAME array, in both halves of the pair, so the population the
+    # report names and the population the cage cages can never differ.
+    assert _allow_expr(vs) in oc["spec"]["matchConditions"][0]["expression"], oc["spec"]
+    assert og["spec"]["variables"][0]["expression"] == _allow_expr(vs)
+    # Disjoint from the served cage-tier by construction: it matches claims IN the array,
+    # this matches claims NOT in it. Asserted on the real served body, not on the authoring
+    # copy graded/up.sh says it never applies.
+    served = HERE / "policies" / f"v{vs[0]}" / "cage-tier.yaml"
+    if served.exists():
+        conds = yaml.safe_load(served.read_text())["spec"]["matchConditions"]
+        scoped = [c for c in conds if c["name"] == "only-this-policy-version"]
+        assert scoped, f"{served} lost its version scoping; the disjointness argument is gone"
+        assert f"== '{vs[0]}'" in scoped[0]["expression"], scoped
+    cb.assert_priorityclass_is_rendered(oc)
+    # The dial table is cage-tier's own, plus the initContainer extension and nothing else.
+    cage_spec = cb.cage_tier_spec()
+    assert oc["spec"]["mutations"][:len(cage_spec["mutations"])] == cage_spec["mutations"], \
+        "the cage body drifted from graded/policies/cage-tier.yaml"
+    # An empty allow-list renders no cage, exactly as it renders no guard.
+    try:
+        orphan_cage([])
+    except SystemExit as e:
+        assert "empty allow-list" in str(e), e
+    else:
+        raise AssertionError("an orphan cage rendered from an empty allow-list")
     # retiring a version drops it from the allow-list
     retired = vs[-1]
     remaining = versions(HERE / "versions.yaml", retire=retired)
@@ -206,9 +298,10 @@ def selfcheck() -> None:
     sys.path.insert(0, str(HERE))
     from resourceset import guard_docs  # noqa: E402
     live = guard_docs(HERE / "versions.yaml", _allow_expr(vs))
-    assert og["metadata"]["name"] in live, sorted(live)
-    assert live[og["metadata"]["name"]] == og, \
-        "versions.yaml's orphan-guard has drifted from this twin"
+    for want in (og, oc):
+        n = want["metadata"]["name"]
+        assert n in live, sorted(live)
+        assert live[n] == want, f"versions.yaml's {n} has drifted from this twin"
     print("selfcheck ok: allow-list == array; every array version has a policies/ dir; retire drops a version; the action is Audit and the message refuses nothing; versions.yaml renders the same document this twin does")
 
 
@@ -218,10 +311,17 @@ def main(argv: list[str]) -> int:
     if args and args[0] == "--selfcheck":
         selfcheck()
         return 0
-    if args and args[0] == "--retire":
-        retire, args = args[1], args[2:]
+    cage = False
+    # `--cage` and `--retire` in either order: verify-retirement.sh asks for the cage rendered
+    # from a SHRUNK array, which is the whole point of retiring a version.
+    while args and args[0] in ("--cage", "--retire"):
+        if args[0] == "--cage":
+            cage, args = True, args[1:]
+        else:
+            retire, args = args[1], args[2:]
     path = Path(args[0]) if args else HERE / "versions.yaml"
-    print(yaml.safe_dump(orphan_guard(versions(path, retire)), sort_keys=False))
+    vs = versions(path, retire)
+    print(yaml.safe_dump(orphan_cage(vs) if cage else orphan_guard(vs), sort_keys=False))
     return 0
 
 

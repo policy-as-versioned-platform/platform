@@ -15,9 +15,9 @@ So each twin's `--selfcheck` now asserts twin == template, and this module is th
 that reads the template. It parses only the documents that survive without a template engine:
 the two guards are static text, while the per-version GitRepository/Kustomization fan-out
 carries sprig `<< range >>` markers and is skipped by name (it has no policy body to compare).
-The orphan guard's one templated line -- the allow-list ranged from the version array -- is
-substituted with the twin's own rendered expression before parsing, so the comparison covers
-every other line of that document and never pretends to check the range itself.
+The allow-list ranged from the version array is substituted with the twin's own rendered
+expression before parsing, in both the forms the template uses it, so the comparison covers
+every other line of every document and never pretends to check the range itself.
 
 Usage (library only):
     from resourceset import guard_docs
@@ -31,8 +31,14 @@ from pathlib import Path
 
 import yaml
 
-#: The orphan guard's one sprig-templated line: `expression: "[<< range ... >>]"`.
-_RANGED_EXPR = re.compile(r'(?m)^(\s*expression: )"\[<<.*?\]"[ \t]*$')
+#: The allow-list, ranged from the version array, in the two forms the template uses it. The
+#: whole-value form is the orphan guard's `allowed` variable, quoted because a plain scalar
+#: starting with `[` would parse as a flow sequence. The inline form sits inside a longer CEL
+#: expression -- the orphan CAGE's and the bottom-rung reach cage's match conditions, which
+#: have to test membership of the SAME array and cannot reference a `variables` entry, because
+#: Kyverno evaluates match conditions before variables.
+_RANGED_WHOLE = re.compile(r'(?m)^(\s*expression: )"\[<<.*?\]"[ \t]*$')
+_RANGED_INLINE = re.compile(r'\[<< range \$i.*?<< end >>\]')
 
 
 def template_text(versions_path: Path) -> str:
@@ -46,8 +52,9 @@ def guard_docs(versions_path: Path, allowed_expr: str) -> dict[str, dict]:
     `allowed_expr` is the twin's rendered allow-list expression; it is substituted for the
     template's `<< range >>` line so the rest of that document can be parsed and compared.
     """
-    text = _RANGED_EXPR.sub(lambda m: m.group(1) + json.dumps(allowed_expr),
-                            template_text(versions_path))
+    text = template_text(versions_path)
+    text = _RANGED_WHOLE.sub(lambda m: m.group(1) + json.dumps(allowed_expr), text)
+    text = _RANGED_INLINE.sub(lambda _: allowed_expr, text)
     out: dict[str, dict] = {}
     for chunk in text.split("\n---\n"):
         if "<<" in chunk:

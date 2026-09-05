@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
-# Beat: "Retiring a version prunes it." Deleting a version's element from the
+# Beat: "Retiring a version prunes it, and moves a straggler out of every served
+# policy version onto the bottom rung." Deleting a version's element from the
 # array is the ONLY edit needed: Flux prunes that version's Kustomization +
-# policy (prune: true), and the orphan-guard — re-rendered from the shrunk array
-# — stops allowing it, so a workload still claiming the retired version is denied.
+# policy (prune: true), the orphan-guard — re-rendered from the shrunk array —
+# starts REPORTING a workload still claiming it, and the orphan CAGE — ranged
+# from the same array — starts putting that workload on the bottom rung.
 # Exits non-zero if the beat would fail on stage.
 #
-# Offline core: render the orphan-guard BEFORE and AFTER retiring a version the
-# array really declares, and show the same pod flips admit -> deny. Live tail
-# (if reachable): the retired version's Kustomization/policy is actually gone.
+# ECO-SYSTEM TICKET 89 (2026-09-05) rewrote the subject. This beat used to say
+# "the same pod is now DENIED" and made the denial its pass condition. Nothing in
+# this estate is deliberately denied (the owner, 2026-09-02, ticket 75 Q5), so a
+# straggler is now reported and caged instead — and the beat has to say which,
+# because the pinned kyverno CLI reports a rule failure identically for Audit and
+# for Deny, so the old wording would have gone on reading green over a policy
+# that no longer refuses anything. That is why this file changed with the guard
+# and not after it.
+#
+# Offline core: render BOTH halves BEFORE and AFTER retiring a version the array
+# really declares, and show the same pod flip from ungoverned-by-this-machinery
+# to reported-and-caged-on-the-bottom-rung. Live tail (if reachable): the retired
+# version's Kustomization/policy is actually gone.
 #
 # The subject is the FIRST version the array declares, read from versions.yaml
 # rather than hardcoded -- 2026-08-29 really did retire 2.0.0, 2.0.1 and 3.0.0
@@ -54,20 +66,44 @@ metadata: { name: still-on-retired, labels: { "policy-as-versioned.dev/policy-ve
 spec: { containers: [{ name: c, image: nginx }] }
 YAML
 
-say "1. before retirement: a pod on ${RETIRE} is admitted (version is declared)"
+say "1. before retirement: a pod on ${RETIRE} is unremarkable to the machinery (version is declared)"
 python3 "$HERE/render-orphan-guard.py" > "$WORK/before.yaml"
-# capture (|| true): kyverno apply's exit code tracks admission, not script health
+python3 "$HERE/render-orphan-guard.py" --cage > "$WORK/before-cage.yaml"
+# capture (|| true): kyverno apply's exit code tracks rule outcome, not script health
 before="$(kyverno apply "$WORK/before.yaml" --resource "$WORK/pod.yaml" 2>&1 || true)"
 grep -q 'pass: 1, fail: 0' <<<"$before" \
-  || fail "pod on ${RETIRE} was not admitted before retirement — fixture wrong"
+  || fail "pod on ${RETIRE} was reported before retirement — fixture wrong"
+kyverno apply "$WORK/before-cage.yaml" --resource "$WORK/pod.yaml" -o "$WORK/before-out" \
+  >/dev/null 2>&1 || fail "the orphan cage refused a pod"
+if [ -f "$WORK/before-out/still-on-retired-mutated.yaml" ] \
+   && grep -q 'posture.acme.io/tier' "$WORK/before-out/still-on-retired-mutated.yaml"; then
+  fail "the orphan cage caged a pod claiming a DECLARED version — the cage is not disjoint"
+fi
 
-say "2. retire ${RETIRE} from the array (one deletion) and re-render"
+say "2. retire ${RETIRE} from the array (one deletion) and re-render BOTH halves"
 python3 "$HERE/render-orphan-guard.py" --retire "$RETIRE" > "$WORK/after.yaml"
+python3 "$HERE/render-orphan-guard.py" --cage --retire "$RETIRE" > "$WORK/after-cage.yaml"
 
-say "3. after retirement: the same pod is now DENIED (orphaned by the shrunk array)"
+say "3. after retirement: the same pod is REPORTED (no served version governs it)"
 after="$(kyverno apply "$WORK/after.yaml" --resource "$WORK/pod.yaml" 2>&1 || true)"
 grep -q "resource default/Pod/still-on-retired failed" <<<"$after" \
-  || fail "pod on retired ${RETIRE} still admitted — retirement did not prune the allowance"
+  || fail "pod on retired ${RETIRE} not reported — retirement did not shrink the allow-list"
+grep -q "Nothing is denied" <<<"$after" \
+  || fail "the straggler's report claims a refusal; nothing is deliberately denied"
+
+say "4. ...and CAGED on the bottom rung by the same shrunk array"
+kyverno apply "$WORK/after-cage.yaml" --resource "$WORK/pod.yaml" -o "$WORK/after-out" \
+  >"$WORK/after-cage.log" 2>&1 \
+  || fail "the orphan cage refused the straggler: $(tail -3 "$WORK/after-cage.log")"
+grep -qE 'fail: 0, ' "$WORK/after-cage.log" \
+  || fail "a refusal appeared when the straggler was caged: $(tail -1 "$WORK/after-cage.log")"
+straggler="$WORK/after-out/still-on-retired-mutated.yaml"
+[ -f "$straggler" ] || fail "retirement left the straggler uncaged — no mutated pod at $straggler"
+for want in 'posture.acme.io/tier: isolated' 'posture.acme.io/caged: "true"' \
+            'priorityClassName: cage-isolated'; do
+  grep -q -- "$want" "$straggler" || fail "the retired straggler is missing: $want"
+done
+echo "  ok   retiring ${RETIRE} moved the straggler onto the bottom rung, running and unreachable"
 
 # the fan-out no longer renders a Kustomization/path for the retired version
 [ -d "$HERE/policies/v${RETIRE}" ] || fail "fixture: policies/v${RETIRE} missing"
@@ -89,4 +125,4 @@ else
   live_tail_skip "policy-v${slug} ABSENT on $CTX but never observed present by this script; absence is not evidence of pruning"
 fi
 
-pass_line "retiring a version (one array deletion) prunes it and denies stragglers"
+pass_line "retiring a version (one array deletion) prunes it and moves a straggler out of every served policy version: reported by name, caged on the bottom rung by the same shrunk array, and refused by nothing"

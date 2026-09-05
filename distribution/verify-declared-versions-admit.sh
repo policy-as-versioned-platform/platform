@@ -2,10 +2,13 @@
 # Beat: "every policy version the platform DECLARES can actually admit a pod,
 # and the cage that version ships actually ran on it."
 #
-# The orphan guard makes distribution/versions.yaml's array the definition of
-# what may run: a pod claiming a version in the array is allowed, a pod claiming
-# anything else is refused. This script asks the other half of that question,
-# which nothing asked before 2026-08-28: of the versions the array DOES allow,
+# The orphan guard pair makes distribution/versions.yaml's array the definition
+# of what is GOVERNED: a pod claiming a version in the array is caged by that
+# version's own cage-tier, and a pod claiming anything else is reported by the
+# orphan guard and put on the bottom rung by the orphan cage. Nothing is refused
+# (eco-system ticket 89, 2026-09-05; this sentence said "refused" until then, and
+# it was true until then). This script asks the other half of that question,
+# which nothing asked before 2026-08-28: of the versions the array DOES declare,
 # which ones can a workload actually be created under?
 #
 # Found by the review that day, live on kind-driftwood: 2.0.0, 2.0.1 and 3.0.0 —

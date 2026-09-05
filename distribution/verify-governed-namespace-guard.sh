@@ -37,7 +37,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-say "1. render-governed-namespace-guard.py --selfcheck (structural: a MutatingPolicy with no refusal in it, CREATE-only, namespaceSelector, the bottom rung, cage-tier's own body)"
+say "1. render-governed-namespace-guard.py --selfcheck (structural: a MutatingPolicy with no refusal in it, CREATE plus UPDATE-when-already-caged, namespaceSelector, the bottom rung, cage-tier own body)"
 python3 "$HERE/render-governed-namespace-guard.py" --selfcheck
 
 say "2. the mutation itself, functionally, namespaceSelector stripped (the kyverno CLI cannot evaluate it offline -- see this script's docstring)"
@@ -59,7 +59,9 @@ cat > "$WORK/pods.yaml" <<'YAML'
 apiVersion: v1
 kind: Pod
 metadata: { name: unclaimed, namespace: governed-ns }
-spec: { containers: [{ name: c, image: nginx, securityContext: { privileged: true } }] }
+spec:
+  initContainers: [{ name: setup, image: busybox, securityContext: { privileged: true } }]
+  containers: [{ name: c, image: nginx, securityContext: { privileged: true } }]
 ---
 apiVersion: v1
 kind: Pod
@@ -76,7 +78,6 @@ grep -qE 'pass: 2, fail: 0, warn: 0, error: 0, skip: 2' <<<"$out" \
 
 caged="$WORK/out/unclaimed-mutated.yaml"
 [ -f "$caged" ] || fail "no mutated pod at $caged -- the unclaimed pod was not caged at all"
-want_absent() { grep -q "$1" "$caged" && fail "$2"; return 0; }
 grep -q 'posture.acme.io/tier: isolated' "$caged" \
   || fail "the unclaimed pod did not land on the bottom rung"
 grep -q 'posture.acme.io/caged: "true"' "$caged" \
@@ -104,4 +105,60 @@ if [ -f "$WORK/out/claimed-mutated.yaml" ] \
   fail "this policy mutated a pod that claims a version -- cage-tier owns that population, and two writers on one field is the label-and-dials incoherence H8-03 exists to prevent"
 fi
 
-echo "PASS: a governed namespace's unclaimed pod is CAGED on the bottom rung, not denied -- isolated tier, cage-isolated PriorityClass with its integer priority and preemptionPolicy, 100m/64Mi, hardened, host namespaces shut, all capabilities dropped, a WAF sidecar, and privileged: true clobbered false; a pod that claims is left to cage-tier; nothing in the run was refused. The mutation body is cage-tier's own and the namespace-scoping shape is proved structurally (the kyverno CLI cannot evaluate namespaceSelector offline)."
+# The bottom rung's eviction class must be one the machinery RENDERS. Every served
+# PriorityClass is version-suffixed (cage-isolated-4-0-0) and this population belongs to no
+# version, so without the unsuffixed object beside these policies the Priority admission plugin
+# refuses every pod this cage touches -- the cage becoming a refusal by another name.
+python3 - "$HERE" <<'PC' || fail "the bottom rung names a PriorityClass the machinery does not render"
+import sys
+sys.path.insert(0, sys.argv[1])
+import cage_body as cb
+cls = cb.bottom_rung_priorityclass()
+assert cls["metadata"]["name"] == "cage-isolated", cls["metadata"]
+assert int(cls["value"]) == -10000, cls["value"]
+print(f"    the machinery renders PriorityClass {cls['metadata']['name']} at {cls['value']}, "
+      f"unsuffixed, because this population belongs to no served version")
+PC
+
+say "3. the initContainer is hardened too -- cage-tier maps containers only"
+# A privileged initContainer was refused outright before this ticket. Without the extension in
+# cage_body.py it would now run untouched inside the cage: a hole this ticket would have dug.
+python3 - "$caged" <<'IC' || fail "the unclaimed pod's initContainer was not hardened"
+import sys, yaml
+for doc in yaml.safe_load_all(open(sys.argv[1])):
+    if not doc or doc["metadata"]["name"] != "unclaimed":
+        continue
+    init = doc["spec"].get("initContainers") or []
+    assert init, "the fixture lost its initContainer"
+    sc = init[0]["securityContext"]
+    assert sc["privileged"] is False and sc["allowPrivilegeEscalation"] is False, sc
+    assert sc["readOnlyRootFilesystem"] is True and sc["runAsNonRoot"] is True, sc
+    assert sc["capabilities"]["drop"] == ["ALL"], sc
+    assert init[0]["resources"]["limits"]["cpu"] == "100m", init[0]["resources"]
+    print("    initContainer: privileged false, caps dropped, hardened, 100m/64Mi")
+    break
+else:
+    raise SystemExit("no mutated unclaimed pod found")
+IC
+
+say "4. the paired Audit report observes the same population and refuses nothing"
+python3 "$HERE/render-governed-namespace-guard.py" --report > "$WORK/report.yaml"
+if grep -q 'Deny' "$WORK/report.yaml"; then fail "the paired report carries a Deny"; fi
+grep -q 'Audit' "$WORK/report.yaml" || fail "the paired report is not Audit"
+python3 - "$WORK/report.yaml" "$WORK/report-nosel.yaml" <<'RP'
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+del doc["spec"]["matchConstraints"]["namespaceSelector"]   # the CLI-untestable half
+yaml.safe_dump(doc, open(sys.argv[2], "w"))
+RP
+rout="$(kyverno apply "$WORK/report-nosel.yaml" --resource "$WORK/pods.yaml" 2>&1 || true)"
+grep -q "resource governed-ns/Pod/unclaimed failed" <<<"$rout" \
+  || fail "the report does not observe the unclaimed pod, so nothing records that it arrived"
+grep -q "governed-namespace-requires-claim" <<<"$rout" \
+  || fail "the report does not name the policy that cages the pod"
+grep -q "Nothing is denied" <<<"$rout" || fail "the report's message still claims a refusal"
+if grep -q "resource governed-ns/Pod/claimed failed" <<<"$rout"; then
+  fail "the report fired on a pod that DOES claim a version"
+fi
+
+echo "PASS: a governed namespace's unclaimed pod is CAGED on the bottom rung, not denied -- isolated tier, cage-isolated PriorityClass with its integer priority and preemptionPolicy, 100m/64Mi, hardened, host namespaces shut, all capabilities dropped, a WAF sidecar, and privileged: true clobbered false; a pod that claims is left to cage-tier; nothing in the run was refused. The mutation body is cage-tier's own and its initContainer is hardened with it, the PriorityClass it names is one the machinery renders unsuffixed (every served class is version-suffixed, and this population belongs to no version), and the paired Audit report observes the same pod without refusing it. The namespace-scoping shape is proved structurally: the kyverno CLI cannot evaluate namespaceSelector offline."

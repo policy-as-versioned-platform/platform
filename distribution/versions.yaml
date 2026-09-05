@@ -157,20 +157,34 @@ spec:
       wait: true
     << end >>
     ---
-    # The orphan-guard: rendered ONCE, allow-list ranged from the SAME array.
+    # ECO-SYSTEM TICKET 89 (2026-09-05): the six documents below are the platform machinery
+    # that used to be two Deny-shaped ValidatingPolicies. The owner's words (2026-09-02, ticket
+    # 75 Q5): something can be unable to run only because it does not fit the cage, never
+    # because it is deliberately denied. Nothing here refuses anything.
     #
-    # ECO-SYSTEM TICKET 89 (2026-09-05): `Audit`, not `Deny`. The owner's words (2026-09-02,
-    # ticket 75 Q5): something can be unable to run only because it does not fit the cage,
-    # never because it is deliberately denied. An orphan claim is admitted and CAGED --
-    # cage-tier matches every claiming pod and renders its Namespace's declared tier, falling
-    # closed to `isolated` -- and the versioned rules it escapes are a priced hole (ADR-0026),
-    # which this report is the observation for. See render-orphan-guard.py's docstring for why
-    # selecting the bottom rung for an orphan claim belongs inside cage-tier and not in a
-    # second mutating policy beside it.
+    # Each has an offline twin under distribution/, and each twin's --selfcheck asserts that
+    # THIS template renders the same document it does. Nothing checked that before this ticket,
+    # and the two had already drifted: the twins carried the platform-machinery identity label
+    # and these copies did not.
     #
-    # This body and its offline twin (render-orphan-guard.py) are asserted EQUAL by that
-    # twin's --selfcheck. They were not, before this ticket: the twin carried the
-    # platform-machinery identity label and this copy did not.
+    # 1. policy-version-orphan-guard   Audit. Reports a claim the array does not declare.
+    # 2. policy-version-orphan-cage    Mutating. Puts that pod on the bottom rung. NOT optional:
+    #    every SERVED cage-tier is scoped to its own version (only-this-policy-version), so an
+    #    orphan claim -- a version no served line carries -- matches no cage-tier at all. The
+    #    first cut of this ticket demoted the guard without this policy and left the pod running
+    #    with no tier, no limits, no hardening and no reach cage, selectable by any pod that
+    #    claimed a bogus version. Disjoint from the served cage-tier by construction: that
+    #    matches claims IN this array, this matches claims NOT in it.
+    # 3. governed-namespace-requires-claim  Mutating. An unclaimed pod in a governed namespace
+    #    goes to the bottom rung. Answers ADR-0022's addendum's reason without its refusal.
+    # 4. governed-namespace-unclaimed-report  Audit. Gives back the observation the Deny made.
+    # 5. cage-netpol-bottom-rung       Generating. The reach cage for both populations, which
+    #    the version-scoped cage-netpol cannot generate for.
+    # 6. cage-isolated (PriorityClass) UNSUFFIXED. Every served PriorityClass is version-suffixed
+    #    (cage-isolated-4-0-0), and these two cages exist for pods no version reaches, so there
+    #    is no suffix they could borrow. Without this object the Priority admission plugin
+    #    refuses every pod they cage -- the cage becoming a refusal by another name.
+    ---
     apiVersion: policies.kyverno.io/v1alpha1
     kind: ValidatingPolicy
     metadata:
@@ -201,26 +215,50 @@ spec:
         expression: object.metadata.labels['policy-as-versioned.dev/policy-version']
       validations:
       - expression: variables.allowed.exists(v, v == variables.claimed)
-        message: 'policy-version not in the platform-declared version array (orphan): no ResourceSet element declares it, so no served policy version governs this pod. It runs, caged at its Namespace''s declared tier, and the rules it escapes are a priced hole (ADR-0026). Nothing is denied.'
+        message: 'policy-version not in the platform-declared version array (orphan): no ResourceSet element declares it, so no served policy version governs this pod -- every served cage-tier is scoped to its own version. It runs, caged on the bottom rung by policy-version-orphan-cage, and the rules it escapes are a priced hole (ADR-0026). Nothing is denied.'
     ---
-    # The governed-namespace cage (ADR-0014's fifth named gap): rendered ONCE, beside the
-    # orphan-guard above and not inside it. No dependency on the version array -- static,
-    # unlike the orphan-guard -- so it needs no `range`. Offline twin:
-    # render-governed-namespace-guard.py (same split, same reason: verify-*.sh and shift-left
-    # run without flux-operator in the loop), which is where the reasoning lives.
-    #
-    # ECO-SYSTEM TICKET 89 (2026-09-05): a MutatingPolicy, not a Deny. ADR-0022's addendum of
-    # 2026-08-28 promoted this to `Deny` and called it "the one refusal the doctrine allows",
-    # for a reason observed live: under `Audit` a claim-less pod ran completely uncaged inside
-    # a Namespace whose declared tier was `isolated`. The mutation answers the reason without
-    # the refusal -- the pod is admitted onto the BOTTOM RUNG, so the Namespace falls closed
-    # and the pod falls closed. Silence is not an exemption; silence is the bottom rung.
-    #
-    # The mutation body below is cage-tier's OWN, copied by the twin with `tier` pinned to
-    # 'isolated' -- one dial table, one CEL expansion, no third copy. CREATE only: on an
-    # UPDATE this mutation would inject a waf-sidecar into an immutable container list and the
-    # API server would reject the de-posture patch, which is the cage becoming a refusal by
-    # another name (observed live 2026-08-28, ticket 26).
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: MutatingPolicy
+    metadata:
+      name: policy-version-orphan-cage
+      labels:
+        policy-as-versioned.dev/policy: platform-machinery
+    spec:
+      matchConstraints:
+        resourceRules:
+        - apiGroups:
+          - ''
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          - UPDATE
+          resources:
+          - pods
+      matchConditions:
+      - name: claims-an-undeclared-version
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' && !([<< range $i, $v := (index (inputs) "versions") >><< if $i >>, << end >>'<< $v.version >>'<< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
+      - name: create-or-already-caged
+        expression: request.operation == 'CREATE' || object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
+      variables:
+      - name: tier
+        expression: '''isolated'''
+      - name: dial
+        expression: "{'baseline':  {'cpu':'500m','mem':'256Mi','pc':'cage-baseline',  'prio':'-10',   'harden':'false','wafCpu':'0',   'wafMem':'0'},\n 'restricted':{'cpu':'250m','mem':'128Mi','pc':'cage-restricted','prio':'-100',  'harden':'true', 'wafCpu':'100m','wafMem':'128Mi'},\n 'quarantine':{'cpu':'100m','mem':'64Mi', 'pc':'cage-quarantine','prio':'-1000', 'harden':'true', 'wafCpu':'250m','wafMem':'256Mi'},\n 'isolated':  {'cpu':'100m','mem':'64Mi', 'pc':'cage-isolated',  'prio':'-10000','harden':'true', 'wafCpu':'250m','wafMem':'256Mi'}}[variables.tier]"
+      mutations:
+      - patchType: ApplyConfiguration
+        applyConfiguration:
+          expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": variables.tier\n  } },\n  spec: Object.spec{\n    hostNetwork: false,\n    hostPID: false,\n    hostIPC: false,\n    priorityClassName: variables.dial.pc,\n    priority: int(variables.dial.prio),\n    preemptionPolicy: \"Never\",\n    containers: object.spec.containers.filter(c, c.name != \"waf-sidecar\").map(c, Object.spec.containers{\n      name: c.name,\n      resources: Object.spec.containers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{\n      name: \"waf-sidecar\",\n      image: \"ghcr.io/acme/coraza-waf:cage\",\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.wafCpu, \"memory\": variables.dial.wafMem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: true, runAsNonRoot: true,\n        allowPrivilegeEscalation: false, privileged: false\n      }\n    }] : [])\n  }\n}"
+      - patchType: JSONPatch
+        jsonPatch:
+          expression: "variables.dial.harden == 'true'\n  ? object.spec.containers.map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/containers/\" + string(object.spec.containers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
+      - patchType: ApplyConfiguration
+        applyConfiguration:
+          expression: "Object{\n  spec: Object.spec{\n    initContainers: object.spec.?initContainers.orValue([]).map(c, Object.spec.initContainers{\n      name: c.name,\n      resources: Object.spec.initContainers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.initContainers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    })\n  }\n}"
+      - patchType: JSONPatch
+        jsonPatch:
+          expression: "variables.dial.harden == 'true'\n  ? object.spec.?initContainers.orValue([]).map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/initContainers/\" + string(object.spec.initContainers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
+    ---
     apiVersion: policies.kyverno.io/v1alpha1
     kind: MutatingPolicy
     metadata:
@@ -236,6 +274,7 @@ spec:
           - v1
           operations:
           - CREATE
+          - UPDATE
           resources:
           - pods
         namespaceSelector:
@@ -244,6 +283,8 @@ spec:
       matchConditions:
       - name: claims-no-policy-version
         expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == ''
+      - name: create-or-already-caged
+        expression: request.operation == 'CREATE' || object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
       variables:
       - name: tier
         expression: '''isolated'''
@@ -252,9 +293,91 @@ spec:
       mutations:
       - patchType: ApplyConfiguration
         applyConfiguration:
-          expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": variables.tier\n  } },\n  spec: Object.spec{\n    hostNetwork: false,\n    hostPID: false,\n    hostIPC: false,\n    priorityClassName: variables.dial.pc,\n    priority: int(variables.dial.prio),\n    preemptionPolicy: \"Never\",\n    containers: object.spec.containers.filter(c, c.name != \"waf-sidecar\").map(c, Object.spec.containers{\n      name: c.name,\n      resources: Object.spec.containers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n\
-            \                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{\n      name: \"waf-sidecar\",\n      image: \"ghcr.io/acme/coraza-waf:cage\",\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.wafCpu, \"memory\": variables.dial.wafMem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: true, runAsNonRoot: true,\n        allowPrivilegeEscalation:\
-            \ false, privileged: false\n      }\n    }] : [])\n  }\n}"
+          expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": variables.tier\n  } },\n  spec: Object.spec{\n    hostNetwork: false,\n    hostPID: false,\n    hostIPC: false,\n    priorityClassName: variables.dial.pc,\n    priority: int(variables.dial.prio),\n    preemptionPolicy: \"Never\",\n    containers: object.spec.containers.filter(c, c.name != \"waf-sidecar\").map(c, Object.spec.containers{\n      name: c.name,\n      resources: Object.spec.containers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    }) + (variables.dial.wafCpu != '0' ? [Object.spec.containers{\n      name: \"waf-sidecar\",\n      image: \"ghcr.io/acme/coraza-waf:cage\",\n      resources: Object.spec.containers.resources{\n        limits: {\"cpu\": variables.dial.wafCpu, \"memory\": variables.dial.wafMem}\n      },\n      securityContext: Object.spec.containers.securityContext{\n        readOnlyRootFilesystem: true, runAsNonRoot: true,\n        allowPrivilegeEscalation: false, privileged: false\n      }\n    }] : [])\n  }\n}"
       - patchType: JSONPatch
         jsonPatch:
           expression: "variables.dial.harden == 'true'\n  ? object.spec.containers.map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/containers/\" + string(object.spec.containers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
+      - patchType: ApplyConfiguration
+        applyConfiguration:
+          expression: "Object{\n  spec: Object.spec{\n    initContainers: object.spec.?initContainers.orValue([]).map(c, Object.spec.initContainers{\n      name: c.name,\n      resources: Object.spec.initContainers.resources{\n        limits: {\n          \"cpu\": (has(c.resources) && c.resources.?limits[\"cpu\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"cpu\"])).isLessThan(quantity(variables.dial.cpu)))\n                   ? string(c.resources.limits[\"cpu\"]) : variables.dial.cpu,\n          \"memory\": (has(c.resources) && c.resources.?limits[\"memory\"].hasValue() &&\n                  quantity(string(c.resources.limits[\"memory\"])).isLessThan(quantity(variables.dial.mem)))\n                   ? string(c.resources.limits[\"memory\"]) : variables.dial.mem\n        }\n      },\n      securityContext: Object.spec.initContainers.securityContext{\n        readOnlyRootFilesystem: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n        runAsNonRoot: variables.dial.harden == 'true' ||\n          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n        allowPrivilegeEscalation: false,\n        privileged: false\n      }\n    })\n  }\n}"
+      - patchType: JSONPatch
+        jsonPatch:
+          expression: "variables.dial.harden == 'true'\n  ? object.spec.?initContainers.orValue([]).map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/initContainers/\" + string(object.spec.initContainers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
+    ---
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: ValidatingPolicy
+    metadata:
+      name: governed-namespace-unclaimed-report
+      labels:
+        policy-as-versioned.dev/policy: platform-machinery
+    spec:
+      validationActions:
+      - Audit
+      matchConstraints:
+        resourceRules:
+        - apiGroups:
+          - ''
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          resources:
+          - pods
+        namespaceSelector:
+          matchLabels:
+            policy-as-versioned.dev/governed: 'true'
+      validations:
+      - expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
+        message: 'this namespace is governed (policy-as-versioned.dev/governed: "true") and this pod carries no policy-as-versioned.dev/policy-version claim, so no served policy version governs it. It runs, caged on the bottom rung by governed-namespace-requires-claim, and reaches nothing. Silence is not an exemption (ADR-0014); it is the bottom rung. Nothing is denied.'
+    ---
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: GeneratingPolicy
+    metadata:
+      name: cage-netpol-bottom-rung
+      labels:
+        policy-as-versioned.dev/policy: platform-machinery
+    spec:
+      evaluation:
+        synchronize:
+          enabled: false
+      matchConstraints:
+        resourceRules:
+        - apiGroups:
+          - ''
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          - UPDATE
+          resources:
+          - pods
+      matchConditions:
+      - name: is-caged
+        expression: object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
+      - name: tier-restricts-reach
+        expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline') != 'baseline'
+      - name: claims-no-served-version
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '' || !([<< range $i, $v := (index (inputs) "versions") >><< if $i >>, << end >>'<< $v.version >>'<< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
+      variables:
+      - name: nsName
+        expression: string(object.metadata.namespace)
+      - name: tier
+        expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')
+      - name: rungs
+        expression: '[''restricted'', ''quarantine'', ''isolated'']'
+      - name: reach
+        expression: "{'isolated': {'ingress': dyn([]), 'egress': dyn([])},\n 'other':    {'ingress': dyn([dyn({\"from\": dyn([dyn({\"podSelector\": dyn({})})])})]),\n              'egress':  dyn([dyn({\n                \"to\": dyn([dyn({\"namespaceSelector\": dyn({\"matchLabels\": dyn({\"kubernetes.io/metadata.name\": dyn(\"kube-system\")})})})]),\n                \"ports\": dyn([dyn({\"protocol\": dyn(\"UDP\"), \"port\": dyn(53)})])})])}}"
+      generate:
+      - expression: "generator.Apply(variables.nsName, variables.rungs.map(t, dyn({\n  \"apiVersion\": dyn(\"networking.k8s.io/v1\"),\n  \"kind\": dyn(\"NetworkPolicy\"),\n  \"metadata\": dyn({\"name\": dyn(\"cage-reach-\" + t), \"namespace\": dyn(variables.nsName),\n               \"labels\": dyn({\"app.kubernetes.io/managed-by\": dyn(\"kyverno\"),\n                              \"posture.acme.io/cage\": dyn(\"reach\"),\n                              \"posture.acme.io/tier\": dyn(t)})}),\n  \"spec\": dyn({\n    \"podSelector\": dyn({\"matchLabels\": dyn({\"posture.acme.io/caged\": dyn(\"true\"),\n                                            \"posture.acme.io/tier\": dyn(t)})}),\n    \"policyTypes\": dyn([\"Ingress\", \"Egress\"]),\n    \"ingress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].ingress),\n    \"egress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].egress)})})\n))"
+    ---
+    apiVersion: scheduling.k8s.io/v1
+    kind: PriorityClass
+    metadata:
+      name: cage-isolated
+      labels:
+        app.kubernetes.io/part-of: platform
+        policy-as-versioned.dev/policy: platform-machinery
+    value: -10000
+    preemptionPolicy: Never
+    globalDefault: false
+    description: "Graded cage \u2014 isolated tier, the bottom rung: FIRST to be evicted under node pressure, and no reach at all (cage-netpol generates a deny-all NetworkPolicy). It still runs; nothing is ever denied (ADR-0022)."
