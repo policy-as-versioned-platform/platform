@@ -714,16 +714,26 @@ def _load_module(root: Path, filename: str, module_name: str):
 
 
 def _load_guards(root: Path) -> list[dict]:
-    """Every `platform-machinery` member: the orphan guard (ranged from the
-    version array) and the governed-namespace guard (static, ADR-0014's
-    fifth named gap). Both load through the parent's own offline twins, the
-    same reason `_load_guard` always has: `verify-*.sh` and the shift-left
-    check run without flux-operator in the loop."""
+    """Every `platform-machinery` member: the orphan guard and its CAGE (both ranged from
+    the version array), the governed-namespace cage and its paired report (static,
+    ADR-0014's fifth named gap), and the bottom-rung reach cage. All load through the
+    parent's own offline twins, the same reason `_load_guard` always has: `verify-*.sh` and
+    the shift-left check run without flux-operator in the loop.
+
+    The last three arrived with eco-system ticket 89 and are read defensively, so an adopter
+    pinned to a parent tag from before that ticket composes exactly what it composed then."""
+    versions_yaml = root / "distribution" / "versions.yaml"
     orphan_twin = _load_module(root, "render-orphan-guard.py", "render_orphan_guard")
-    orphan_doc = orphan_twin.orphan_guard(orphan_twin.versions(root / "distribution" / "versions.yaml"))
+    # CUT versions only (eco-system ticket 89 R3): an uncut declared version has no tag and
+    # no served cage, so it must fall into the orphan population rather than be allowed.
+    # Read defensively -- a parent tag from before that fix has no served_versions().
+    allowed = (orphan_twin.served_versions(versions_yaml)
+               if hasattr(orphan_twin, "served_versions")
+               else orphan_twin.versions(versions_yaml))
+    orphan_doc = orphan_twin.orphan_guard(allowed)
     governed_twin = _load_module(root, "render-governed-namespace-guard.py", "render_governed_namespace_guard")
     governed_doc = governed_twin.governed_namespace_guard()
-    return [
+    members = [
         {"kind": orphan_doc["kind"], "doc": orphan_doc,
          "path": "distribution/versions.yaml (rendered from the array)",
          "out_path": "composed/orphan-guard.yaml", "member_name": "policy-version-orphan-guard"},
@@ -731,6 +741,72 @@ def _load_guards(root: Path) -> list[dict]:
          "path": "distribution/versions.yaml (static, ADR-0014)",
          "out_path": "composed/governed-namespace-guard.yaml", "member_name": "governed-namespace-requires-claim"},
     ]
+    # Eco-system ticket 89. The two guards above stopped refusing anything, so an adopter that
+    # inherited only them would inherit an ESTATE WITH A HOLE: the orphan guard reports and does
+    # not cage, and every served cage-tier is scoped to its own version, so an orphan claim
+    # would reach no cage at all. Whatever ships the guards must ship the cages beside them, or
+    # the demotion is a regression for every consumer. Older parents that do not carry the new
+    # renderers compose exactly as they did; this is read through `hasattr`, not assumed, so a
+    # pinned tag from before this ticket still composes.
+    if hasattr(orphan_twin, "orphan_cage"):
+        cage_doc = orphan_twin.orphan_cage(allowed)
+        members.append(
+            {"kind": cage_doc["kind"], "doc": cage_doc,
+             "path": "distribution/versions.yaml (rendered from the array, ticket 89)",
+             "out_path": "composed/orphan-cage.yaml", "member_name": "policy-version-orphan-cage"})
+    if hasattr(orphan_twin, "orphan_cage_hold"):
+        # The UPDATE half. Without it an adopter inherits a cage a pod can relabel its way out
+        # of; with the full body on UPDATE instead, it inherits one that refuses the currency
+        # controller's re-cage patch. Both halves travel together or neither is correct.
+        hold_doc = orphan_twin.orphan_cage_hold(allowed)
+        members.append(
+            {"kind": hold_doc["kind"], "doc": hold_doc,
+             "path": "distribution/versions.yaml (rendered from the array, ticket 89)",
+             "out_path": "composed/orphan-cage-holds.yaml",
+             "member_name": hold_doc["metadata"]["name"]})
+    if hasattr(governed_twin, "governed_namespace_hold"):
+        ghold_doc = governed_twin.governed_namespace_hold()
+        members.append(
+            {"kind": ghold_doc["kind"], "doc": ghold_doc,
+             "path": "distribution/versions.yaml (static, ticket 89)",
+             "out_path": "composed/governed-namespace-holds.yaml",
+             "member_name": ghold_doc["metadata"]["name"]})
+    if hasattr(governed_twin, "governed_namespace_report"):
+        report_doc = governed_twin.governed_namespace_report()
+        members.append(
+            {"kind": report_doc["kind"], "doc": report_doc,
+             "path": "distribution/versions.yaml (static, ticket 89)",
+             "out_path": "composed/governed-namespace-report.yaml",
+             "member_name": "governed-namespace-unclaimed-report"})
+    try:
+        netpol_twin = _load_module(root, "render-bottom-rung-netpol.py", "render_bottom_rung_netpol")
+    except FileNotFoundError:
+        netpol_twin = None
+    if netpol_twin is not None:
+        netpol_doc = netpol_twin.bottom_rung_netpol(allowed)
+        members.append(
+            {"kind": netpol_doc["kind"], "doc": netpol_doc,
+             "path": "distribution/versions.yaml (rendered from the array, ticket 89)",
+             "out_path": "composed/bottom-rung-netpol.yaml",
+             "member_name": "cage-netpol-bottom-rung"})
+        # ...and the eviction class the two cages NAME. Every served PriorityClass is
+        # version-suffixed (`cage-isolated-4-0-0`), so an adopter that inherited the cages
+        # without this object would have every pod they cage refused by the Priority admission
+        # plugin -- the cage becoming a refusal by another name. It is the one non-policy
+        # member here, and it carries the same composed-for label and provenance annotations
+        # every other member carries.
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location("cage_body", root / "distribution" / "cage_body.py")
+        _cb = _ilu.module_from_spec(_spec)
+        sys.modules["cage_body"] = _cb
+        _spec.loader.exec_module(_cb)
+        pc_doc = _cb.bottom_rung_priorityclass()
+        members.append(
+            {"kind": pc_doc["kind"], "doc": pc_doc,
+             "path": "distribution/versions.yaml (static, ticket 89)",
+             "out_path": "composed/bottom-rung-priorityclass.yaml",
+             "member_name": pc_doc["metadata"]["name"]})
+    return members
 
 
 # --------------------------------------------------------------------------
