@@ -37,8 +37,8 @@ import yaml
 #: expression -- the orphan CAGE's and the bottom-rung reach cage's match conditions, which
 #: have to test membership of the SAME array and cannot reference a `variables` entry, because
 #: Kyverno evaluates match conditions before variables.
-_RANGED_WHOLE = re.compile(r'(?m)^(\s*expression: )"\[<<.*?\]"[ \t]*$')
-_RANGED_INLINE = re.compile(r'\[<< range \$i.*?<< end >>\]')
+_RANGED_WHOLE = re.compile(r'(?m)^(\s*expression: )"\[<<.*\]"[ \t]*$')
+_RANGED_INLINE = re.compile(r'\[<< range \$i.*?<< end >>\]', re.S)
 
 
 def template_text(versions_path: Path) -> str:

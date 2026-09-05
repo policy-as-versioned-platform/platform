@@ -724,7 +724,12 @@ def _load_guards(root: Path) -> list[dict]:
     pinned to a parent tag from before that ticket composes exactly what it composed then."""
     versions_yaml = root / "distribution" / "versions.yaml"
     orphan_twin = _load_module(root, "render-orphan-guard.py", "render_orphan_guard")
-    allowed = orphan_twin.versions(versions_yaml)
+    # CUT versions only (eco-system ticket 89 R3): an uncut declared version has no tag and
+    # no served cage, so it must fall into the orphan population rather than be allowed.
+    # Read defensively -- a parent tag from before that fix has no served_versions().
+    allowed = (orphan_twin.served_versions(versions_yaml)
+               if hasattr(orphan_twin, "served_versions")
+               else orphan_twin.versions(versions_yaml))
     orphan_doc = orphan_twin.orphan_guard(allowed)
     governed_twin = _load_module(root, "render-governed-namespace-guard.py", "render_governed_namespace_guard")
     governed_doc = governed_twin.governed_namespace_guard()
@@ -749,6 +754,23 @@ def _load_guards(root: Path) -> list[dict]:
             {"kind": cage_doc["kind"], "doc": cage_doc,
              "path": "distribution/versions.yaml (rendered from the array, ticket 89)",
              "out_path": "composed/orphan-cage.yaml", "member_name": "policy-version-orphan-cage"})
+    if hasattr(orphan_twin, "orphan_cage_hold"):
+        # The UPDATE half. Without it an adopter inherits a cage a pod can relabel its way out
+        # of; with the full body on UPDATE instead, it inherits one that refuses the currency
+        # controller's re-cage patch. Both halves travel together or neither is correct.
+        hold_doc = orphan_twin.orphan_cage_hold(allowed)
+        members.append(
+            {"kind": hold_doc["kind"], "doc": hold_doc,
+             "path": "distribution/versions.yaml (rendered from the array, ticket 89)",
+             "out_path": "composed/orphan-cage-holds.yaml",
+             "member_name": hold_doc["metadata"]["name"]})
+    if hasattr(governed_twin, "governed_namespace_hold"):
+        ghold_doc = governed_twin.governed_namespace_hold()
+        members.append(
+            {"kind": ghold_doc["kind"], "doc": ghold_doc,
+             "path": "distribution/versions.yaml (static, ticket 89)",
+             "out_path": "composed/governed-namespace-holds.yaml",
+             "member_name": ghold_doc["metadata"]["name"]})
     if hasattr(governed_twin, "governed_namespace_report"):
         report_doc = governed_twin.governed_namespace_report()
         members.append(

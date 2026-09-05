@@ -161,4 +161,84 @@ if grep -q "resource governed-ns/Pod/claimed failed" <<<"$rout"; then
   fail "the report fired on a pod that DOES claim a version"
 fi
 
-echo "PASS: a governed namespace's unclaimed pod is CAGED on the bottom rung, not denied -- isolated tier, cage-isolated PriorityClass with its integer priority and preemptionPolicy, 100m/64Mi, hardened, host namespaces shut, all capabilities dropped, a WAF sidecar, and privileged: true clobbered false; a pod that claims is left to cage-tier; nothing in the run was refused. The mutation body is cage-tier's own and its initContainer is hardened with it, the PriorityClass it names is one the machinery renders unsuffixed (every served class is version-suffixed, and this population belongs to no version), and the paired Audit report observes the same pod without refusing it. The namespace-scoping shape is proved structurally: the kyverno CLI cannot evaluate namespaceSelector offline."
+say "5. the currency controller's re-cage patch is still admissible"
+# THE REGRESSION THIS STEP EXISTS FOR (review, 2026-09-05). Round 2 put UPDATE on the cage
+# itself, gated on posture.acme.io/caged == "true" -- a marker cage-tier writes for its WHOLE
+# population at every rung, not a "caged by this policy" marker. So the isolated cage matched a
+# pod cage-tier had caged at baseline, and the full body appends a waf-sidecar and rewrites
+# priorityClassName and priority. All three are immutable on a running pod: the API server
+# refuses the patch. A refusal by another name, and it would have broken ticket 91's
+# recage_patch() -- an UPDATE that strips the claim and writes tier: isolated + caged: "true",
+# the estate's only way to move a running pod off a retired version.
+#
+# THE CEILING, MEASURED. `kyverno apply` has no UPDATE mode: it evaluates every resource as a
+# CREATE, so a CREATE-only policy matches here that an UPDATE would never reach. Operation
+# scoping is therefore proved STRUCTURALLY (the operations list, asserted below and in the
+# renderer's selfcheck) and the mutation CONTENT is proved functionally against the policies an
+# UPDATE really can reach. Feeding the CREATE-scoped cages to this step would measure a
+# configuration the API server never produces -- the same mistake round 1 made with the
+# authoring copy of cage-tier.
+python3 - "$HERE" <<'OPS' || fail "a full-body cage is reachable on UPDATE"
+import sys, importlib.util
+from pathlib import Path
+here = Path(sys.argv[1]); sys.path.insert(0, str(here))
+def load(fn, name):
+    sp = importlib.util.spec_from_file_location(name, here / fn)
+    m = importlib.util.module_from_spec(sp); sys.modules[name] = m; sp.loader.exec_module(m)
+    return m
+og = load("render-orphan-guard.py", "render_orphan_guard")
+gg = load("render-governed-namespace-guard.py", "render_governed_namespace_guard")
+vs = og.served_versions(here / "versions.yaml")
+def ops(d): return d["spec"]["matchConstraints"]["resourceRules"][0]["operations"]
+for d in (gg.governed_namespace_guard(), og.orphan_cage(vs)):
+    assert ops(d) == ["CREATE"], (d["metadata"]["name"], ops(d))
+for d in (gg.governed_namespace_hold(), og.orphan_cage_hold(vs)):
+    assert ops(d) == ["UPDATE"], (d["metadata"]["name"], ops(d))
+print("    the two full-body cages are CREATE-only; only the two labels-only holds see an UPDATE")
+OPS
+
+# The object recage_patch() leaves behind: a pod cage-tier admitted at BASELINE, then patched --
+# claim and posture stripped, tier: isolated and caged: "true" written, in one merge patch.
+python3 - "$HERE" "$WORK/recaged.yaml" "$WORK/holds.yaml" <<'RC' || fail "could not build the re-cage fixture"
+import sys, importlib.util, yaml
+from pathlib import Path
+here = Path(sys.argv[1]); sys.path.insert(0, str(here)); sys.path.insert(0, str(here.parent / "currency-controller"))
+def load(fn, name):
+    sp = importlib.util.spec_from_file_location(name, here / fn)
+    m = importlib.util.module_from_spec(sp); sys.modules[name] = m; sp.loader.exec_module(m)
+    return m
+og = load("render-orphan-guard.py", "render_orphan_guard")
+gg = load("render-governed-namespace-guard.py", "render_governed_namespace_guard")
+import currency
+labels = currency.recage_patch("3.0.0")["metadata"]["labels"]
+assert labels["posture.acme.io/tier"] == "isolated" and labels["posture.acme.io/caged"] == "true", labels
+pod = {"apiVersion": "v1", "kind": "Pod",
+       "metadata": {"name": "recaged", "namespace": "governed-ns",
+                    "labels": {k: v for k, v in labels.items() if v is not None}},
+       "spec": {"containers": [{"name": "app", "image": "nginx",
+                                "resources": {"limits": {"cpu": "500m", "memory": "256Mi"}}}],
+                "priorityClassName": "cage-baseline-4-0-0", "priority": -10,
+                "preemptionPolicy": "Never"}}
+yaml.safe_dump(pod, open(sys.argv[2], "w"), sort_keys=False)
+vs = og.served_versions(here / "versions.yaml")
+holds = []
+for d in (gg.governed_namespace_hold(), og.orphan_cage_hold(vs)):
+    d["spec"]["matchConstraints"].pop("namespaceSelector", None)   # CLI-untestable half
+    holds.append(d)
+yaml.safe_dump_all(holds, open(sys.argv[3], "w"), sort_keys=False)
+RC
+kyverno apply "$WORK/holds.yaml" --resource "$WORK/recaged.yaml" -o "$WORK/rc" >"$WORK/rc.log" 2>&1 \
+  || fail "the UPDATE policies refused the re-cage patch: $(tail -3 "$WORK/rc.log")"
+python3 - "$WORK/rc/recaged-mutated.yaml" <<'CHK' || fail "the re-cage patch would be refused by the API server"
+import sys, yaml
+d = [x for x in yaml.safe_load_all(open(sys.argv[1])) if x][-1]
+names = [c["name"] for c in d["spec"]["containers"]]
+assert names == ["app"], f"a container was appended to a running pod: {names}"
+assert d["spec"]["priorityClassName"] == "cage-baseline-4-0-0", d["spec"]["priorityClassName"]
+assert d["spec"].get("priority") == -10, d["spec"].get("priority")
+assert d["metadata"]["labels"]["posture.acme.io/tier"] == "isolated", d["metadata"]["labels"]
+assert d["metadata"]["labels"]["posture.acme.io/caged"] == "true", d["metadata"]["labels"]
+print("    no container appended, priorityClassName and priority untouched, both labels held")
+CHK
+
+echo "PASS: a governed namespace's unclaimed pod is CAGED on the bottom rung, not denied -- isolated tier, cage-isolated PriorityClass with its integer priority and preemptionPolicy, 100m/64Mi, hardened, host namespaces shut, all capabilities dropped, a WAF sidecar, and privileged: true clobbered false; a pod that claims is left to cage-tier; nothing in the run was refused. The mutation body is cage-tier's own and its initContainer is hardened with it, the PriorityClass it names is one the machinery renders unsuffixed (every served class is version-suffixed, and this population belongs to no version), and the paired Audit report observes the same pod without refusing it. UPDATE reaches only the labels-only hold policies, so the currency controller's re-cage patch comes through with no container appended and no immutable field rewritten -- measured, since putting the full body on UPDATE would have refused it. The namespace-scoping shape and the operation scoping are proved structurally: the kyverno CLI cannot evaluate namespaceSelector and has no UPDATE mode."

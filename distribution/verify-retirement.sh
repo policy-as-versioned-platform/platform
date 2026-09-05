@@ -39,7 +39,7 @@ from pathlib import Path
 here = Path('$HERE')
 spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
 og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
-print(og.versions(here / 'versions.yaml')[0])
+print(og.served_versions(here / 'versions.yaml')[0])
 ")"
 [ -n "$RETIRE" ] || fail "distribution/versions.yaml declares no versions to retire"
 # The beat is "retire ONE and the rest keep running". With a single declared
@@ -52,7 +52,7 @@ from pathlib import Path
 here = Path('$HERE')
 spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
 og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
-print(len(og.versions(here / 'versions.yaml')))
+print(len(og.served_versions(here / 'versions.yaml')))
 ")"
 if [ "$DECLARED" -lt 2 ]; then
   echo "SKIP: distribution/versions.yaml declares one version ($RETIRE), so a retirement would leave an empty allow-list, which render-orphan-guard.py refuses to render; the beat needs a second declared version to show one retiring while the other keeps running"

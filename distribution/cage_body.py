@@ -167,6 +167,83 @@ def assert_priorityclass_is_rendered(policy: dict) -> None:
         f"two disagree")
 
 
+#: The two labels the bottom rung is recognised by. `cage-netpol`'s podSelector keys on both,
+#: so re-asserting them is the whole of what keeps a caged pod inside its reach cage.
+TIER_LABEL = "posture.acme.io/tier"
+
+
+def hold_policy(name: str, resource_rules: list[dict], match_conditions: list[dict],
+                namespace_selector: dict | None = None) -> dict:
+    """UPDATE-only: re-assert the bottom rung's two LABELS and touch nothing else.
+
+    ## Why this is a separate policy and not an extra operation on the cage
+
+    Eco-system ticket 89 round 2 put `UPDATE` on the cages themselves, gated on the pod already
+    carrying `posture.acme.io/caged: "true"`. That marker does not mean "caged by this policy":
+    `cage-tier` writes it for its whole population at every rung. So on `UPDATE` the bottom-rung
+    cage matched a pod `cage-tier` had caged at `baseline`, and applying the full body to a
+    RUNNING pod appends a `waf-sidecar` to an immutable container list and rewrites
+    `priorityClassName` and `priority`, which the API server refuses. A refusal by another name,
+    in the ticket about refusals by another name, and the third instance in this estate.
+
+    It is not theoretical. `currency-controller/currency.py`'s `recage_patch()` is an `UPDATE`
+    that strips the claim and writes `tier: isolated` + `caged: "true"` in one merge patch --
+    the estate's only mechanism for moving a running pod off a retired version (ticket 91), and
+    an object that matches those gates exactly. Breaking it would strand every stale pod.
+
+    ## What this does instead
+
+    `UPDATE` needs the LABELS re-asserted, not the cage re-applied. The reason `UPDATE` was
+    wanted at all is that `CREATE`-only leaves a caged pod permanently relabelable: a
+    `kubectl label --overwrite posture.acme.io/tier=baseline` after admission drops it out of
+    `cage-reach-isolated`'s podSelector for good, and `cage-netpol`'s own comment claims a pod
+    cannot buy itself looser reach -- true of `cage-tier`'s population only because `cage-tier`
+    matches `UPDATE`. Two label writes restore that and nothing else: no container appended, no
+    immutable field rewritten, byte-identical for a pod already carrying them, and admissible on
+    top of `recage_patch()`, which writes the same two values.
+    """
+    constraints: dict = {"resourceRules": resource_rules}
+    if namespace_selector is not None:
+        constraints["namespaceSelector"] = namespace_selector
+    return {
+        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "kind": "MutatingPolicy",
+        "metadata": {"name": name, "labels": {IDENTITY_LABEL: IDENTITY}},
+        "spec": {
+            "matchConstraints": constraints,
+            "matchConditions": match_conditions,
+            "mutations": [{
+                "patchType": "ApplyConfiguration",
+                "applyConfiguration": {
+                    "expression": (
+                        "Object{\n"
+                        "  metadata: Object.metadata{ labels: {\n"
+                        f'    "{CAGED_LABEL}": "true",\n'
+                        f'    "{TIER_LABEL}": "{BOTTOM_RUNG}"\n'
+                        "  } }\n"
+                        "}"
+                    )
+                },
+            }],
+        },
+    }
+
+
+def assert_labels_only(policy: dict) -> None:
+    """A hold policy may write the two labels and nothing else, ever."""
+    assert policy["kind"] == "MutatingPolicy", policy["kind"]
+    assert "validationActions" not in policy["spec"], policy["spec"]
+    assert len(policy["spec"]["mutations"]) == 1, policy["spec"]["mutations"]
+    expr = policy["spec"]["mutations"][0]["applyConfiguration"]["expression"]
+    for banned in ("containers", "priorityClassName", "priority", "preemptionPolicy",
+                   "securityContext", "resources", "hostNetwork", "JSONPatch"):
+        assert banned not in expr, (
+            f"a hold policy wrote {banned!r}; on a running pod that is a refusal by another name")
+    assert CAGED_LABEL in expr and TIER_LABEL in expr and BOTTOM_RUNG in expr, expr
+    rule = policy["spec"]["matchConstraints"]["resourceRules"][0]
+    assert rule["operations"] == ["UPDATE"], rule
+
+
 def cage_tier_spec(path: Path | None = None) -> dict:
     """The shipped cage's own `variables` and `mutations`. One dial table, one expansion."""
     p = path or CAGE_TIER

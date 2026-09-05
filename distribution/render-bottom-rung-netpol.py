@@ -66,6 +66,19 @@ def bottom_rung_netpol(allowed: list[str], spec: dict | None = None) -> dict:
     # `is-caged` and `tier-restricts-reach` are kept verbatim: they read cage-tier's OUTPUT
     # labels, which is exactly what this ticket's two mutations write. The third condition is
     # this policy's whole difference -- the pods no served, version-scoped generator can see.
+    # R5 (review, 2026-09-05): its OWN downstream names. The served cage-netpol-<v> generates
+    # `cage-reach-<tier>` into the same namespace, and two generators owning one downstream name
+    # has never been driven through a real API server. cage-netpol.yaml's own header records
+    # what a mis-owned downstream cost on 2026-08-28: Kyverno's dynamic watcher called
+    # DeleteDownstreams for a whole policy and wiped every other namespace's reach cage, which
+    # `synchronize: false` is what closed. Distinct names with the SAME podSelector are additive
+    # for a pod they both select -- NetworkPolicy unions what it allows, and the bottom rung
+    # allows nothing on either -- so the reach is identical and neither generator can delete the
+    # other's objects.
+    gen = src["generate"][0]["expression"]
+    assert '"cage-reach-" + t' in gen, gen
+    src = dict(src, generate=[{"expression": gen.replace('"cage-reach-" + t',
+                                                         '"cage-reach-bottom-rung-" + t')}])
     src["matchConditions"] = list(src.get("matchConditions", [])) + [{
         "name": "claims-no-served-version",
         "expression": (f"object.metadata.?labels['{LABEL}'].orValue('') == '' || "
@@ -87,7 +100,7 @@ def selfcheck() -> None:
     og = importlib.util.module_from_spec(s)
     sys.modules["render_orphan_guard"] = og
     s.loader.exec_module(og)
-    vs = og.versions(HERE / "versions.yaml")
+    vs = og.served_versions(HERE / "versions.yaml")
 
     doc = bottom_rung_netpol(vs)
     assert doc["kind"] == "GeneratingPolicy", doc["kind"]
@@ -101,8 +114,14 @@ def selfcheck() -> None:
     src = source_spec()
     assert doc["spec"]["matchConditions"][:len(src["matchConditions"])] == src["matchConditions"], \
         "the match conditions drifted from graded/policies/cage-netpol.yaml"
-    assert doc["spec"]["generate"] == src["generate"], \
+    # The generated objects are cage-netpol's own, except the downstream NAME (R5).
+    want = source_spec()["generate"][0]["expression"].replace(
+        '"cage-reach-" + t', '"cage-reach-bottom-rung-" + t')
+    assert doc["spec"]["generate"][0]["expression"] == want, \
         "the generated objects drifted from graded/policies/cage-netpol.yaml"
+    assert "cage-reach-bottom-rung-" in doc["spec"]["generate"][0]["expression"], doc["spec"]
+    assert '"cage-reach-" + t' not in doc["spec"]["generate"][0]["expression"], \
+        "the bottom-rung generator writes the served generator's downstream names"
     assert doc["spec"]["variables"] == src["variables"], \
         "the reach table drifted from graded/policies/cage-netpol.yaml"
     assert _allow_expr(vs) in doc["spec"]["matchConditions"][-1]["expression"], doc["spec"]
@@ -139,7 +158,7 @@ def main(argv: list[str]) -> int:
     sys.modules["render_orphan_guard"] = og
     s.loader.exec_module(og)
     path = Path(argv[1]) if len(argv) > 1 else HERE / "versions.yaml"
-    print(yaml.safe_dump(bottom_rung_netpol(og.versions(path)), sort_keys=False))
+    print(yaml.safe_dump(bottom_rung_netpol(og.served_versions(path)), sort_keys=False))
     return 0
 
 

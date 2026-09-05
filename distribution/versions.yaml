@@ -157,33 +157,37 @@ spec:
       wait: true
     << end >>
     ---
-    # ECO-SYSTEM TICKET 89 (2026-09-05): the six documents below are the platform machinery
-    # that used to be two Deny-shaped ValidatingPolicies. The owner's words (2026-09-02, ticket
-    # 75 Q5): something can be unable to run only because it does not fit the cage, never
-    # because it is deliberately denied. Nothing here refuses anything.
+    # ECO-SYSTEM TICKET 89 (2026-09-05, round 3): the eight documents below are the platform
+    # machinery that used to be two Deny-shaped ValidatingPolicies. The owner's words
+    # (2026-09-02, ticket 75 Q5): something can be unable to run only because it does not fit
+    # the cage, never because it is deliberately denied. Nothing here refuses anything.
     #
-    # Each has an offline twin under distribution/, and each twin's --selfcheck asserts that
-    # THIS template renders the same document it does. Nothing checked that before this ticket,
-    # and the two had already drifted: the twins carried the platform-machinery identity label
-    # and these copies did not.
+    # Each has an offline twin under distribution/, and each twin's --selfcheck asserts THIS
+    # template renders the same document it does.
     #
-    # 1. policy-version-orphan-guard   Audit. Reports a claim the array does not declare.
-    # 2. policy-version-orphan-cage    Mutating. Puts that pod on the bottom rung. NOT optional:
-    #    every SERVED cage-tier is scoped to its own version (only-this-policy-version), so an
-    #    orphan claim -- a version no served line carries -- matches no cage-tier at all. The
-    #    first cut of this ticket demoted the guard without this policy and left the pod running
-    #    with no tier, no limits, no hardening and no reach cage, selectable by any pod that
-    #    claimed a bogus version. Disjoint from the served cage-tier by construction: that
-    #    matches claims IN this array, this matches claims NOT in it.
-    # 3. governed-namespace-requires-claim  Mutating. An unclaimed pod in a governed namespace
-    #    goes to the bottom rung. Answers ADR-0022's addendum's reason without its refusal.
-    # 4. governed-namespace-unclaimed-report  Audit. Gives back the observation the Deny made.
-    # 5. cage-netpol-bottom-rung       Generating. The reach cage for both populations, which
-    #    the version-scoped cage-netpol cannot generate for.
-    # 6. cage-isolated (PriorityClass) UNSUFFIXED. Every served PriorityClass is version-suffixed
-    #    (cage-isolated-4-0-0), and these two cages exist for pods no version reaches, so there
-    #    is no suffix they could borrow. Without this object the Priority admission plugin
-    #    refuses every pod they cage -- the cage becoming a refusal by another name.
+    # THE ALLOW-LIST RANGES OVER CUT ELEMENTS ONLY (`<< if $v.commit >>`). An uncut declared
+    # version has no tag, so Flux delivers nothing and no cage-tier-<version> is installed
+    # anywhere; leaving it in the allow-list let a pod claiming it run caged by nothing, and
+    # selectably so by anyone reading this file. It falls into the orphan population until its
+    # tag is cut, and falls out again by itself when cut-release.yml fills the commit in.
+    #
+    # 1. policy-version-orphan-guard        Audit. Reports a claim no CUT element declares.
+    # 2. policy-version-orphan-cage         Mutating, CREATE. That pod onto the bottom rung.
+    # 3. policy-version-orphan-cage-holds   Mutating, UPDATE. The two LABELS only.
+    # 4. governed-namespace-requires-claim  Mutating, CREATE. An unclaimed pod in a governed
+    #    namespace onto the bottom rung.
+    # 5. governed-namespace-cage-holds      Mutating, UPDATE. The two LABELS only.
+    # 6. governed-namespace-unclaimed-report  Audit. The observation the Deny used to make.
+    # 7. cage-netpol-bottom-rung            Generating. Its OWN downstream names.
+    # 8. cage-isolated (PriorityClass)      UNSUFFIXED; every served class is version-suffixed.
+    #
+    # WHY 3 AND 5 EXIST, and why they are not just UPDATE on 2 and 4. The full body appends a
+    # waf-sidecar and rewrites priorityClassName and priority; on a RUNNING pod all three are
+    # immutable and the API server refuses the patch -- a refusal by another name. It would
+    # refuse the currency controller's recage_patch() in particular (ticket 91), which is an
+    # UPDATE stripping the claim and writing tier: isolated + caged: "true", and the only way a
+    # pod on a retired version reaches the bottom rung. UPDATE needs the labels re-asserted, not
+    # the cage re-applied.
     ---
     apiVersion: policies.kyverno.io/v1alpha1
     kind: ValidatingPolicy
@@ -210,7 +214,7 @@ spec:
         expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
       variables:
       - name: allowed
-        expression: "[<< range $i, $v := (index (inputs) "versions") >><< if $i >>, << end >>'<< $v.version >>'<< end >>]"
+        expression: "[<< range $i, $v := (index (inputs) "versions") >><< if $i >><< if $v.commit >>, << end >><< end >><< if $v.commit >>'<< $v.version >>'<< end >><< end >>]"
       - name: claimed
         expression: object.metadata.labels['policy-as-versioned.dev/policy-version']
       validations:
@@ -232,14 +236,11 @@ spec:
           - v1
           operations:
           - CREATE
-          - UPDATE
           resources:
           - pods
       matchConditions:
       - name: claims-an-undeclared-version
-        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' && !([<< range $i, $v := (index (inputs) "versions") >><< if $i >>, << end >>'<< $v.version >>'<< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
-      - name: create-or-already-caged
-        expression: request.operation == 'CREATE' || object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' && !([<< range $i, $v := (index (inputs) "versions") >><< if $i >><< if $v.commit >>, << end >><< end >><< if $v.commit >>'<< $v.version >>'<< end >><< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
       variables:
       - name: tier
         expression: '''isolated'''
@@ -262,6 +263,31 @@ spec:
     apiVersion: policies.kyverno.io/v1alpha1
     kind: MutatingPolicy
     metadata:
+      name: policy-version-orphan-cage-holds
+      labels:
+        policy-as-versioned.dev/policy: platform-machinery
+    spec:
+      matchConstraints:
+        resourceRules:
+        - apiGroups:
+          - ''
+          apiVersions:
+          - v1
+          operations:
+          - UPDATE
+          resources:
+          - pods
+      matchConditions:
+      - name: claims-an-undeclared-version
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' && !([<< range $i, $v := (index (inputs) "versions") >><< if $i >><< if $v.commit >>, << end >><< end >><< if $v.commit >>'<< $v.version >>'<< end >><< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
+      mutations:
+      - patchType: ApplyConfiguration
+        applyConfiguration:
+          expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": \"isolated\"\n  } }\n}"
+    ---
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: MutatingPolicy
+    metadata:
       name: governed-namespace-requires-claim
       labels:
         policy-as-versioned.dev/policy: platform-machinery
@@ -274,7 +300,6 @@ spec:
           - v1
           operations:
           - CREATE
-          - UPDATE
           resources:
           - pods
         namespaceSelector:
@@ -283,8 +308,6 @@ spec:
       matchConditions:
       - name: claims-no-policy-version
         expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == ''
-      - name: create-or-already-caged
-        expression: request.operation == 'CREATE' || object.metadata.?labels['posture.acme.io/caged'].orValue('') == 'true'
       variables:
       - name: tier
         expression: '''isolated'''
@@ -303,6 +326,34 @@ spec:
       - patchType: JSONPatch
         jsonPatch:
           expression: "variables.dial.harden == 'true'\n  ? object.spec.?initContainers.orValue([]).map(c,\n      JSONPatch{\n        op: \"add\",\n        path: \"/spec/initContainers/\" + string(object.spec.initContainers.indexOf(c)) + \"/securityContext/capabilities\",\n        value: {\"drop\": [\"ALL\"]}\n      })\n  : []"
+    ---
+    apiVersion: policies.kyverno.io/v1alpha1
+    kind: MutatingPolicy
+    metadata:
+      name: governed-namespace-cage-holds
+      labels:
+        policy-as-versioned.dev/policy: platform-machinery
+    spec:
+      matchConstraints:
+        resourceRules:
+        - apiGroups:
+          - ''
+          apiVersions:
+          - v1
+          operations:
+          - UPDATE
+          resources:
+          - pods
+        namespaceSelector:
+          matchLabels:
+            policy-as-versioned.dev/governed: 'true'
+      matchConditions:
+      - name: claims-no-policy-version
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == ''
+      mutations:
+      - patchType: ApplyConfiguration
+        applyConfiguration:
+          expression: "Object{\n  metadata: Object.metadata{ labels: {\n    \"posture.acme.io/caged\": \"true\",\n    \"posture.acme.io/tier\": \"isolated\"\n  } }\n}"
     ---
     apiVersion: policies.kyverno.io/v1alpha1
     kind: ValidatingPolicy
@@ -357,7 +408,7 @@ spec:
       - name: tier-restricts-reach
         expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline') != 'baseline'
       - name: claims-no-served-version
-        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '' || !([<< range $i, $v := (index (inputs) "versions") >><< if $i >>, << end >>'<< $v.version >>'<< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
+        expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '' || !([<< range $i, $v := (index (inputs) "versions") >><< if $i >><< if $v.commit >>, << end >><< end >><< if $v.commit >>'<< $v.version >>'<< end >><< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
       variables:
       - name: nsName
         expression: string(object.metadata.namespace)
@@ -368,7 +419,7 @@ spec:
       - name: reach
         expression: "{'isolated': {'ingress': dyn([]), 'egress': dyn([])},\n 'other':    {'ingress': dyn([dyn({\"from\": dyn([dyn({\"podSelector\": dyn({})})])})]),\n              'egress':  dyn([dyn({\n                \"to\": dyn([dyn({\"namespaceSelector\": dyn({\"matchLabels\": dyn({\"kubernetes.io/metadata.name\": dyn(\"kube-system\")})})})]),\n                \"ports\": dyn([dyn({\"protocol\": dyn(\"UDP\"), \"port\": dyn(53)})])})])}}"
       generate:
-      - expression: "generator.Apply(variables.nsName, variables.rungs.map(t, dyn({\n  \"apiVersion\": dyn(\"networking.k8s.io/v1\"),\n  \"kind\": dyn(\"NetworkPolicy\"),\n  \"metadata\": dyn({\"name\": dyn(\"cage-reach-\" + t), \"namespace\": dyn(variables.nsName),\n               \"labels\": dyn({\"app.kubernetes.io/managed-by\": dyn(\"kyverno\"),\n                              \"posture.acme.io/cage\": dyn(\"reach\"),\n                              \"posture.acme.io/tier\": dyn(t)})}),\n  \"spec\": dyn({\n    \"podSelector\": dyn({\"matchLabels\": dyn({\"posture.acme.io/caged\": dyn(\"true\"),\n                                            \"posture.acme.io/tier\": dyn(t)})}),\n    \"policyTypes\": dyn([\"Ingress\", \"Egress\"]),\n    \"ingress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].ingress),\n    \"egress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].egress)})})\n))"
+      - expression: "generator.Apply(variables.nsName, variables.rungs.map(t, dyn({\n  \"apiVersion\": dyn(\"networking.k8s.io/v1\"),\n  \"kind\": dyn(\"NetworkPolicy\"),\n  \"metadata\": dyn({\"name\": dyn(\"cage-reach-bottom-rung-\" + t), \"namespace\": dyn(variables.nsName),\n               \"labels\": dyn({\"app.kubernetes.io/managed-by\": dyn(\"kyverno\"),\n                              \"posture.acme.io/cage\": dyn(\"reach\"),\n                              \"posture.acme.io/tier\": dyn(t)})}),\n  \"spec\": dyn({\n    \"podSelector\": dyn({\"matchLabels\": dyn({\"posture.acme.io/caged\": dyn(\"true\"),\n                                            \"posture.acme.io/tier\": dyn(t)})}),\n    \"policyTypes\": dyn([\"Ingress\", \"Egress\"]),\n    \"ingress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].ingress),\n    \"egress\": dyn(variables.reach[t == 'isolated' ? 'isolated' : 'other'].egress)})})\n))"
     ---
     apiVersion: scheduling.k8s.io/v1
     kind: PriorityClass

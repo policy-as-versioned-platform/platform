@@ -67,6 +67,7 @@ declared-version set. That is the whole point of the orphan-guard.
 Usage:
     render-orphan-guard.py [versions.yaml]        # print the Audit ValidatingPolicy
     render-orphan-guard.py --cage [versions.yaml] # print the bottom-rung MutatingPolicy
+    render-orphan-guard.py --hold [versions.yaml] # print the UPDATE labels-only policy
     render-orphan-guard.py --retire 2.0.0 [file]  # simulate retiring a version
     render-orphan-guard.py --selfcheck            # runnable asserts
 """
@@ -108,9 +109,40 @@ def versions(path: Path, retire: str | None = None) -> list[str]:
     return [v["version"] for v in elements(path) if v["version"] != retire]
 
 
+def partition(els: list[dict]) -> tuple[list[str], list[str]]:
+    """(cut, uncut) by the `commit` field, exactly as verify-declared-versions-admit.sh
+    partitions it and for exactly the same reason: `cut-release.yml` fills `commit` in when it
+    cuts the signed tag, so an element without one is an UNCUT TAIL -- no tag exists, Flux has
+    nothing to deliver, and NO `cage-tier-<version>` is installed anywhere."""
+    return ([e["version"] for e in els if e.get("commit")],
+            [e["version"] for e in els if not e.get("commit")])
+
+
+def served_versions(path: Path, retire: str | None = None) -> list[str]:
+    """The versions a pod can actually be CAGED under: declared AND cut.
+
+    This is what the orphan pair's allow-list ranges over, and the distinction is not
+    cosmetic. `versions()` returns everything the array declares, uncut tails included. Ranging
+    the allow-list over that put `5.0.0` -- declared, no `commit`, no tag, no served
+    `cage-tier-5-0-0` anywhere -- inside the allow-list, so the orphan cage SKIPPED a pod
+    claiming it and the report did not report it, while no versioned cage matched it either.
+    That pod ran uncaged, and it was selectable by anyone who read `versions.yaml`: the round-1
+    defect's exact shape, found again by the review of 2026-09-05.
+
+    Ranging over CUT elements only puts an uncut declared version in the orphan population, so
+    a pod claiming it is caged on the bottom rung until its tag exists — and falls out of that
+    population by itself on the day `cut-release.yml` fills the commit in."""
+    els = [e for e in elements(path) if e["version"] != retire]
+    cut, _ = partition(els)
+    return cut
+
+
 #: Not `Deny`, and not a knob (eco-system ticket 89). See the module docstring: an orphan claim
-#: is admitted, caged by `cage-tier` at its Namespace's tier, and the escape it makes from every
-#: versioned rule is a priced hole. This report is the observation that price rests on.
+#: is admitted and caged on the BOTTOM RUNG by `policy-version-orphan-cage`, because no served
+#: `cage-tier` matches it -- every one is scoped to its own version. The escape it makes from
+#: every versioned rule is a priced hole, and this report is the observation that price rests on.
+#: (An earlier draft of this line said `cage-tier` caged it at its Namespace's tier. That was
+#: the round-1 premise the review overturned; it is false, and the docstring above says why.)
 ACTION = "Audit"
 
 
@@ -165,6 +197,14 @@ def _allow_expr(vs: list[str]) -> str:
     return "[" + ", ".join(f"'{v}'" for v in vs) + "]"
 
 
+def _undeclared_condition(allowed: list[str]) -> dict:
+    """Claims a version, and not one this array declares. The one condition both halves share."""
+    return {"name": "claims-an-undeclared-version",
+            "expression": (f"object.metadata.?labels['{LABEL}'].orValue('') != '' && "
+                           f"!({_allow_expr(allowed)}.exists(v, "
+                           f"v == object.metadata.labels['{LABEL}']))")}
+
+
 def orphan_cage(allowed: list[str], spec: dict | None = None) -> dict:
     """A MutatingPolicy that puts a pod claiming an undeclared version on the bottom rung.
 
@@ -172,26 +212,33 @@ def orphan_cage(allowed: list[str], spec: dict | None = None) -> dict:
     same array (`only-this-policy-version`), this matches only claims NOT in it. So the two
     mutations never see the same pod and never contend for a field.
 
-    `UPDATE` is matched, gated on the pod already carrying the caged marker -- the same shape
-    and the same two reasons as the governed-namespace cage: a pod this policy caged has its
-    sidecar resident so the mutation is byte-identical, while a pod it never caged is left
-    alone, and without `UPDATE` a caged pod could relabel its way out of the reach cage."""
+    `CREATE` only, for the same reason as the governed-namespace cage: on an `UPDATE` this body
+    appends a `waf-sidecar` to a running pod's immutable container list and rewrites
+    `priorityClassName` and `priority`, which the API server refuses. `orphan_cage_hold()`
+    takes `UPDATE` and re-asserts the two labels and nothing else."""
     if not allowed:
         raise SystemExit("refusing to render an orphan cage with an empty allow-list")
     return cb.bottom_rung_policy(
         CAGE_NAME,
         [{"apiGroups": [""], "apiVersions": ["v1"],
-          "operations": ["CREATE", "UPDATE"], "resources": ["pods"]}],
-        [
-            {"name": "claims-an-undeclared-version",
-             "expression": (f"object.metadata.?labels['{LABEL}'].orValue('') != '' && "
-                            f"!({_allow_expr(allowed)}.exists(v, "
-                            f"v == object.metadata.labels['{LABEL}']))")},
-            {"name": "create-or-already-caged",
-             "expression": (f"request.operation == 'CREATE' || "
-                            f"object.metadata.?labels['{cb.CAGED_LABEL}'].orValue('') == 'true'")},
-        ],
+          "operations": ["CREATE"], "resources": ["pods"]}],
+        [_undeclared_condition(allowed)],
         spec=spec,
+    )
+
+
+def orphan_cage_hold(allowed: list[str]) -> dict:
+    """`UPDATE`: re-assert the bottom rung's two labels on an orphan-claiming pod, nothing else.
+
+    Without it a caged orphan pod could `kubectl label` its way out of `cage-reach-isolated`.
+    With the full body on `UPDATE` it could not be patched at all. See `cage_body.hold_policy`."""
+    if not allowed:
+        raise SystemExit("refusing to render an orphan hold with an empty allow-list")
+    return cb.hold_policy(
+        CAGE_NAME + "-holds",
+        [{"apiGroups": [""], "apiVersions": ["v1"],
+          "operations": ["UPDATE"], "resources": ["pods"]}],
+        [_undeclared_condition(allowed)],
     )
 
 
@@ -200,15 +247,18 @@ def selfcheck() -> None:
     # hardcoded literal -- the array grows and shrinks over real releases
     # (cs-15 replaced 1.0.0/2.0.0 with 2.0.0/3.0.0), and this selfcheck must
     # not need editing on every one.
-    vs = versions(HERE / "versions.yaml")
+    declared = versions(HERE / "versions.yaml")
+    vs = served_versions(HERE / "versions.yaml")
     # >= 1, not >= 2: on 2026-08-29 the whole 2.x/3.x fan-out was retired and the
     # array legitimately declares one line. An array with NO element would render
     # an empty allow-list, which orphan_guard() refuses outright.
-    assert len(vs) >= 1, f"the version array declares nothing, so nothing can run: {vs}"
+    assert len(declared) >= 1, f"the version array declares nothing: {declared}"
+    assert vs, ("the array declares versions but none is CUT, so nothing is served and "
+                "the allow-list would be empty")
     # elements() carries the raw dicts (commit field and all) versions()
     # itself is built from -- one parse point, not two.
     els = elements(HERE / "versions.yaml")
-    assert [e["version"] for e in els] == vs, els
+    assert [e["version"] for e in els] == declared, els
     # Uncut elements are a TAIL, never a hole. An element is added when the
     # policy body changes and cut-release.yml fills its commit in when it
     # cuts the signed tag (the ResourceSet template already makes `commit`
@@ -270,6 +320,11 @@ def selfcheck() -> None:
         f"only {checked} of {len(vs)} declared versions have a served, version-scoped "
         f"cage-tier; a declared version without one is a population this pair does not cover")
     cb.assert_priorityclass_is_rendered(oc)
+    assert oc["spec"]["matchConstraints"]["resourceRules"][0]["operations"] == ["CREATE"], oc["spec"]
+    och = orphan_cage_hold(vs)
+    cb.assert_labels_only(och)
+    assert och["spec"]["matchConditions"] == oc["spec"]["matchConditions"], \
+        "the hold and the cage must cover the same population"
     # The dial table is cage-tier's own, plus the initContainer extension and nothing else.
     cage_spec = cb.cage_tier_spec()
     assert oc["spec"]["mutations"][:len(cage_spec["mutations"])] == cage_spec["mutations"], \
@@ -283,7 +338,7 @@ def selfcheck() -> None:
         raise AssertionError("an orphan cage rendered from an empty allow-list")
     # retiring a version drops it from the allow-list
     retired = vs[-1]
-    remaining = versions(HERE / "versions.yaml", retire=retired)
+    remaining = served_versions(HERE / "versions.yaml", retire=retired)
     assert remaining == [v for v in vs if v != retired], remaining
     if remaining:
         assert orphan_guard(remaining)["spec"]["variables"][0]["expression"] == _allow_expr(remaining)
@@ -304,14 +359,25 @@ def selfcheck() -> None:
     # at, per that release's own reasoning) -- extra dirs the array no
     # longer names are harmless and honest, only a MISSING one is a bug.
     dirs = {p.name[1:] for p in (HERE / "policies").glob("v*") if p.is_dir()}
-    assert set(vs) <= dirs, f"array {vs} names a version with no policies/ dir, got dirs {sorted(dirs)}"
+    assert set(declared) <= dirs, \
+        f"array {declared} names a version with no policies/ dir, got dirs {sorted(dirs)}"
+    # R3 (review, 2026-09-05): an UNCUT declared version has no tag, so no cage-tier-<v> is
+    # installed anywhere. If it sat in the allow-list, the orphan cage would skip a pod claiming
+    # it and the report would not report it, while no versioned cage matched it either -- a pod
+    # running uncaged, selectable by anyone who read versions.yaml. It must be in the ORPHAN
+    # population instead, and this is what says so.
+    _, uncut = partition(elements(HERE / "versions.yaml"))
+    for u in uncut:
+        assert u not in vs, (u, vs)
+        assert f"'{u}'" not in oc["spec"]["matchConditions"][0]["expression"], \
+            f"uncut {u} is in the orphan cage's allow-list, so a pod claiming it is caged by nothing"
     # The LIVE ResourceSet template and this offline twin render the SAME document. Nothing
     # asserted that until eco-system ticket 89, and they had already drifted: the twin carried
     # the platform-machinery identity label and the template's copy did not.
     sys.path.insert(0, str(HERE))
     from resourceset import guard_docs  # noqa: E402
     live = guard_docs(HERE / "versions.yaml", _allow_expr(vs))
-    for want in (og, oc):
+    for want in (og, oc, och):
         n = want["metadata"]["name"]
         assert n in live, sorted(live)
         assert live[n] == want, f"versions.yaml's {n} has drifted from this twin"
@@ -327,14 +393,18 @@ def main(argv: list[str]) -> int:
     cage = False
     # `--cage` and `--retire` in either order: verify-retirement.sh asks for the cage rendered
     # from a SHRUNK array, which is the whole point of retiring a version.
-    while args and args[0] in ("--cage", "--retire"):
+    hold = False
+    while args and args[0] in ("--cage", "--hold", "--retire"):
         if args[0] == "--cage":
             cage, args = True, args[1:]
+        elif args[0] == "--hold":
+            hold, args = True, args[1:]
         else:
             retire, args = args[1], args[2:]
     path = Path(args[0]) if args else HERE / "versions.yaml"
-    vs = versions(path, retire)
-    print(yaml.safe_dump(orphan_cage(vs) if cage else orphan_guard(vs), sort_keys=False))
+    vs = served_versions(path, retire)
+    doc = orphan_cage_hold(vs) if hold else (orphan_cage(vs) if cage else orphan_guard(vs))
+    print(yaml.safe_dump(doc, sort_keys=False))
     return 0
 
 

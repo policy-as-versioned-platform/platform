@@ -48,26 +48,30 @@ There is one dial table (`graded/cage.py` TIERS) and one CEL expansion of it
 that expansion rather than writing a third copy, pins `tier` to the bottom rung, and extends
 the same hardening to `initContainers`, which `cage-tier` does not touch.
 
-## `CREATE`, and `UPDATE` only for a pod this policy already caged
+## `CREATE` for the cage; `UPDATE` for the LABELS, in a separate policy
 
 ADR-0014 excluded `UPDATE` because the Deny would have refused the currency controller's
-de-posture patch. That reason is void: a mutation refuses nothing. Two facts replace it.
+re-cage patch. The refusal is gone, but the exclusion stands, and ticket 91 restated why in
+this file's own words: `recage_patch()` is an `UPDATE` that strips the claim and writes
+`tier: isolated` + `caged: "true"` in one merge patch, and it is the only way a running pod
+admitted under a since-retired version reaches the bottom rung. This guard must not refuse it.
 
-  * A mutation that is not byte-identical on `UPDATE` is a refusal by another name. On the
-    de-posture `UPDATE` -- which strips the claim from a pod `cage-tier` had been caging --
-    this policy would begin matching a running pod and inject a `waf-sidecar` into an
-    immutable container list, and the API server would reject the patch. That is the failure
-    ticket 26 observed live on 2026-08-28.
-  * `CREATE` alone leaves the caged pod permanently relabelable. Nothing would match it on
-    `UPDATE`, so `kubectl label --overwrite posture.acme.io/tier=baseline` would drop it out
-    of `cage-reach-isolated`'s podSelector for good. `cage-netpol`'s own comment says a pod
-    cannot buy itself looser reach by forging the label -- true of `cage-tier`'s population
-    only because `cage-tier` matches `UPDATE`.
+Round 2 of ticket 89 put `UPDATE` on THIS policy, gated on the pod already carrying
+`posture.acme.io/caged: "true"`, in the belief that the marker meant "caged by this policy". It
+does not -- `cage-tier` writes it for its whole population at every rung -- so the gate matched
+a pod caged at `baseline`, and on `UPDATE` the full body appends a `waf-sidecar` to an
+immutable container list and rewrites `priorityClassName` and `priority`. The API server
+refuses that. It is a refusal by another name, in the ticket about refusals by another name,
+and it would have refused `recage_patch()` exactly, whose patched object carries a stripped
+claim and both those labels.
 
-So `UPDATE` is matched, and gated on the pod ALREADY carrying `posture.acme.io/caged: "true"`.
-A pod this policy caged has its sidecar resident, so the mutation is byte-identical and the
-patch is admissible; a pod being de-postured is not caged by this policy at that moment and is
-not matched, so the de-posture patch stays legal. Both reasons are satisfied at once.
+So the two jobs are split. This policy keeps `CREATE` and the full bottom-rung body.
+`governed_namespace_hold()` beside it takes `UPDATE` and re-asserts the two LABELS and nothing
+else -- which is all `UPDATE` was ever wanted for: `CREATE` alone leaves a caged pod
+permanently relabelable, and `kubectl label --overwrite posture.acme.io/tier=baseline` would
+drop it out of `cage-reach-isolated`'s podSelector for good. Two label writes restore that,
+append nothing, rewrite no immutable field, and are byte-identical on top of `recage_patch()`,
+which writes the same two values.
 
 ## What is still not caged
 
@@ -85,6 +89,7 @@ with the selector stripped from a throwaway copy and proves the scoping structur
 Usage:
     render-governed-namespace-guard.py             # print the MutatingPolicy
     render-governed-namespace-guard.py --report    # print the paired Audit ValidatingPolicy
+    render-governed-namespace-guard.py --hold      # print the UPDATE labels-only policy
     render-governed-namespace-guard.py --selfcheck
 """
 from __future__ import annotations
@@ -110,13 +115,8 @@ _UNCLAIMED = {
     "name": "claims-no-policy-version",
     "expression": f"object.metadata.?labels['{CLAIM_LABEL}'].orValue('') == ''",
 }
-#: `UPDATE` only for a pod this policy already caged -- see the module docstring.
-_CREATE_OR_CAGED = {
-    "name": "create-or-already-caged",
-    "expression": (f"request.operation == 'CREATE' || "
-                   f"object.metadata.?labels['{cb.CAGED_LABEL}'].orValue('') == 'true'"),
-}
 _NS_SELECTOR = {"matchLabels": {GOVERNED_LABEL: "true"}}
+HOLD_NAME = "governed-namespace-cage-holds"
 
 
 def governed_namespace_guard(spec: dict | None = None) -> dict:
@@ -124,18 +124,37 @@ def governed_namespace_guard(spec: dict | None = None) -> dict:
     return cb.bottom_rung_policy(
         NAME,
         [{"apiGroups": [""], "apiVersions": ["v1"],
-          "operations": ["CREATE", "UPDATE"], "resources": ["pods"]}],
-        [dict(_UNCLAIMED), dict(_CREATE_OR_CAGED)],
+          "operations": ["CREATE"], "resources": ["pods"]}],
+        [dict(_UNCLAIMED)],
         namespace_selector=dict(_NS_SELECTOR),
         spec=spec,
+    )
+
+
+def governed_namespace_hold() -> dict:
+    """`UPDATE`: re-assert the bottom rung's two labels on an unclaimed pod, and nothing else.
+
+    Same population as the cage, same rung, no container and no immutable field touched -- so
+    the currency controller's `recage_patch()` stays admissible. See `cage_body.hold_policy`."""
+    return cb.hold_policy(
+        HOLD_NAME,
+        [{"apiGroups": [""], "apiVersions": ["v1"],
+          "operations": ["UPDATE"], "resources": ["pods"]}],
+        [dict(_UNCLAIMED)],
+        namespace_selector=dict(_NS_SELECTOR),
     )
 
 
 def governed_namespace_report() -> dict:
     """The paired `Audit` ValidatingPolicy: the unclaimed population, observed, never refused.
 
-    `CREATE` only. The report exists to say a pod arrived unclaimed; re-reporting it on every
-    subsequent `UPDATE` would say nothing new, and the mutation above is what keeps it caged."""
+    `CREATE` only, deliberately, while the cage pair spans `CREATE` (the body) and `UPDATE` (the
+    labels-only hold). The three are not meant to observe the same events: the report's subject
+    is ARRIVAL -- an unclaimed pod entered a governed namespace -- and that happens once. An
+    `UPDATE`-scoped report would fire on every `kubectl label`, on every controller resync, and
+    loudest of all on the currency controller's `recage_patch()`, which is the estate working
+    correctly. That is noise about a fact already recorded, and PolicyReports are what the
+    priced hole is computed from, so repeating one event would be double-counting it."""
     return {
         "apiVersion": "policies.kyverno.io/v1alpha1",
         "kind": "ValidatingPolicy",
@@ -173,16 +192,22 @@ def selfcheck() -> None:
     assert "validations" not in doc["spec"], doc["spec"]
     assert "Deny" not in yaml.safe_dump(doc), "a refusal survived in the rendered body"
     rule = doc["spec"]["matchConstraints"]["resourceRules"][0]
-    assert rule["operations"] == ["CREATE", "UPDATE"], rule
+    # CREATE only, and it must STAY that way: on an UPDATE this body appends a waf-sidecar to a
+    # running pod's immutable container list and rewrites priorityClassName and priority, which
+    # the API server refuses -- and which would refuse ticket 91's recage_patch() in particular.
+    assert rule["operations"] == ["CREATE"], rule
     assert rule["resources"] == ["pods"], rule
     assert doc["spec"]["matchConstraints"]["namespaceSelector"]["matchLabels"] == \
         {GOVERNED_LABEL: "true"}, doc["spec"]["matchConstraints"]
     names = [c["name"] for c in doc["spec"]["matchConditions"]]
-    assert names == ["claims-no-policy-version", "create-or-already-caged"], names
-    # UPDATE is gated on the caged marker: a de-posture patch (an UPDATE on a pod this policy
-    # never caged) must not reach a mutation that injects a sidecar into a running pod.
-    gate = doc["spec"]["matchConditions"][1]["expression"]
-    assert "request.operation == 'CREATE'" in gate and cb.CAGED_LABEL in gate, gate
+    assert names == ["claims-no-policy-version"], names
+    # ...and the UPDATE half is the labels-only hold, over the SAME population.
+    hold = governed_namespace_hold()
+    cb.assert_labels_only(hold)
+    assert hold["spec"]["matchConditions"] == doc["spec"]["matchConditions"], \
+        "the hold and the cage must cover the same population"
+    assert hold["spec"]["matchConstraints"]["namespaceSelector"] == \
+        doc["spec"]["matchConstraints"]["namespaceSelector"], hold["spec"]["matchConstraints"]
     # The rung is the bottom one, pinned to a literal so no Namespace label can move it.
     tier = next(v for v in doc["spec"]["variables"] if v["name"] == "tier")
     assert tier["expression"] == f"'{BOTTOM_RUNG}'", tier
@@ -214,14 +239,16 @@ def selfcheck() -> None:
     # carried the platform-machinery identity label and the template's copy did not.
     from resourceset import guard_docs  # noqa: E402
     live = guard_docs(HERE / "versions.yaml", "unused-here")
-    for want in (doc, report):
+    for want in (doc, report, hold):
         n = want["metadata"]["name"]
         assert n in live, sorted(live)
         assert live[n] == want, f"versions.yaml's {n} has drifted from this twin"
     print("selfcheck ok: governed-namespace-requires-claim is platform-machinery, a "
           "MutatingPolicy with no refusal in it, scoped to governed:true namespaces, CREATE plus "
           "UPDATE-when-already-caged, and it cages an unclaimed pod on the bottom rung using "
-          "cage-tier's own mutation body extended to initContainers; the paired report is Audit "
+          "cage-tier's own mutation body extended to initContainers; the paired hold policy takes "
+          "UPDATE and writes the two labels and nothing else, so the currency controller's "
+          "recage patch stays admissible; the paired report is Audit "
           "and names the cage; versions.yaml renders both identically")
 
 
@@ -231,6 +258,9 @@ def main(argv: list[str]) -> int:
         return 0
     if len(argv) > 1 and argv[1] == "--report":
         print(yaml.safe_dump(governed_namespace_report(), sort_keys=False))
+        return 0
+    if len(argv) > 1 and argv[1] == "--hold":
+        print(yaml.safe_dump(governed_namespace_hold(), sort_keys=False))
         return 0
     print(yaml.safe_dump(governed_namespace_guard(), sort_keys=False))
     return 0

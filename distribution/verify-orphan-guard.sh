@@ -49,7 +49,7 @@ spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'ren
 og = importlib.util.module_from_spec(spec)
 sys.modules['render_orphan_guard'] = og
 spec.loader.exec_module(og)
-print(' '.join(og.versions(here / 'versions.yaml')))
+print(' '.join(og.served_versions(here / 'versions.yaml')))
 ")"
 declared_version="$(python3 -c "
 import importlib.util, sys
@@ -59,7 +59,7 @@ spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'ren
 og = importlib.util.module_from_spec(spec)
 sys.modules['render_orphan_guard'] = og
 spec.loader.exec_module(og)
-print(og.versions(here / 'versions.yaml')[0])
+print(og.served_versions(here / 'versions.yaml')[0])
 ")"
 say "1. render the pair from the version array (declares $declared_version, ...)"
 python3 "$HERE/render-orphan-guard.py" --selfcheck
