@@ -204,8 +204,11 @@ def selfcheck() -> None:
     # ...and the UPDATE half is the labels-only hold, over the SAME population.
     hold = governed_namespace_hold()
     cb.assert_labels_only(hold)
-    assert hold["spec"]["matchConditions"] == doc["spec"]["matchConditions"], \
+    assert hold["spec"]["matchConditions"][:-1] == doc["spec"]["matchConditions"], \
         "the hold and the cage must cover the same population"
+    # ...plus the one condition that makes the hold a RE-assertion (review S2).
+    assert hold["spec"]["matchConditions"][-1]["name"] == "was-on-the-bottom-rung", \
+        hold["spec"]["matchConditions"]
     assert hold["spec"]["matchConstraints"]["namespaceSelector"] == \
         doc["spec"]["matchConstraints"]["namespaceSelector"], hold["spec"]["matchConstraints"]
     # The rung is the bottom one, pinned to a literal so no Namespace label can move it.

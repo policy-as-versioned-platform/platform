@@ -37,7 +37,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
-say "1. render-governed-namespace-guard.py --selfcheck (structural: a MutatingPolicy with no refusal in it, CREATE plus UPDATE-when-already-caged, namespaceSelector, the bottom rung, cage-tier own body)"
+say "1. render-governed-namespace-guard.py --selfcheck (structural: a MutatingPolicy with no refusal in it, CREATE-only, namespaceSelector, the bottom rung, cage-tier's own body; the UPDATE half is the labels-only hold, checked in step 5)"
 python3 "$HERE/render-governed-namespace-guard.py" --selfcheck
 
 say "2. the mutation itself, functionally, namespaceSelector stripped (the kyverno CLI cannot evaluate it offline -- see this script's docstring)"
@@ -194,7 +194,12 @@ for d in (gg.governed_namespace_guard(), og.orphan_cage(vs)):
     assert ops(d) == ["CREATE"], (d["metadata"]["name"], ops(d))
 for d in (gg.governed_namespace_hold(), og.orphan_cage_hold(vs)):
     assert ops(d) == ["UPDATE"], (d["metadata"]["name"], ops(d))
-print("    the two full-body cages are CREATE-only; only the two labels-only holds see an UPDATE")
+for d in (gg.governed_namespace_hold(), og.orphan_cage_hold(vs)):
+    gate = d["spec"]["matchConditions"][-1]
+    assert gate["name"] == "was-on-the-bottom-rung", gate
+    assert "oldObject" in gate["expression"] and "isolated" in gate["expression"], gate
+print("    the two full-body cages are CREATE-only; only the two labels-only holds see an UPDATE, "
+      "and each RE-asserts -- gated on oldObject already carrying the bottom rung")
 OPS
 
 # The object recage_patch() leaves behind: a pod cage-tier admitted at BASELINE, then patched --
@@ -224,6 +229,13 @@ vs = og.served_versions(here / "versions.yaml")
 holds = []
 for d in (gg.governed_namespace_hold(), og.orphan_cage_hold(vs)):
     d["spec"]["matchConstraints"].pop("namespaceSelector", None)   # CLI-untestable half
+    # ...and the oldObject gate, for the same reason: `kyverno apply` has no UPDATE, so it
+    # cannot populate oldObject and the gate would be false for every resource -- the whole
+    # step would then pass because NOTHING applied, which proves nothing about the mutation.
+    # The gate's presence and shape are asserted structurally in the renderer's selfcheck
+    # (assert_labels_only); what is measured here is what the mutation WRITES once it matches.
+    d["spec"]["matchConditions"] = [c for c in d["spec"]["matchConditions"]
+                                    if c["name"] != "was-on-the-bottom-rung"]
     holds.append(d)
 yaml.safe_dump_all(holds, open(sys.argv[3], "w"), sort_keys=False)
 RC

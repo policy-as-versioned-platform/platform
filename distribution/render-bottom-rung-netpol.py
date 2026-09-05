@@ -79,6 +79,13 @@ def bottom_rung_netpol(allowed: list[str], spec: dict | None = None) -> dict:
     assert '"cage-reach-" + t' in gen, gen
     src = dict(src, generate=[{"expression": gen.replace('"cage-reach-" + t',
                                                          '"cage-reach-bottom-rung-" + t')}])
+    # S5 (review, 2026-09-05): only the BOTTOM RUNG. cage-netpol generates all three restricting
+    # rungs up front so a tier move needs no create and no delete -- but this policy's population
+    # is pinned to `isolated` by both cages, so the restricted and quarantine objects it also
+    # emitted were byte-identical duplicates of the served generator's, two more downstream names
+    # with two owners for no benefit. One rung, one object per namespace.
+    src["variables"] = [dict(v, expression=f"['{cb.BOTTOM_RUNG}']") if v["name"] == "rungs" else v
+                        for v in src["variables"]]
     src["matchConditions"] = list(src.get("matchConditions", [])) + [{
         "name": "claims-no-served-version",
         "expression": (f"object.metadata.?labels['{LABEL}'].orValue('') == '' || "
@@ -122,8 +129,13 @@ def selfcheck() -> None:
     assert "cage-reach-bottom-rung-" in doc["spec"]["generate"][0]["expression"], doc["spec"]
     assert '"cage-reach-" + t' not in doc["spec"]["generate"][0]["expression"], \
         "the bottom-rung generator writes the served generator's downstream names"
-    assert doc["spec"]["variables"] == src["variables"], \
-        "the reach table drifted from graded/policies/cage-netpol.yaml"
+    # Every variable is cage-netpol's own except `rungs`, which is pinned to the bottom rung.
+    for want, got in zip(src["variables"], doc["spec"]["variables"], strict=True):
+        if want["name"] == "rungs":
+            assert got["expression"] == f"['{cb.BOTTOM_RUNG}']", got
+        else:
+            assert got == want, ("the reach table drifted from "
+                                 "graded/policies/cage-netpol.yaml", want, got)
     assert _allow_expr(vs) in doc["spec"]["matchConditions"][-1]["expression"], doc["spec"]
     # The SERVED generator really is version-scoped -- the fact this policy exists for. Read
     # off the real served copy, never the authoring one graded/up.sh says it never applies.

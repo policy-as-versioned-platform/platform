@@ -323,8 +323,10 @@ def selfcheck() -> None:
     assert oc["spec"]["matchConstraints"]["resourceRules"][0]["operations"] == ["CREATE"], oc["spec"]
     och = orphan_cage_hold(vs)
     cb.assert_labels_only(och)
-    assert och["spec"]["matchConditions"] == oc["spec"]["matchConditions"], \
+    assert och["spec"]["matchConditions"][:-1] == oc["spec"]["matchConditions"], \
         "the hold and the cage must cover the same population"
+    assert och["spec"]["matchConditions"][-1]["name"] == "was-on-the-bottom-rung", \
+        och["spec"]["matchConditions"]
     # The dial table is cage-tier's own, plus the initContainer extension and nothing else.
     cage_spec = cb.cage_tier_spec()
     assert oc["spec"]["mutations"][:len(cage_spec["mutations"])] == cage_spec["mutations"], \

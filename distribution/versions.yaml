@@ -157,7 +157,7 @@ spec:
       wait: true
     << end >>
     ---
-    # ECO-SYSTEM TICKET 89 (2026-09-05, round 3): the eight documents below are the platform
+    # ECO-SYSTEM TICKET 89 (2026-09-05, round 4): the eight documents below are the platform
     # machinery that used to be two Deny-shaped ValidatingPolicies. The owner's words
     # (2026-09-02, ticket 75 Q5): something can be unable to run only because it does not fit
     # the cage, never because it is deliberately denied. Nothing here refuses anything.
@@ -178,7 +178,7 @@ spec:
     #    namespace onto the bottom rung.
     # 5. governed-namespace-cage-holds      Mutating, UPDATE. The two LABELS only.
     # 6. governed-namespace-unclaimed-report  Audit. The observation the Deny used to make.
-    # 7. cage-netpol-bottom-rung            Generating. Its OWN downstream names.
+    # 7. cage-netpol-bottom-rung            Generating. Its OWN downstream name, bottom rung only.
     # 8. cage-isolated (PriorityClass)      UNSUFFIXED; every served class is version-suffixed.
     #
     # WHY 3 AND 5 EXIST, and why they are not just UPDATE on 2 and 4. The full body appends a
@@ -187,7 +187,9 @@ spec:
     # refuse the currency controller's recage_patch() in particular (ticket 91), which is an
     # UPDATE stripping the claim and writing tier: isolated + caged: "true", and the only way a
     # pod on a retired version reaches the bottom rung. UPDATE needs the labels re-asserted, not
-    # the cage re-applied.
+    # the cage re-applied -- and RE-asserted is exact: both holds gate on oldObject already
+    # carrying the bottom rung, so a relabel is caught (the incoming object carries the forged
+    # value) while a pod no cage ever caged is never given a label promising dials it lacks.
     ---
     apiVersion: policies.kyverno.io/v1alpha1
     kind: ValidatingPolicy
@@ -280,6 +282,8 @@ spec:
       matchConditions:
       - name: claims-an-undeclared-version
         expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' && !([<< range $i, $v := (index (inputs) "versions") >><< if $i >><< if $v.commit >>, << end >><< end >><< if $v.commit >>'<< $v.version >>'<< end >><< end >>].exists(v, v == object.metadata.labels['policy-as-versioned.dev/policy-version']))
+      - name: was-on-the-bottom-rung
+        expression: oldObject.?metadata.?labels['posture.acme.io/tier'].orValue('') == 'isolated'
       mutations:
       - patchType: ApplyConfiguration
         applyConfiguration:
@@ -350,6 +354,8 @@ spec:
       matchConditions:
       - name: claims-no-policy-version
         expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == ''
+      - name: was-on-the-bottom-rung
+        expression: oldObject.?metadata.?labels['posture.acme.io/tier'].orValue('') == 'isolated'
       mutations:
       - patchType: ApplyConfiguration
         applyConfiguration:
@@ -415,7 +421,7 @@ spec:
       - name: tier
         expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')
       - name: rungs
-        expression: '[''restricted'', ''quarantine'', ''isolated'']'
+        expression: '[''isolated'']'
       - name: reach
         expression: "{'isolated': {'ingress': dyn([]), 'egress': dyn([])},\n 'other':    {'ingress': dyn([dyn({\"from\": dyn([dyn({\"podSelector\": dyn({})})])})]),\n              'egress':  dyn([dyn({\n                \"to\": dyn([dyn({\"namespaceSelector\": dyn({\"matchLabels\": dyn({\"kubernetes.io/metadata.name\": dyn(\"kube-system\")})})})]),\n                \"ports\": dyn([dyn({\"protocol\": dyn(\"UDP\"), \"port\": dyn(53)})])})])}}"
       generate:

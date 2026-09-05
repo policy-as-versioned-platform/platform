@@ -54,8 +54,16 @@ spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'ren
 og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
 print(len(og.served_versions(here / 'versions.yaml')))
 ")"
+ALL_DECLARED="$(python3 -c "
+import importlib.util
+from pathlib import Path
+here = Path('$HERE')
+spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
+og = importlib.util.module_from_spec(spec); spec.loader.exec_module(og)
+print(len(og.versions(here / 'versions.yaml')))
+")"
 if [ "$DECLARED" -lt 2 ]; then
-  echo "SKIP: distribution/versions.yaml declares one version ($RETIRE), so a retirement would leave an empty allow-list, which render-orphan-guard.py refuses to render; the beat needs a second declared version to show one retiring while the other keeps running"
+  echo "SKIP: distribution/versions.yaml declares $ALL_DECLARED version(s) of which one CUT version ($RETIRE) -- an uncut element has no tag and no served cage, so the orphan pair allow-lists CUT elements only (ticket 89 R3) and retiring the only cut one would leave an empty allow-list, which render-orphan-guard.py refuses to render. It lifts when cut-release.yml cuts a SECOND tag, not when a second version is declared"
   exit 3
 fi
 
