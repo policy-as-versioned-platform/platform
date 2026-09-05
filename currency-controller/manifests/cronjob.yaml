@@ -1,13 +1,32 @@
-# The currency controller as a CronJob: one bounded reconcile pass per minute.
-# A CronJob (not a watch loop) is deliberate — it runs to completion and exits,
+# The currency controller as a CronJob: one bounded re-cage pass per minute.
+# A CronJob (not a watch loop) is deliberate -- it runs to completion and exits,
 # so nothing blocks and the "bounded interval" is literally the schedule. The
 # script is currency.py, mounted from the `currency-controller-src` ConfigMap
 # (created by up.sh with --from-file=currency.py, so there is ONE source of the
-# code, no copy pasted into YAML). Pure stdlib ⇒ a bare python image, no pip.
+# code, no copy pasted into YAML). Pure stdlib, so a bare python image, no pip.
 #
-# interval budget: schedule 1m + spire-controller-manager gcInterval ~10s + one
-# jwtTtl (5m) ⇒ a retired pod is out of currency (SVID stops renewing) within
-# ~6m of the array edit. Shorten the schedule for a snappier stage demo.
+# THE SCHEDULE, UNDER ADR-0024's CLOCK RULES (eco-system ticket 91 item 2).
+# ADR-0024's clocks are REPOSITORY clocks: they run daily because the feeds and
+# pins they read move at most daily, and each org picks its own UTC hour so no
+# cross-org ordering is promised. This is not one of those. It is a cluster
+# reconciler, and its period IS the estate's exposure window: the time a pod may
+# keep running at its pre-retirement rung after the platform retires the version
+# that admitted it. One minute is that window, declared here and nowhere else.
+#
+# What ADR-0024 does bind, and what this obeys:
+#   * it observes and acts on the CLUSTER; it commits nothing to any repository,
+#     opens no pull request, cuts no tag and writes no declaration anywhere. Its
+#     RBAC holds no credential that could;
+#   * it may only tighten. It re-cages to the bottom rung, `isolated`, and the
+#     grant in rbac.yaml carries no `delete` on pods, so it cannot evict;
+#   * a missing instrument refuses the pass (ADR-0020): a version array it
+#     cannot read is not an empty array, and a pass that cannot see what is
+#     supported re-cages nothing and exits non-zero, loudly, so the failed Job
+#     is visible rather than a silent no-op.
+#
+# interval budget: schedule 1m + one admission round-trip => a pod running under
+# a retired version is inside `cage-reach-isolated` (no ingress, no egress)
+# within ~1m of the array element being deleted. Shorten for a stage demo.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -15,9 +34,10 @@ metadata:
   namespace: currency-system
   labels:
     app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: platform-machinery
 spec:
-  schedule: "* * * * *"          # every minute — the bounded re-evaluation interval
-  concurrencyPolicy: Forbid       # never overlap two reconcile passes
+  schedule: "* * * * *"          # every minute -- the declared exposure window
+  concurrencyPolicy: Forbid       # never overlap two passes
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -28,6 +48,7 @@ spec:
         metadata:
           labels:
             app.kubernetes.io/part-of: platform
+            policy-as-versioned.dev/policy: platform-machinery
           annotations:
             sidecar.istio.io/inject: "false"   # a batch Job shouldn't wait on a mesh sidecar
         spec:
@@ -40,9 +61,12 @@ spec:
             - name: reconcile
               image: python:3.12-slim
               command: ["python3", "/src/currency.py", "reconcile"]
-              # --action deposture is the default; set DEPOSTURE→evict here to
-              # switch the blunt lever, and SUPPORTED_VERSIONS to override the
-              # ResourceSet read on flux-operator-less demo paths.
+              # There is one action and no flag to change it: re-cage to the
+              # bottom rung. `--action evict` was removed with ticket 91 -- the
+              # estate never removes a workload. `SUPPORTED_VERSIONS` (a
+              # comma-list) overrides the ResourceSet read on demo paths where
+              # flux-operator is not installed; an override that names nothing
+              # is a missing instrument, not an empty array.
               args: []
               securityContext:
                 allowPrivilegeEscalation: false
