@@ -1,6 +1,40 @@
 #!/usr/bin/env python3
 """render-orphan-guard.py — the orphan-guard, rendered from the version array.
 
+## It was a Deny, and it is not any more (eco-system ticket 89)
+
+The owner, 2026-09-02 (ticket 75 Q5): "something could find itself unable to run, but that's
+only because it doesn't fit the cage, not because we deliberately deny it. So, in Kubernetes
+Parlance, we've built a Mutating admission controller more than a Approving admission and
+control." This rule shipped `validationActions: [Deny]` with the message "so it cannot run".
+It is `Audit` now. Nothing in this estate is deliberately denied.
+
+Demoting it leaves NO pod uncaged, and that is the whole reason the demotion is safe. This
+rule matches a pod that CLAIMS a policy version, and every claiming pod is already caged by
+`graded/policies/cage-tier.yaml`, which renders its Namespace's declared tier onto it and
+falls closed to `isolated` for a Namespace that declares nothing -- since ticket 63
+(2026-09-04) for an UNGOVERNED Namespace too. So an orphan claim is admitted into a cage, not
+into the open.
+
+## What the Audit report is FOR
+
+An orphan claim is a claim no served policy version self-scopes to, so the pod runs governed
+by none of the versioned rules. Under the doctrine that is a PRICED HOLE (ADR-0026: a hole is
+priced, never refused), and this report is the observation the price is computed from. It is
+not an exemption ledger and it is not a count that decides anything: it is the fact.
+
+## What is NOT done here, and why it is not
+
+The tighter answer -- an undeclared claim selects the BOTTOM RUNG specifically, rather than
+its Namespace's tier -- belongs inside `cage-tier`'s own `tier` expression, with the
+allow-list ranged in from this same array. It is deliberately NOT a second MutatingPolicy
+beside this one. Measured, not assumed (kyverno 1.18.2, `kyverno apply`, 2026-09-05): with
+`cage-tier` and a second mutating policy that writes `posture.acme.io/tier: isolated` both
+matching one pod, the pod came out labelled `isolated` while carrying `cage-baseline`'s
+PriorityClass -- the label-and-dials incoherence H8-03 exists to prevent, arrived at from the
+other direction. One writer per field, or none. `cage-tier` is a versioned policy body, so
+that change is a new declared line with the engine's computed bump, which ticket 84 owns.
+
 flux-operator's ResourceSet (versions.yaml) renders the orphan-guard live by
 ranging `spec.inputs[0].versions[]`. This is its offline twin: the verify-*.sh
 beats and the shift-left check (ticket 12) run without flux-operator in the loop,
@@ -49,11 +83,18 @@ def versions(path: Path, retire: str | None = None) -> list[str]:
     return [v["version"] for v in elements(path) if v["version"] != retire]
 
 
+#: Not `Deny`, and not a knob (eco-system ticket 89). See the module docstring: an orphan claim
+#: is admitted, caged by `cage-tier` at its Namespace's tier, and the escape it makes from every
+#: versioned rule is a priced hole. This report is the observation that price rests on.
+ACTION = "Audit"
+
+
 def orphan_guard(allowed: list[str]) -> dict:
-    """A ValidatingPolicy that denies any pod claiming a version not in `allowed`.
+    """A ValidatingPolicy that REPORTS any pod claiming a version not in `allowed`.
 
     Unlabeled pods are out of scope (they claim no version); a pod that claims a
-    version the array doesn't declare is denied. Allow-list ranged from the array.
+    version the array doesn't declare is admitted, caged and reported. Allow-list
+    ranged from the array. Nothing here refuses anything.
     """
     if not allowed:
         raise SystemExit("refusing to render an orphan-guard with an empty allow-list")
@@ -65,7 +106,7 @@ def orphan_guard(allowed: list[str]) -> dict:
             "labels": {IDENTITY_LABEL: IDENTITY},
         },
         "spec": {
-            "validationActions": ["Deny"],
+            "validationActions": [ACTION],
             "matchConstraints": {
                 "resourceRules": [{
                     "apiGroups": [""], "apiVersions": ["v1"],
@@ -85,7 +126,10 @@ def orphan_guard(allowed: list[str]) -> dict:
             "validations": [{
                 "expression": "variables.allowed.exists(v, v == variables.claimed)",
                 "message": "policy-version not in the platform-declared version array (orphan): "
-                           "no ResourceSet element declares it, so it cannot run.",
+                           "no ResourceSet element declares it, so no served policy version "
+                           "governs this pod. It runs, caged at its Namespace's declared tier, "
+                           "and the rules it escapes are a priced hole (ADR-0026). Nothing is "
+                           "denied.",
             }],
         },
     }
@@ -127,6 +171,11 @@ def selfcheck() -> None:
     # cs-22: carries the platform-machinery identity, so the pairing rule
     # recognises it as a class rather than needing a by-name exclusion.
     assert og["metadata"]["labels"][IDENTITY_LABEL] == IDENTITY, og["metadata"]
+    # eco-system ticket 89: this rule refuses nothing, and its message may not say it does.
+    assert og["spec"]["validationActions"] == ["Audit"], og["spec"]
+    msg = og["spec"]["validations"][0]["message"]
+    assert "cannot run" not in msg, msg
+    assert "Nothing is denied" in msg, msg
     # retiring a version drops it from the allow-list
     retired = vs[-1]
     remaining = versions(HERE / "versions.yaml", retire=retired)
@@ -151,7 +200,16 @@ def selfcheck() -> None:
     # longer names are harmless and honest, only a MISSING one is a bug.
     dirs = {p.name[1:] for p in (HERE / "policies").glob("v*") if p.is_dir()}
     assert set(vs) <= dirs, f"array {vs} names a version with no policies/ dir, got dirs {sorted(dirs)}"
-    print("selfcheck ok: allow-list == array; every array version has a policies/ dir; retire drops a version")
+    # The LIVE ResourceSet template and this offline twin render the SAME document. Nothing
+    # asserted that until eco-system ticket 89, and they had already drifted: the twin carried
+    # the platform-machinery identity label and the template's copy did not.
+    sys.path.insert(0, str(HERE))
+    from resourceset import guard_docs  # noqa: E402
+    live = guard_docs(HERE / "versions.yaml", _allow_expr(vs))
+    assert og["metadata"]["name"] in live, sorted(live)
+    assert live[og["metadata"]["name"]] == og, \
+        "versions.yaml's orphan-guard has drifted from this twin"
+    print("selfcheck ok: allow-list == array; every array version has a policies/ dir; retire drops a version; the action is Audit and the message refuses nothing; versions.yaml renders the same document this twin does")
 
 
 def main(argv: list[str]) -> int:
