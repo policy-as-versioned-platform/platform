@@ -239,13 +239,17 @@ def merge(labels, annotations, p):
 # A pod as cage-tier leaves it: caged, at its Namespace's rung, claiming 2.0.0.
 before = {cur.CAGED_LABEL: "true", cur.TIER_LABEL: "restricted", cur.CLAIM_LABEL: "2.0.0"}
 after, notes = merge(before, {}, patch)
+# No pod exists here. `before` is a PLANTED label set in the shape cage-tier
+# leaves a pod in, and `selected_by` is the shipped selectors applied to it.
+# What this grades is the patch against those selectors, not a workload.
 check(selected_by(before) == ["restricted"],
-      "before the pass, a pod admitted at `restricted` is selected by cage-reach-restricted")
+      "on a PLANTED pod labelled as cage-tier leaves one at `restricted`, the shipped selectors "
+      "pick cage-reach-restricted")
 check(selected_by(after) == [cur.BOTTOM_RUNG],
-      f"after the patch it is selected by cage-reach-{cur.BOTTOM_RUNG}, and by nothing else: "
-      f"{selected_by(after)}")
+      f"apply the patch to that planted label set and the shipped selectors pick "
+      f"cage-reach-{cur.BOTTOM_RUNG}, and nothing else: {selected_by(after)}")
 check(notes.get(cur.RETIRED_CLAIM_ANNOTATION) == "2.0.0",
-      "...and the version it was admitted under is still readable off the pod, as an annotation")
+      "...and the retired version is still readable off the patched label set, as an annotation")
 check(cur.CLAIM_LABEL not in after,
       "the claim is gone from the labels, which is what stops cage-tier clobbering the rung back")
 
@@ -259,8 +263,9 @@ check(cur.CLAIM_LABEL not in after,
 frozen, _ = merge(before, {}, {"labels": {cur.CLAIM_LABEL: None,
                                           "posture.acme.io/version": None}})
 check(selected_by(frozen) == ["restricted"] and selected_by(frozen) != [cur.BOTTOM_RUNG],
-      "a claim-removing patch that names no rung leaves the pod in cage-reach-restricted FOREVER: "
-      "the retirement changes nothing, which is the defect this repair closes")
+      "on the same planted label set, a claim-removing patch that names no rung still selects "
+      "cage-reach-restricted -- and with the claim gone nothing can ever move it again, so the "
+      "retirement would change nothing. That is the defect this repair closes")
 check(cur.TIER_LABEL not in removed and labels_after.get(cur.TIER_LABEL) == cur.BOTTOM_RUNG,
       "the re-cage patch names the rung, so the pod lands in the bottom rung's reach cage")
 if fails: sys.exit(f"{len(fails)} broken")
