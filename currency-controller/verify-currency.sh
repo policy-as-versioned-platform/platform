@@ -54,6 +54,14 @@ CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# sha256 of stdin. Two spellings exist and neither is everywhere; an absent one
+# must not silently compare "" with "" and call two different files equal.
+sha256_of() {
+  if have sha256sum; then sha256sum | cut -d' ' -f1
+  elif have shasum;    then shasum -a 256 | cut -d' ' -f1
+  else fail "neither sha256sum nor shasum is on PATH, so the copy of currency.py on the cluster cannot be compared with this one"
+  fi
+}
 
 say "1. offline: currency.py selfcheck (the pure core's own asserts)"
 python3 "$HERE/currency.py" selfcheck || fail "selfcheck failed"
@@ -381,12 +389,11 @@ elif ! timeout 10 kubectl --context "$CTX" -n currency-system get cronjob curren
 elif ! ON_CLUSTER=$(timeout 20 kubectl --context "$CTX" -n currency-system get configmap currency-controller-src \
        -o jsonpath='{.data.currency\.py}' 2>/dev/null) || [ -z "$ON_CLUSTER" ]; then
   live_tail_skip "the currency-controller CronJob on $CTX mounts no readable currency-controller-src ConfigMap, so it is unknown which controller would run"
-elif [ "$(printf '%s' "$ON_CLUSTER" | shasum -a 256 | cut -d' ' -f1)" \
-     != "$(shasum -a 256 < "$HERE/currency.py" | cut -d' ' -f1)" ]; then
+elif [ "$(printf '%s' "$ON_CLUSTER" | sha256_of)" != "$(sha256_of < "$HERE/currency.py")" ]; then
   # The offline half above graded THIS file. The cluster runs whatever is in the
   # ConfigMap. Grading a pass taken by a different copy would be a claim about
   # code this run never read, so it is a could-not-look and says which copy.
-  live_tail_skip "the currency-controller on $CTX runs a different copy of currency.py than this checkout ships (ConfigMap sha256 $(printf '%s' "$ON_CLUSTER" | shasum -a 256 | cut -c1-12), file $(shasum -a 256 < "$HERE/currency.py" | cut -c1-12)); run currency-controller/up.sh to install this one"
+  live_tail_skip "the currency-controller on $CTX runs a different copy of currency.py than this checkout ships (ConfigMap sha256 $(printf '%s' "$ON_CLUSTER" | sha256_of | cut -c1-12), file $(sha256_of < "$HERE/currency.py" | cut -c1-12)); run currency-controller/up.sh to install this one"
 else
   # The supported set is read off the SAME ResourceSet the controller reads, on
   # the cluster itself -- not off this checkout's versions.yaml, which is what
