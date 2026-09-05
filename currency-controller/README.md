@@ -51,14 +51,39 @@ durable patch, and it does three things in a single JSON merge:
 | the write | why it has to be in this patch |
 |---|---|
 | `policy-as-versioned.dev/policy-version: null` | takes the pod out of scope for `cage-tier` (so the rung below is not clobbered back) and for the orphan guard (so the `UPDATE` is not refused) |
-| `posture.acme.io/version: null` | `posture-trust-boundary` **Denies** a posture that does not equal its claim, and the line above has just removed the claim. Leave this behind and the whole patch is refused at admission. Dropping it is itself a tightening: the pod stops matching the posture `ClusterSPIFFEID` and falls back to the base-mesh identity, losing posture-gated reach and its OpenBao secret |
+| `posture.acme.io/version: null` | the **unversioned** `posture-trust-boundary` — the copy installed on the demo cluster — **Denies** a posture that does not equal its claim and is not gated on a version, and the line above has just removed the claim. Leave this behind and the whole patch is refused at admission *there*. (Every **served** copy adds `only-this-policy-version`, so for an adopter running only the composed set a claimless pod is out of its scope and there is no Deny; the reason is the unversioned copy, not those.) Dropping it is itself a tightening: the pod stops matching the posture `ClusterSPIFFEID` and falls back to the base-mesh identity, losing posture-gated reach and its OpenBao secret |
 | `posture.acme.io/tier: isolated` | the bottom rung. **This is the half the old de-posture patch did not have** |
-| `posture.acme.io/caged: "true"` | asserted rather than assumed, so `cage-netpol` matches and `cage-reach-isolated` — deny-all ingress *and* egress — selects the pod |
+| `posture.acme.io/caged: "true"` | asserted rather than assumed, because every generated reach policy selects on **caged AND tier** — so `cage-reach-isolated`, deny-all ingress *and* egress, selects the pod |
 
 The claim it removes survives as the annotation
 `policy-as-versioned.dev/retired-claim`, so the record of which retired version
 admitted the pod is not destroyed. No matchCondition in the estate reads an
 annotation, so keeping it costs nothing at admission.
+
+## The precondition, and it is not a detail
+
+Every **served** copy of `cage-netpol` — `distribution/policies/v<declared>/`, and
+each adopter's `composed/` — carries an `only-this-policy-version` matchCondition
+that the authoring copy in `graded/policies/` does **not**. This patch removes the
+claim. So the re-caged pod does not fire that policy and **cannot generate its own
+reach cage**: it can only be *selected* by a `cage-reach-isolated` the namespace
+**already has**, generated when some pod claiming a currently-served version was
+admitted there above `baseline`.
+
+**In a namespace with none, re-caging writes `isolated` as a label and changes
+nothing the pod can reach.** That is true of `tuppence-reset` on `kind-driftwood`
+today: `kubectl get networkpolicy -n tuppence-reset` returns nothing, and
+`tuppence-reset/teller-stale` is the estate's one stale pod. `verify-currency.sh`
+derives the precondition from the served bodies, and checks the NetworkPolicy is
+present on the cluster **before** it runs a pass — so a namespace without one is a
+could-not-look, never a red left behind after a live pod's claim has been
+stripped.
+
+Closing it properly is a separate question this module does not own: either the
+namespace's own governed tier already puts a claiming pod above `baseline` (which
+generates all three rungs), or the reach cages are rendered per governed Namespace
+from the composed artefact instead of generated from a pod. The second is the
+upgrade path `cage-netpol.yaml`'s own header already names.
 
 **The defect this repairs.** The pre-2026-09-05 module removed the claim and the
 identity *posture* label and never touched the tier. Because removing the claim
@@ -83,6 +108,22 @@ anything moves to). Three independent things hold the property:
    nothing else. **No `delete`.** `--action evict` is gone: the estate does not
    remove a workload, it cages it and prices the residual (ADR-0022; ticket 75
    Q5). A controller with no delete verb cannot evict even by mistake.
+
+### What it costs — two residual softenings, recorded rather than hidden
+
+Tighten-only holds; these are the price of the patch, and neither was written
+down before ticket 91 round 2.
+
+1. **`infra` is overwritten, not moved past.** It is a platform *role
+   declaration* on a Namespace (ADR-0022), not a rung on this ladder. A pod
+   somehow carrying `tier=infra` reads as unknown here and is overwritten with
+   `isolated`. Fail-closed — but an overwrite of a declaration, not a move along
+   the ladder.
+2. **The re-caged pod's cage is softer against a hand edit.** After the patch the
+   pod is outside the scope of `cage-tier`, the orphan guard *and* every served
+   `cage-netpol`, so its rung is held by a label no admission will ever re-assert.
+   A claiming pod's rung is re-clobbered from its Namespace on every update; this
+   one's is not. What still holds it is RBAC: a workload cannot patch its own pod.
 
 `verify-currency.sh` derives the ladder from `cage.py` itself and FAILs if this
 module's mirror of it ever drifts.
@@ -150,11 +191,17 @@ label and `rbac.yaml`'s own verbs, never restated as literals.
 server accepted the patch, that admission did not clobber it, that the generated
 NetworkPolicy actually cut the pod's reach. Those are facts about a running
 cluster. The live tail is the only thing that can see them; when it cannot look
-it names what it needed (a `kind` cluster `driftwood` carrying a readable
-`policy-versions` ResourceSet, this repo's copy of `currency.py` in the
-`currency-controller-src` ConfigMap, and a running pod whose claim the array has
-retired) and the whole script exits 3. **There is no PASS here that does not
-rest on an observed pod.**
+it names what it needed and the whole script exits 3. Eight preconditions, each
+named separately rather than as one aggregate sentence: `kubectl` on `PATH`; the
+substrate (`docker`, the `kind` cluster `driftwood`, Flux Ready); the
+`currency-controller` CronJob; a readable `currency-controller-src` ConfigMap;
+**this checkout's** copy of `currency.py` inside it, compared by sha256 with both
+sides normalised the same way; a readable `policy-versions` ResourceSet; a
+running pod whose claim the array has retired; and a `cage-reach-isolated`
+NetworkPolicy already in that pod's namespace. **There is no PASS here that does
+not rest on an observed pod**, and the live half compares that NetworkPolicy's
+own `podSelector` against the re-caged pod's labels rather than merely observing
+the object exists.
 
 ## Boundaries
 

@@ -72,14 +72,18 @@ publishes:
   # withdrew that retirement: it is the estate's only post-admission re-caging
   # mechanism, so it is owned rather than deleted.
   #
-  # Unlike `identity-substrate` it gets NO version axis of its own. It is
-  # platform machinery -- like the orphan guard, whose emitted policy body
-  # carries `policy-as-versioned.dev/policy: platform-machinery` for exactly
-  # this reason (distribution/render-orphan-guard.py) -- so it is numbered by
-  # the platform's own `v*` tag and moves when the platform moves. A separate
-  # `currency-controller/vX.Y.Z` line would claim the module can be pinned
-  # independently of the cage ladder it writes into, and it cannot: the rung it
-  # writes is graded/cage.py's own bottom rung, and the two must ship together.
+  # It gets NO version axis of its own. The contrast is with the `policy` line
+  # above, which really is numbered on a separate axis -- `policy/vX.Y.Z`, cut
+  # by cut-release.yml and pinned by each adopter's platform-pin.yaml -- because
+  # a policy body changes on its own schedule and an adopter pins one version of
+  # it while running another. This module cannot be pinned that way: the rung it
+  # writes is graded/cage.py's own bottom rung and the two must ship together,
+  # so a `currency-controller/vX.Y.Z` line would advertise an independence that
+  # does not exist. It is platform machinery, like the orphan guard, whose
+  # emitted policy body carries `policy-as-versioned.dev/policy:
+  # platform-machinery` for exactly this reason
+  # (distribution/render-orphan-guard.py), and it is numbered by the platform's
+  # own `v*` tag, moving when the platform moves.
   #
   # No `payload_schema`: a directory of Python and manifests, not a feed
   # envelope. `revoked` empty: nothing published from it is withdrawn.

@@ -34,18 +34,36 @@ patch, and it does three things in one JSON merge:
   * removes the CLAIM (`null` deletes the key), which takes the pod out of
     scope for cage-tier -- so the tier this patch writes is not clobbered back
     -- and out of scope for the orphan guard, so the UPDATE is not refused;
-  * removes the identity substrate's POSTURE label in the same breath, because
-    `posture-trust-boundary` Denies a posture that does not equal its claim and
-    the line above has just removed the claim. Leave it behind and the whole
-    patch is refused at admission;
+  * removes the identity substrate's POSTURE label in the same breath. The
+    UNVERSIONED `posture/policies/posture-trust-boundary.yaml` -- the copy
+    installed on the demo cluster -- Denies a posture that does not equal its
+    claim and is NOT gated on a version, and the line above has just removed the
+    claim, so leaving the posture label behind gets the whole patch refused at
+    admission there. Every SERVED copy adds `only-this-policy-version`, so for an
+    adopter running only the composed set a claimless pod is out of its scope and
+    there is no Deny. Removing it is required against the first and harmless
+    against the second, so the patch does it unconditionally;
   * writes `posture.acme.io/tier: isolated`, the bottom rung. This is the half
     the old de-posture patch did not have, and its absence was the defect:
     removing the claim without naming a rung FREEZES the pod at whatever rung
     it was admitted with, permanently, because nothing can ever clobber it
     again. A retired 2.0.0 pod sat on at `restricted` for the rest of its life;
-  * asserts `posture.acme.io/caged: "true"`, so `cage-netpol` matches and the
-    `cage-reach-isolated` NetworkPolicy -- deny-all ingress and egress, already
-    generated in the namespace -- selects the pod.
+  * asserts `posture.acme.io/caged: "true"`, so that the `cage-reach-isolated`
+    NetworkPolicy -- deny-all ingress and egress -- selects the pod, since every
+    generated reach policy selects on caged AND tier.
+
+THE PRECONDITION, AND IT IS NOT A DETAIL. Every SERVED copy of `cage-netpol`
+(`distribution/policies/v<declared>/`, and each adopter's `composed/`) carries an
+`only-this-policy-version` matchCondition that the authoring copy in
+`graded/policies/` does not. This patch removes the claim, so the re-caged pod
+does NOT fire that policy and CANNOT generate its own reach cage. It can only be
+SELECTED by a `cage-reach-isolated` the namespace ALREADY has -- generated when
+some pod claiming a currently-served version was admitted there at a rung above
+baseline. In a namespace with none, re-caging writes `isolated` as a LABEL and
+changes nothing the pod can reach. verify-currency.sh derives that from the
+served bodies and checks the NetworkPolicy exists on the cluster BEFORE it runs
+a pass, so a namespace without one is a could-not-look and not a red left behind
+after a live pod's claim has already been stripped.
 
 The claim it removes is preserved as the annotation
 `policy-as-versioned.dev/retired-claim`, so the record of which retired version
@@ -98,12 +116,15 @@ TIER_LABEL = "posture.acme.io/tier"
 CAGED_LABEL = "posture.acme.io/caged"
 # The identity substrate's own stamp (posture/policies/stamp-posture.yaml).
 # Identity is shelved for this build (eco-system ticket 90) but the policies
-# still ship and are still installed, and `posture-trust-boundary` DENIES any
-# pod that carries this label without a matching claim -- so a patch that
-# removes the claim and leaves this behind is REFUSED AT ADMISSION. It goes in
-# the same patch. Dropping it is itself a tightening: the pod stops matching
-# the posture ClusterSPIFFEID, its posture SVID stops renewing, and it falls
-# back to the plain base-mesh identity, losing posture-gated reach and its
+# still ship. The UNVERSIONED `posture-trust-boundary` -- installed on the demo
+# cluster -- DENIES any pod carrying this label without a matching claim, so a
+# patch that removes the claim and leaves this behind is REFUSED AT ADMISSION
+# there. (Every SERVED copy is additionally gated on the version, so for an
+# adopter running only the composed set a claimless pod is out of its scope and
+# there is no Deny; the reason is the unversioned copy, not those.) It goes in
+# the same patch either way. Dropping it is itself a tightening: the pod stops
+# matching the posture ClusterSPIFFEID, its posture SVID stops renewing, and it
+# falls back to the plain base-mesh identity, losing posture-gated reach and its
 # OpenBao secret.
 POSTURE_LABEL = "posture.acme.io/version"
 # Where the retired claim goes, so the patch destroys no record.
@@ -172,9 +193,9 @@ def recage_patch(claimed: str) -> dict:
 def select_stale(supported: set[str], pods: list[dict]) -> list[dict]:
     """The pods whose admitted version is no longer in the array.
 
-    `pods` is the trimmed shape {namespace, name, claim, tier}. A pod with no
-    claim is not our concern: it is the COTS/system population cage-tier does
-    not match either. A pod whose claim IS supported is in currency.
+    `pods` is the trimmed shape {namespace, name, claim, tier, caged}. A pod
+    with no claim is not our concern: it is the COTS/system population cage-tier
+    does not match either. A pod whose claim IS supported is in currency.
     """
     return [p for p in pods if p.get("claim") and p["claim"] not in supported]
 
@@ -193,13 +214,21 @@ def plan_actions(supported: set[str], pods: list[dict]) -> list[dict]:
     actions = []
     for p in select_stale(supported, pods):
         entry = {"namespace": p["namespace"], "name": p["name"],
-                 "claim": p["claim"], "tier": p.get("tier")}
-        if p.get("tier") == BOTTOM_RUNG:
-            # Already at the bottom rung by its Namespace's own declaration.
-            # Patching it would remove its claim for no gain in tightness, and
-            # the smallest tighten-only action is no action.
+                 "claim": p["claim"], "tier": p.get("tier"), "caged": p.get("caged")}
+        if p.get("tier") == BOTTOM_RUNG and p.get("caged") == "true":
+            # Already at the bottom rung AND already inside the caged
+            # population, so a reach policy already selects it. Patching would
+            # remove its claim for no gain in tightness, and the smallest
+            # tighten-only action is no action.
+            #
+            # BOTH halves are required. `cage-reach-<rung>` selects on
+            # caged AND tier, so a pod at `isolated` whose caged label is absent
+            # or false is selected by NOTHING: holding on the tier alone left it
+            # outside every reach cage forever, which is the opposite of what
+            # holding was for. It is re-caged like any other stale pod, and the
+            # patch asserts the caged label.
             actions.append({**entry, "action": "hold",
-                            "reason": f"already at the bottom rung `{BOTTOM_RUNG}`"})
+                            "reason": f"already at the bottom rung `{BOTTOM_RUNG}` and caged"})
         elif not is_tighten(p.get("tier"), BOTTOM_RUNG):
             # Unreachable while BOTTOM_RUNG is the last element of ORDER. Kept
             # so that a future edit to the ladder cannot make this controller
@@ -293,7 +322,8 @@ def list_claiming_pods(call) -> list[dict]:
         meta = item["metadata"]
         labels = meta.get("labels", {})
         out.append({"namespace": meta["namespace"], "name": meta["name"],
-                    "claim": labels.get(CLAIM_LABEL), "tier": labels.get(TIER_LABEL)})
+                    "claim": labels.get(CLAIM_LABEL), "tier": labels.get(TIER_LABEL),
+                    "caged": labels.get(CAGED_LABEL)})
     return out
 
 
@@ -321,13 +351,19 @@ def reconcile(dry_run: bool = False) -> dict:
 def selfcheck() -> None:
     supported = {"4.0.0"}
     pods = [
-        {"namespace": "tuppence", "name": "reset-current", "claim": "4.0.0", "tier": "restricted"},
-        {"namespace": "tuppence", "name": "reset-retired", "claim": "2.0.0", "tier": "restricted"},
-        {"namespace": "ludlow", "name": "reset-bottom", "claim": "2.0.0", "tier": "isolated"},
-        {"namespace": "driftwood", "name": "cots", "claim": None, "tier": "baseline"},
+        {"namespace": "tuppence", "name": "reset-current", "claim": "4.0.0",
+         "tier": "restricted", "caged": "true"},
+        {"namespace": "tuppence", "name": "reset-retired", "claim": "2.0.0",
+         "tier": "restricted", "caged": "true"},
+        {"namespace": "ludlow", "name": "reset-bottom", "claim": "2.0.0",
+         "tier": "isolated", "caged": "true"},
+        {"namespace": "ludlow", "name": "reset-bottom-uncaged", "claim": "2.0.0",
+         "tier": "isolated", "caged": None},
+        {"namespace": "driftwood", "name": "cots", "claim": None,
+         "tier": "baseline", "caged": None},
     ]
     stale = {p["name"] for p in select_stale(supported, pods)}
-    assert stale == {"reset-retired", "reset-bottom"}, stale
+    assert stale == {"reset-retired", "reset-bottom", "reset-bottom-uncaged"}, stale
     # ...retiring 4.0.0 as well makes the current pod stale too, and re-declaring
     # it brings it back into currency. Retirement is the whole trigger.
     assert {p["name"] for p in select_stale(set(), [])} == set()
@@ -336,6 +372,10 @@ def selfcheck() -> None:
     acts = {a["name"]: a for a in plan_actions(supported, pods)}
     assert acts["reset-retired"]["action"] == "recage", acts["reset-retired"]
     assert acts["reset-bottom"]["action"] == "hold", acts["reset-bottom"]
+    # ...but a pod AT the bottom rung with no caged label is selected by no reach
+    # policy at all, so holding it would leave it uncaged forever. It is patched.
+    assert acts["reset-bottom-uncaged"]["action"] == "recage", acts["reset-bottom-uncaged"]
+    assert acts["reset-bottom-uncaged"]["patch"]["metadata"]["labels"][CAGED_LABEL] == "true"
     assert "reset-current" not in acts and "cots" not in acts, sorted(acts)
 
     # THE crux: one patch, three label writes, the claim kept as a record.
