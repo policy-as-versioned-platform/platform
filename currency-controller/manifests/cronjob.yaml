@@ -25,8 +25,33 @@
 #     is visible rather than a silent no-op.
 #
 # interval budget: schedule 1m + one admission round-trip => a pod running under
-# a retired version is inside `cage-reach-isolated` (no ingress, no egress)
-# within ~1m of the array element being deleted. Shorten for a stage demo.
+# a retired version carries the bottom rung's labels within ~1m of the array
+# element being deleted. Shorten for a stage demo.
+#
+# WHAT THIS PASS DOES NOT CHECK, stated because the verifier checks it and this
+# does not (2026-09-05, review round 2). `isolated` is delivered by the
+# `cage-reach-isolated` NetworkPolicy, and this pass CANNOT confirm one exists:
+# rbac.yaml grants no verb on networkpolicies, deliberately, because a
+# re-caging controller has no business reading the reach plane. The re-cage
+# cannot generate that policy either -- every served cage-netpol is gated on
+# the policy-version claim, and this patch removes the claim -- so the policy
+# must already be in the pod's namespace, put there by a claiming pod under a
+# version that ships the rung ladder.
+#
+# So where the namespace has no reach cage, this pass writes the labels and
+# achieves nothing: the pod is already running, its dials were set at
+# admission and are not re-applied, and no NetworkPolicy selects it. It also
+# costs the claim, which takes the pod out of every versioned policy's scope
+# for good. verify-currency.sh refuses to run the pass in that state and says
+# so; this CronJob has no such guard and runs every minute regardless. On
+# 2026-09-05 that state is real: kind-driftwood carries cage-reach-* in
+# namespace `driftwood` only, and the estate's one stale pod is in
+# `tuppence-reset`, which has none.
+#
+# The fix is not in this controller. It is that a governed namespace should
+# carry the reach ladder whether or not a claiming pod happens to be in it --
+# cage-netpol.yaml's own header already names that upgrade. Until then this is
+# a property of the estate the controller does not check and cannot.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
