@@ -248,14 +248,27 @@ def selfcheck() -> None:
     assert _allow_expr(vs) in oc["spec"]["matchConditions"][0]["expression"], oc["spec"]
     assert og["spec"]["variables"][0]["expression"] == _allow_expr(vs)
     # Disjoint from the served cage-tier by construction: it matches claims IN the array,
-    # this matches claims NOT in it. Asserted on the real served body, not on the authoring
-    # copy graded/up.sh says it never applies.
-    served = HERE / "policies" / f"v{vs[0]}" / "cage-tier.yaml"
-    if served.exists():
+    # this matches claims NOT in it. Asserted for EVERY version the array declares, on the real
+    # served bodies, never on the authoring copy graded/up.sh says it never applies. Driven by
+    # the array rather than by a fixture: a version added to the array without a version-scoped
+    # cage would break the disjointness argument silently, and this is what catches that.
+    checked = 0
+    for v in vs:
+        served = HERE / "policies" / f"v{v}" / "cage-tier.yaml"
+        if not served.exists():
+            continue
         conds = yaml.safe_load(served.read_text())["spec"]["matchConditions"]
         scoped = [c for c in conds if c["name"] == "only-this-policy-version"]
         assert scoped, f"{served} lost its version scoping; the disjointness argument is gone"
-        assert f"== '{vs[0]}'" in scoped[0]["expression"], scoped
+        assert f"== '{v}'" in scoped[0]["expression"], (v, scoped)
+        # ...and that scoping is what makes this cage's condition its exact complement: the
+        # served body takes this version, this cage's allow-list contains it, so this cage
+        # cannot.
+        assert f"'{v}'" in oc["spec"]["matchConditions"][0]["expression"], (v, oc["spec"])
+        checked += 1
+    assert checked == len(vs), (
+        f"only {checked} of {len(vs)} declared versions have a served, version-scoped "
+        f"cage-tier; a declared version without one is a population this pair does not cover")
     cb.assert_priorityclass_is_rendered(oc)
     # The dial table is cage-tier's own, plus the initContainer extension and nothing else.
     cage_spec = cb.cage_tier_spec()

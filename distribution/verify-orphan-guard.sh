@@ -23,9 +23,13 @@
 #   4. the orphan cage puts that same pod on the bottom rung: isolated tier, caged marker,
 #      cage-isolated PriorityClass and its integer priority, the isolated dials, hardened
 #      containers AND initContainers, host namespaces shut, all capabilities dropped;
-#   5. run TOGETHER over the same three pods, each pod is touched by exactly one of the two
-#      mutating bodies. That is the disjointness the pair rests on: two mutations writing one
-#      field is the label-and-dials incoherence H8-03 exists to prevent.
+#   5. run TOGETHER, driven by the ARRAY: one pod per version the array declares plus one
+#      claiming a version it does not, against every served version's cage-tier and the
+#      orphan cage at once. Each pod comes out written by exactly one body, its label
+#      agreeing with its dials. That is the disjointness the pair rests on, proved from the
+#      array rather than asserted: two mutations writing one field is the label-and-dials
+#      incoherence H8-03 exists to prevent. A version declared with no served, version-scoped
+#      cage-tier fails the beat, because it would be a population neither body covers.
 #
 # Exits non-zero if the beat would fail on stage. OFFLINE (python3 + the kyverno CLI).
 set -euo pipefail
@@ -37,6 +41,16 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have kyverno || fail "kyverno CLI required"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 
+declared_versions="$(python3 -c "
+import importlib.util, sys
+from pathlib import Path
+here = Path('$HERE')
+spec = importlib.util.spec_from_file_location('render_orphan_guard', here / 'render-orphan-guard.py')
+og = importlib.util.module_from_spec(spec)
+sys.modules['render_orphan_guard'] = og
+spec.loader.exec_module(og)
+print(' '.join(og.versions(here / 'versions.yaml')))
+")"
 declared_version="$(python3 -c "
 import importlib.util, sys
 from pathlib import Path
@@ -164,7 +178,66 @@ if [ -f "$WORK/caged/declared-mutated.yaml" ] \
   fail "the orphan cage mutated the DECLARED-version pod; that population is the served cage's"
 fi
 
-say "5. run together, each pod is touched by exactly one mutating body"
+say "5. run together over one pod per DECLARED version plus an orphan: each is touched once"
+# Driven by the ARRAY, not by a fixture. One pod per version the array declares, plus one
+# claiming a version it does not, and every served version's cage-tier applied beside the
+# orphan cage. If the two populations ever overlapped, a pod would come out carrying one
+# body's label and the other's dials -- the label-and-dials incoherence H8-03 exists to
+# prevent, which is the reason a second mutating writer was ruled out in the first place.
+: > "$WORK/all-pods.yaml"
+SERVED_ALL=()
+for v in $declared_versions; do
+  slug="$(echo "$v" | tr . -)"
+  cat >> "$WORK/all-pods.yaml" <<YAML
+apiVersion: v1
+kind: Pod
+metadata: { name: claims-$slug, namespace: governed-ns, labels: { "policy-as-versioned.dev/policy-version": "$v" } }
+spec: { containers: [{ name: c, image: nginx }] }
+---
+YAML
+  [ -f "$HERE/policies/v$v/cage-tier.yaml" ] \
+    || fail "the array declares $v with no served cage-tier; that version's pods are covered by neither body"
+  SERVED_ALL+=("$HERE/policies/v$v/cage-tier.yaml")
+done
+cat >> "$WORK/all-pods.yaml" <<'YAML'
+apiVersion: v1
+kind: Pod
+metadata: { name: claims-nothing-declared, namespace: governed-ns, labels: { "policy-as-versioned.dev/policy-version": "9.9.9" } }
+spec: { containers: [{ name: c, image: nginx }] }
+YAML
+kyverno apply "${SERVED_ALL[@]}" "$WORK/orphan-cage.yaml" --resource "$WORK/all-pods.yaml" \
+  -f "$WORK/values.yaml" -o "$WORK/array" >"$WORK/array.log" 2>&1 \
+  || fail "the cages together refused a pod: $(tail -3 "$WORK/array.log")"
+grep -qE 'fail: 0, ' "$WORK/array.log" \
+  || fail "a refusal appeared with every served cage and the orphan cage together: $(tail -1 "$WORK/array.log")"
+python3 - "$WORK/array" "$declared_versions" <<'PY' || fail "the two populations are not disjoint"
+import pathlib, sys, yaml
+seen = {}
+for f in pathlib.Path(sys.argv[1]).glob("*-mutated.yaml"):
+    for doc in yaml.safe_load_all(f.read_text()):
+        if doc:
+            seen[doc["metadata"]["name"]] = doc
+versions = sys.argv[2].split()
+for v in versions:
+    name = "claims-" + v.replace(".", "-")
+    d = seen.get(name)
+    assert d is not None, f"{name} was not caged by any body"
+    labels = d["metadata"]["labels"]
+    pc = d["spec"]["priorityClassName"]
+    # Its NAMESPACE's tier, from its own version's cage, and the PriorityClass that version
+    # ships. Never the bottom rung: a declared version is not the orphan cage's business.
+    assert labels["posture.acme.io/tier"] == "quarantine", (name, labels)
+    assert pc == "cage-quarantine-" + v.replace(".", "-"), (name, pc)
+for name in ("claims-nothing-declared",):
+    d = seen[name]
+    assert d["metadata"]["labels"]["posture.acme.io/tier"] == "isolated", d["metadata"]["labels"]
+    assert d["spec"]["priorityClassName"] == "cage-isolated", d["spec"]["priorityClassName"]
+print(f"    {len(versions)} declared version(s) {versions} each caged by their own served body "
+      f"at the Namespace's tier; the one undeclared claim caged at the bottom rung; every pod's "
+      f"label agrees with its dials, so no pod was written by both")
+PY
+
+say "5b. and on the original three-pod fixture, for the same reason"
 kyverno apply "$SERVED" "$WORK/orphan-cage.yaml" --resource "$WORK/pods.yaml" \
   -f "$WORK/values.yaml" -o "$WORK/both" >"$WORK/both.log" 2>&1 \
   || fail "the two cages together refused a pod: $(tail -3 "$WORK/both.log")"
@@ -193,4 +266,4 @@ print("    declared -> quarantine/cage-quarantine (its Namespace's tier); "
       "orphan -> isolated/cage-isolated (the bottom rung); label and dials agree in both")
 PY
 
-echo "PASS: the orphan pair refuses nothing and leaves nothing uncaged. The guard is Audit and reports 9.9.9 by name; the SERVED $declared_version cage-tier does not match that pod at all, which is why the cage exists; the cage puts it on the bottom rung with the isolated dials, hardened containers AND initContainers, host namespaces shut and all capabilities dropped; and run together the two bodies touch disjoint populations, each pod's label agreeing with its dials. The allow-list is still the array, in both halves. Whether the API server admits any of it is the cluster tail of ../graded/verify-graded.sh, not this run."
+echo "PASS: the orphan pair refuses nothing and leaves nothing uncaged. The guard is Audit and reports 9.9.9 by name; the SERVED $declared_version cage-tier does not match that pod at all, which is why the cage exists; the cage puts it on the bottom rung with the isolated dials, hardened containers AND initContainers, host namespaces shut and all capabilities dropped; and run together over one pod per declared version plus an undeclared claim, every pod is written by exactly one body with its label agreeing with its dials -- disjointness proved from the array, not asserted. The allow-list is still the array, in both halves. Whether the API server admits any of it is the cluster tail of ../graded/verify-graded.sh, not this run."
