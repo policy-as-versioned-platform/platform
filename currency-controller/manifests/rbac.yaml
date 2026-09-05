@@ -1,18 +1,30 @@
 # The currency controller's identity and the ONLY grant in the estate that can
-# patch/delete another workload's pod. This is deliberately a PLATFORM component,
-# not a workload: the posture trust boundary (ticket 15) rests on workloads NOT
-# having patch/update on pods, so this power lives in one audited place.
+# patch another workload's pod. Deliberately a PLATFORM component and not a
+# workload: the power to change a pod's cage lives in one audited place.
 #
-# It needs: list postured pods, remove their labels (patch) or evict them
-# (delete), and read the version array (the ResourceSet) to know what's still
-# supported. Nothing else. get on resourcesets is read-only.
+# TIGHTEN-ONLY, AS RBAC (eco-system ticket 91 item 2). It needs to list the pods
+# that claim a policy version, patch the stale ones into the bottom rung, and
+# read the version array that says which versions are still supported. Nothing
+# else. There is no `delete` on pods: eviction was the blunt lever the old
+# module carried, and the estate does not remove a workload -- it cages it and
+# prices the residual (ADR-0022; ticket 75 Q5, the owner's own reason). A
+# controller with no delete verb cannot evict a pod even by mistake, which is
+# the half of "may only re-cage, never loosen" that does not depend on the code
+# being right. currency-controller/verify-currency.sh grades these verbs.
+#
+# Numbered by the platform's own `v*` tag, like the orphan guard: every object
+# here carries `policy-as-versioned.dev/policy: platform-machinery`, the value
+# distribution/render-orphan-guard.py owns, so a reader can tell platform
+# machinery from an actually-unversioned policy.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: currency-system
   labels:
     app.kubernetes.io/part-of: platform
-    # meshed so its own calls are mTLS; it never needs a posture SVID itself.
+    policy-as-versioned.dev/policy: platform-machinery
+    # meshed so its own calls are mTLS. It claims no policy version itself, so
+    # cage-tier does not match its pods and it is not a priced cage subject.
     istio-injection: enabled
 ---
 apiVersion: v1
@@ -22,6 +34,7 @@ metadata:
   namespace: currency-system
   labels:
     app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: platform-machinery
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -29,12 +42,14 @@ metadata:
   name: currency-controller
   labels:
     app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: platform-machinery
 rules:
-  # find postured pods, and re-patch (remove labels) or evict the stale ones.
+  # Find the pods that claim a policy version, and re-cage the stale ones.
+  # `patch` is the whole write budget: no delete, no create, no update.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "patch", "delete"]
-  # read the supported-version array — the same array the orphan-guard ranges.
+    verbs: ["get", "list", "patch"]
+  # Read the supported-version array -- the same array the orphan guard ranges.
   - apiGroups: ["fluxcd.controlplane.io"]
     resources: ["resourcesets"]
     verbs: ["get"]
@@ -45,6 +60,7 @@ metadata:
   name: currency-controller
   labels:
     app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: platform-machinery
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

@@ -5,8 +5,12 @@
 BESIDE `policy-version-orphan-guard` and not inside it (ADR-0014): a workload
 created inside a namespace labelled `policy-as-versioned.dev/governed: "true"`
 must carry a `policy-as-versioned.dev/policy-version` claim. `CREATE` only --
-`UPDATE` is excluded on purpose, so the currency-controller's de-posture patch
-(an `UPDATE` that strips the claim to cage a retired workload) keeps working.
+`UPDATE` is excluded on purpose, so the currency-controller's re-cage patch
+keeps working: that patch is an `UPDATE` that strips the claim *and writes*
+`posture.acme.io/tier: isolated`, which is the only way a running pod admitted
+under a since-retired version reaches the bottom rung (eco-system ticket 91;
+currency-controller/README.md). Stripping the claim is what takes the pod out
+of cage-tier's clobber, so this guard must not refuse it.
 PROMOTED TO `Deny` on 2026-08-28 -- the editorial promotion ADR-0014's own
 consequence describes ("a brownfield estate promotes by editorial PR, exactly
 like the orphan guard's own entry already allows"), taken because the review of

@@ -1,13 +1,57 @@
-# The currency controller as a CronJob: one bounded reconcile pass per minute.
-# A CronJob (not a watch loop) is deliberate — it runs to completion and exits,
+# The currency controller as a CronJob: one bounded re-cage pass per minute.
+# A CronJob (not a watch loop) is deliberate -- it runs to completion and exits,
 # so nothing blocks and the "bounded interval" is literally the schedule. The
 # script is currency.py, mounted from the `currency-controller-src` ConfigMap
 # (created by up.sh with --from-file=currency.py, so there is ONE source of the
-# code, no copy pasted into YAML). Pure stdlib ⇒ a bare python image, no pip.
+# code, no copy pasted into YAML). Pure stdlib, so a bare python image, no pip.
 #
-# interval budget: schedule 1m + spire-controller-manager gcInterval ~10s + one
-# jwtTtl (5m) ⇒ a retired pod is out of currency (SVID stops renewing) within
-# ~6m of the array edit. Shorten the schedule for a snappier stage demo.
+# THE SCHEDULE, UNDER ADR-0024's CLOCK RULES (eco-system ticket 91 item 2).
+# ADR-0024's clocks are REPOSITORY clocks: they run daily because the feeds and
+# pins they read move at most daily, and each org picks its own UTC hour so no
+# cross-org ordering is promised. This is not one of those. It is a cluster
+# reconciler, and its period IS the estate's exposure window: the time a pod may
+# keep running at its pre-retirement rung after the platform retires the version
+# that admitted it. One minute is that window, declared here and nowhere else.
+#
+# What ADR-0024 does bind, and what this obeys:
+#   * it observes and acts on the CLUSTER; it commits nothing to any repository,
+#     opens no pull request, cuts no tag and writes no declaration anywhere. Its
+#     RBAC holds no credential that could;
+#   * it may only tighten. It re-cages to the bottom rung, `isolated`, and the
+#     grant in rbac.yaml carries no `delete` on pods, so it cannot evict;
+#   * a missing instrument refuses the pass (ADR-0020): a version array it
+#     cannot read is not an empty array, and a pass that cannot see what is
+#     supported re-cages nothing and exits non-zero, loudly, so the failed Job
+#     is visible rather than a silent no-op.
+#
+# interval budget: schedule 1m + one admission round-trip => a pod running under
+# a retired version carries the bottom rung's labels within ~1m of the array
+# element being deleted. Shorten for a stage demo.
+#
+# WHAT THIS PASS DOES NOT CHECK, stated because the verifier checks it and this
+# does not (2026-09-05, review round 2). `isolated` is delivered by the
+# `cage-reach-isolated` NetworkPolicy, and this pass CANNOT confirm one exists:
+# rbac.yaml grants no verb on networkpolicies, deliberately, because a
+# re-caging controller has no business reading the reach plane. The re-cage
+# cannot generate that policy either -- every served cage-netpol is gated on
+# the policy-version claim, and this patch removes the claim -- so the policy
+# must already be in the pod's namespace, put there by a claiming pod under a
+# version that ships the rung ladder.
+#
+# So where the namespace has no reach cage, this pass writes the labels and
+# achieves nothing: the pod is already running, its dials were set at
+# admission and are not re-applied, and no NetworkPolicy selects it. It also
+# costs the claim, which takes the pod out of every versioned policy's scope
+# for good. verify-currency.sh refuses to run the pass in that state and says
+# so; this CronJob has no such guard and runs every minute regardless. On
+# 2026-09-05 that state is real: kind-driftwood carries cage-reach-* in
+# namespace `driftwood` only, and the estate's one stale pod is in
+# `tuppence-reset`, which has none.
+#
+# The fix is not in this controller. It is that a governed namespace should
+# carry the reach ladder whether or not a claiming pod happens to be in it --
+# cage-netpol.yaml's own header already names that upgrade. Until then this is
+# a property of the estate the controller does not check and cannot.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -15,9 +59,10 @@ metadata:
   namespace: currency-system
   labels:
     app.kubernetes.io/part-of: platform
+    policy-as-versioned.dev/policy: platform-machinery
 spec:
-  schedule: "* * * * *"          # every minute — the bounded re-evaluation interval
-  concurrencyPolicy: Forbid       # never overlap two reconcile passes
+  schedule: "* * * * *"          # every minute -- the declared exposure window
+  concurrencyPolicy: Forbid       # never overlap two passes
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
@@ -28,6 +73,7 @@ spec:
         metadata:
           labels:
             app.kubernetes.io/part-of: platform
+            policy-as-versioned.dev/policy: platform-machinery
           annotations:
             sidecar.istio.io/inject: "false"   # a batch Job shouldn't wait on a mesh sidecar
         spec:
@@ -40,9 +86,12 @@ spec:
             - name: reconcile
               image: python:3.12-slim
               command: ["python3", "/src/currency.py", "reconcile"]
-              # --action deposture is the default; set DEPOSTURE→evict here to
-              # switch the blunt lever, and SUPPORTED_VERSIONS to override the
-              # ResourceSet read on flux-operator-less demo paths.
+              # There is one action and no flag to change it: re-cage to the
+              # bottom rung. `--action evict` was removed with ticket 91 -- the
+              # estate never removes a workload. `SUPPORTED_VERSIONS` (a
+              # comma-list) overrides the ResourceSet read on demo paths where
+              # flux-operator is not installed; an override that names nothing
+              # is a missing instrument, not an empty array.
               args: []
               securityContext:
                 allowPrivilegeEscalation: false

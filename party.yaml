@@ -63,6 +63,34 @@ publishes:
     name: identity-substrate
     path: identity
     revoked: []
+  # The currency controller (eco-system ticket 91). A THIRD implementations
+  # line, and the reason it needs one is that until 2026-09-05 it had no owner
+  # at all: it shipped in this repo, it was the eco-system's only CronJob, the
+  # gate graded it every run, and no party artefact said whose it was. Ticket 13
+  # item 2 retired it on a homonym ("ticket 07's fx feed replaces it" -- that
+  # feed is money; this controller is version currency), and ticket 75 Q13
+  # withdrew that retirement: it is the estate's only post-admission re-caging
+  # mechanism, so it is owned rather than deleted.
+  #
+  # It gets NO version axis of its own. The contrast is with the `policy` line
+  # above, which really is numbered on a separate axis -- `policy/vX.Y.Z`, cut
+  # by cut-release.yml and pinned by each adopter's platform-pin.yaml -- because
+  # a policy body changes on its own schedule and an adopter pins one version of
+  # it while running another. This module cannot be pinned that way: the rung it
+  # writes is graded/cage.py's own bottom rung and the two must ship together,
+  # so a `currency-controller/vX.Y.Z` line would advertise an independence that
+  # does not exist. It is platform machinery, like the orphan guard, whose
+  # emitted policy body carries `policy-as-versioned.dev/policy:
+  # platform-machinery` for exactly this reason
+  # (distribution/render-orphan-guard.py), and it is numbered by the platform's
+  # own `v*` tag, moving when the platform moves.
+  #
+  # No `payload_schema`: a directory of Python and manifests, not a feed
+  # envelope. `revoked` empty: nothing published from it is withdrawn.
+  - kind: implementations
+    name: currency-controller
+    path: currency-controller
+    revoked: []
 
 # The platform band, moved here from risk/appetite.json's `platform` entry
 # (tolerance 10000, root_of_trust) so the tier selection reads a signed fact
