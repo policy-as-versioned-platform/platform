@@ -5459,9 +5459,17 @@ def selfcheck() -> None:
         # The reference is this same tree composed with every clone PRESENT, so
         # the comparison is publisher-absent against publisher-present and not
         # against a differently-shaped copy.
-        doc_present, _ = compose(work, _real_parent_trees())
+        doc_present, rendered_present = compose(work, _real_parent_trees())
         without_ico = {p: t for p, t in _real_parent_trees().items() if p != "ico"}
-        doc_absent, _ = compose(work, without_ico)
+        doc_absent, rendered_absent = compose(work, without_ico)
+        # The claim that actually matters: not "the prices agree" but "the ARTEFACT re-renders".
+        # An adopter re-verifying its own signed composed tree offline runs verify(), which is a
+        # byte comparison over every rendered file including composed/HEADER.yaml -- so the
+        # parent SHAs the header names have to come back too, which is what the provenance
+        # record's own `sha` is for (a vendored tree is not a git repository and would otherwise
+        # digest to the copy).
+        assert rendered_absent == rendered_present, \
+            sorted(k for k in rendered_present if rendered_present[k] != rendered_absent.get(k))
         assert doc_absent["outcome"] == "composed", doc_absent["refusals"]
         priced = {(e["kind"], e.get("name")): e["amount"] for e in doc_absent["prices"]}
         assert priced, doc_absent["prices"]
@@ -5481,9 +5489,11 @@ def selfcheck() -> None:
         assert doc_tampered["outcome"] == "refused", doc_tampered["prices"]
         assert any("missing instrument" in e and "digest" in e
                    for e in doc_tampered["party_artefact_errors"]), doc_tampered
-    print("OK portability: with ico's clone ABSENT, driftwood re-derives every price it signed, "
-          "from its own vendored payload and converter, and prints the substitution as an open "
-          "limit; a tampered vendored payload refuses against the digest its own tag signed")
+    print("OK portability: with ico's clone ABSENT, driftwood re-derives every price it signed "
+          "and re-renders all %d files of its composed artefact BYTE-IDENTICALLY -- header, "
+          "parent SHAs and all -- from its own vendored payload and converter, printing the "
+          "substitution as an open limit; a tampered vendored payload refuses against the "
+          "digest its own tag signed" % len(rendered_present))
 
     # --- a feed edge with no `since` cannot be annualised over a pin's life,
     # and that is a missing instrument, not a defaulted window (ADR-0020) ---
