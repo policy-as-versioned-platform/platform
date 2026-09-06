@@ -296,6 +296,11 @@ import party_artefact  # noqa: E402
 # in git plumbing, because the hub is not a party and pins no platform) in the hub's
 # verify/feed-contract.
 import pin_content  # noqa: E402
+# Ticket 34: the human-readable render. It is produced HERE, from the artefact this module has
+# just rendered and the evidence document it has just built, so it lands in the same `rendered`
+# mapping -- same pull request, same drift check, same signed tag. It reads nothing else.
+sys.path.insert(0, str(HERE))
+import handbook  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -3057,6 +3062,17 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "deltas": deltas,
         "limits": limits,
     }
+    # The handbook (ticket 34; ADR-0007's last-mile section). A pure function of `rendered` and
+    # `document` -- the two things this call has just derived from the pinned parents -- so it is
+    # re-derivable by anyone holding the artefact, which is what `verify-fresh.sh` grades at a tag.
+    # It goes INTO `rendered`, so `verify()` compares it byte for byte like every other file, the
+    # adopters' compose-check fails on any drift in it, and `cut-release.yml` proves it re-renders
+    # before the tag that carries it is cut.
+    #
+    # A refused composition renders no artefact for anyone to install, so it renders no page
+    # either -- the refusal document is the whole output, exactly as before ticket 34.
+    if document["outcome"] == "composed":
+        rendered[handbook.HANDBOOK_PATH] = handbook.render(dict(rendered), document)
     return document, rendered
 
 
@@ -3793,13 +3809,23 @@ def selfcheck() -> None:
             # case moves the pin itself, so its render is not the same input.
             # (The header records the parent SHAs, which differ between the
             # fixture insurer trees, so it is compared without.)
-            moved = [k for k in rendered1
-                     if k != "composed/HEADER.yaml"
-                     and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
-            assert not moved, moved
-            print("OK untagged pin: the rendered artefact is byte-identical across untagged, "
-                  "recorded and unobserved -- signature state lives in the evidence, never the "
-                  "render")
+            # HANDBOOK.md is excluded here for the opposite reason to HEADER.yaml, and the
+            # exclusion is asserted rather than assumed (ticket 34). What this leg protects is
+            # the objects the ENGINE applies: a signature state must not change what Kyverno
+            # admits. The handbook is applied by nobody and read by a human, and the one fact
+            # ticket 69 priced is exactly "money committed against a quote no signature carries"
+            # -- a page that hid it would be hiding the number the £ seam exists to report.
+            engine = [k for k in rendered1
+                      if k not in ("composed/HEADER.yaml", "composed/HANDBOOK.md")
+                      and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
+            assert not engine, engine
+            hb = "composed/HANDBOOK.md"
+            assert rendered1[hb] != rendered2.get(hb), \
+                "the handbook does not report the pin's signature state"
+            print("OK untagged pin: every object the engine applies is byte-identical across "
+                  "untagged, recorded and unobserved -- signature state lives in the evidence, "
+                  "never the enforced render -- and the handbook, which nothing applies, does "
+                  "report it")
 
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
@@ -4426,13 +4452,22 @@ def selfcheck() -> None:
     # Stripping it is a no-op on every other rendered file: HEADER.yaml is
     # its own separate file, and "holes"/"selected-controls" appear
     # nowhere else in what composition renders. ---
+    # HANDBOOK.md is excluded and then asserted the other way (ticket 34): the claim this leg
+    # makes is about the files the ENGINE reads, and the handbook is read by a human, not by
+    # Kyverno. It exists to say what is NOT covered, so the holes and the selected set are the
+    # part of it that matters most; a handbook without them would be the dashboard the north
+    # star refuses.
     for path, text in rendered.items():
-        if path == "composed/HEADER.yaml":
+        if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
             continue
         assert '"holes"' not in text and "holes:" not in text, path
         assert "selected-controls" not in text, path
+    handbook_text = rendered["composed/HANDBOOK.md"]
+    assert "holes" in handbook_text and "selected-controls" in handbook_text, \
+        "the handbook does not name the artefact's holes or its selected control set"
     print("OK HEADER.yaml: 'holes' and 'selected-controls' live only in the advisory header -- "
-          "stripping it leaves every other rendered file unchanged")
+          "stripping it leaves every file the engine reads unchanged -- and the handbook, which "
+          "the engine never reads, states both")
 
     # ======================================================================
     # ticket 15: the governed namespace lint
@@ -4537,7 +4572,11 @@ def selfcheck() -> None:
         header1 = yaml.safe_load(rendered1["composed/HEADER.yaml"])
         assert header1["ungoverned-namespaces"] == ["acme"], header1["ungoverned-namespaces"]
         for path, text in rendered1.items():
-            if path == "composed/HEADER.yaml":
+            # HANDBOOK.md is excluded, and asserted the other way below (ticket 34): what this
+            # leg protects is that no file the ENGINE reads carries composition's own namespace
+            # bookkeeping. The handbook is read by a human and says which namespaces are outside
+            # the cage on purpose.
+            if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert "ungoverned" not in text, path
             assert "acme" not in text, path
@@ -4547,6 +4586,9 @@ def selfcheck() -> None:
             # a leak of composition's own ungoverned-namespace bookkeeping.
             if path != "composed/governed-namespace-guard.yaml":
                 assert GOVERNED_LABEL not in text, path
+        hb1 = rendered1["composed/HANDBOOK.md"]
+        assert "Ungoverned namespaces (1): `acme`" in hb1, \
+            "the handbook does not name the namespaces outside the cage"
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
@@ -4807,7 +4849,8 @@ def selfcheck() -> None:
     # --- an ico penalty-schema bump (v1 -> v2) moves the uncaged exposure
     # on uk-gdpr/lower-tier through ico's own converter; on driftwood's
     # real band both versions land on the same tier, so the document
-    # prints no change; no rendered file changes on the price move ---
+    # prints no change; no file the engine reads changes on the price move,
+    # and the handbook does (ticket 34) ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
         # Start the copy at v1 whatever the real party is pinned to today: this
@@ -4830,14 +4873,20 @@ def selfcheck() -> None:
         # cage -- so this travels as a label, never as an issue.
         assert price["proposed_as"] == "label", price
         for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
+            # The claim is about what the ENGINE reads (ticket 34). HANDBOOK.md is read by a
+            # human, states every price and the tier each one proposes, and so must move when a
+            # price moves; that it moves is asserted after the loop, not skipped.
+            if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert files1[path] == content, path
+        assert files1["composed/HANDBOOK.md"] != rendered0["composed/HANDBOOK.md"], \
+            "the handbook did not move when the ico price moved"
         assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
     print("OK prices[]: an ico penalty-schema bump (v1 -> v2) moves the uncaged uk-gdpr/lower-"
           "tier exposure through ico's own converter; on driftwood's real band both versions "
           "land on isolated, the bottom rung, so the document prints no tier change and it "
-          "travels as a label; no rendered file changes -- a byte comparison proves it")
+          "travels as a label; no file the engine reads changes and the handbook does -- a "
+          "byte comparison proves both")
 
     # --- a threat-register bump (v1 -> v2) moves tuppence's exposure
     # through the feeds module; same real-band 'no change' shape ---
@@ -4856,12 +4905,17 @@ def selfcheck() -> None:
         assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
         for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
+            # The claim is about what the ENGINE reads (ticket 34). HANDBOOK.md is read by a
+            # human, states every price and the tier each one proposes, and so must move when a
+            # price moves; that it moves is asserted after the loop, not skipped.
+            if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert files1[path] == content, path
+        assert files1["composed/HANDBOOK.md"] != rendered0["composed/HANDBOOK.md"], \
+            "the handbook did not move when tuppence's threat-register price moved"
     print("OK prices[]: a threat-register bump (v1 -> v2) moves tuppence's exposure through the "
           "feeds module; on the real band both versions land on isolated, no tier change; no "
-          "rendered file changes")
+          "file the engine reads changes and the handbook does")
 
     # --- a fixture band that a bump crosses prints a proposed tier, and
     # the mark flips from 'label' (a real tier) as soon as it stops being
@@ -4892,13 +4946,20 @@ def selfcheck() -> None:
         assert price["changed"] is True, price
         assert price["proposed_as"] == "label", price  # quarantine is a real label value
         for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
+            # The claim is about what the ENGINE reads (ticket 34). HANDBOOK.md is read by a
+            # human, states every price and the tier each one proposes, and so must move when a
+            # price moves; that it moves is asserted after the loop, not skipped.
+            if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert files1[path] == content, path
+        assert "`quarantine`" in files1["composed/HANDBOOK.md"] \
+            and "`quarantine`" not in rendered0["composed/HANDBOOK.md"], \
+            "the handbook did not report the tier the crossing bump proposes"
         assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
     print("OK prices[]: a fixture ico band (v1->v2) that crosses driftwood's real GBP40,000 "
           "tolerance prints a proposed tier through compose() (isolated -> quarantine, "
-          "changed=True), marked as a label; no rendered file changes")
+          "changed=True), marked as a label; no file the engine reads changes and the "
+          "handbook names the proposed tier")
 
     # --- no scheduler, no wall-clock read anywhere in composition.py
     # itself, except through an explicit --as-of passed to the feeds
@@ -4959,8 +5020,9 @@ def selfcheck() -> None:
         "printing old/new price and old/proposed tier every run; on the real bands neither "
         "changes a tier; a fixture band that a bump crosses prints a proposed tier; every "
         "selected tier is a real label value now that ADR-0022 retired the deny rung and made "
-        "the bottom rung a running, unreachable `isolated` cage; no rendered file ever "
-        "changes on a price move; and composition itself reads no wall clock and calls no "
+        "the bottom rung a running, unreachable `isolated` cage; no file the engine reads "
+        "ever changes on a price move, while the handbook -- which nothing applies -- does; "
+        "and composition itself reads no wall clock and calls no "
         "scheduler. TICKET 25 (the £ seam, ADR-0020/ADR-0021): every prices[] entry names its "
         "perspective, currency, source and kind and restates its own amount per customer "
         "against the perspective party's OWN signed size; the one summing helper "
