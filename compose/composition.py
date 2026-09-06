@@ -257,6 +257,46 @@ closes nothing. Nothing here refuses, and nothing here claims a signature
 VERIFIES: the identity-pinned verification against the publisher's real
 remote is the hub's verify/feed-contract/verify-untagged-pin-is-priced.sh.
 
+ECO-SYSTEM TICKET 45 (ADR-0019, ADR-0020, ADR-0025): SWITCHING COST,
+COMPUTED IN COMPOSITION -- AND THE TREE THAT MAKES IT PAYABLE.
+
+  * A `switching` entry lands in prices[] for every SUBSTITUTABLE parent
+    edge -- a `feed`, because a feed is discovered through the publisher's
+    own `publishes[]` record and any party may publish one (ADR-0019
+    point 5). `implementations` and `controls` resolve through a Flux pin
+    and a catalogue; dropping one is not a switch and nothing here prices
+    it. That limit is printed, not implied.
+  * The amount is MEASURED: the whole edge set is re-priced with that
+    publisher's feed edges dropped and the two priceable exposures are
+    differenced through the estate's one summing helper. Re-composing, not
+    subtracting -- driftwood's own twin borrows its loss-event frequency
+    from the threat register it subscribes to, so dropping that publisher
+    does not merely remove a line, it stops the twin pricing at all, and a
+    subtraction would have printed a confident number and been wrong.
+  * It is an annual rate, because every figure in prices[] is one.
+    `over_pin_life` carries that rate over the window the pin has actually
+    stood, from the edge's own signed `since` to this composition's own
+    as-of -- two signed facts, so no clock is read (D1). An edge with no
+    `since` is a window with one end and REFUSES as a missing instrument.
+  * A counterfactual that cannot be priced at all is a named
+    could-not-look: no amount, no per-customer restatement, and the
+    publisher's own refusal carried verbatim on `could_not_look`. Never a
+    pass and never a guess.
+  * A `premium` is a cost, not exposure, so dropping an insurer moves the
+    priceable exposure by nothing. The premium that goes with it is named
+    on `unpriceable[]` beside the figure and never folded into it.
+  * VENDORING. `composed/feeds/<party>/<version>/` carries the adopter's
+    own copy of every payload it was priced from, the publisher's party
+    artefact where it has one, and the converter that priced it -- each at
+    the publisher's OWN relative path, so feed_file(), _converter() and
+    pin_content read a vendored tree with no special case. Every file is
+    digested into `PROVENANCE.json` and the digests ride on the header, so
+    the adopter's own tag signs them. With a publisher's clone absent the
+    adopter re-derives its own signed prices from that copy and names the
+    substitution on an open `publisher-clone-absent` limit; a copy that
+    does not match its signed digest REFUSES rather than pricing from
+    bytes nobody signed.
+
 Usage:
     composition.py compose <adopter-dir> [--estate-clone DIR] [--out DIR]
     composition.py verify <adopter-dir> [--estate-clone DIR]
@@ -377,6 +417,51 @@ FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema
 # Two of the four items in the spec's one schema pass are therefore reserved,
 # not observed: nothing in this estate constructs an entry of those kinds yet.
 PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability")
+
+# ---- eco-system ticket 45: the switching cost, and the tree that pays it ----
+#
+# A SUBSTITUTABLE parent is a `feed`. A feed is discovered through the
+# publisher's own `publishes[]` record and any party may publish one
+# (ADR-0019 point 5), so leaving one publisher for another is a move this
+# estate can describe. `implementations` and `controls` resolve through a Flux
+# pin and a catalogue; dropping one is not a switch, it is leaving the estate,
+# and nothing here prices that. The limit is printed, not implied.
+#
+# The amount is MEASURED, never modelled: the same composition is re-priced
+# with that publisher's feed edges dropped and the two priceable exposures are
+# differenced. That is why it must re-compose rather than subtract the entry it
+# was about to lose -- driftwood's twin entry annualises on the threat
+# register's own LEF, so dropping the threat publisher moves a price that is
+# not the threat publisher's.
+#
+# `premium` is not exposure (EXPOSURE_KINDS below says why), so dropping an
+# insurer moves the priceable exposure by nothing. The premium that goes with
+# it is NAMED on `unpriceable[]` rather than folded into a figure it does not
+# belong in: no sum crosses a perspective, a currency, or the line between what
+# a party is on the hook for and what it pays to lay that off.
+SWITCHING_KIND = "switching"
+SWITCHING_BASIS = "re-composed with this publisher's feed edges dropped"
+# Annualised over the pin's life: the amount is a rate (£/yr, like every other
+# figure in prices[]), and `over_pin_life` carries that rate over the window the
+# pin has actually stood -- from the edge's own signed `since` to this
+# composition's own as-of. Both ends are signed facts, so no clock is read (D1).
+MONTHS_PER_YEAR = 12
+# Where the adopter keeps its own copy of every payload it was priced from and
+# the converter that priced it, under the adopter's OWN signature. Without it
+# the adopter cannot restate its own signed history at all once a publisher's
+# repository is unreachable: the payload lives in the publisher's tree and the
+# converter is a script in somebody else's repo. `<party>/<version>/` is the
+# ticket's own layout; inside, the publisher's OWN relative paths are
+# reproduced, so feed_file(), _converter() and pin_content read a vendored tree
+# with no special case at all.
+VENDORED_DIR = ("composed", "feeds")
+VENDORED_PROVENANCE = "PROVENANCE.json"
+VENDORED_LIMIT = "publisher-clone-absent"
+# Named ceiling: a vendored tree carries the feed and its converter, not the FX
+# publisher's `converters/fx.py`. Every party in this estate reports in GBP and
+# every feed prices in GBP, so no re-derivation has ever needed a rate; one that
+# did would refuse for want of an instrument (_fx_rate), which is the right
+# answer and not a silent one.
 # A feed whose name starts with this is an insurance quote: one feed per insured
 # adopter (`quote-driftwood`, ticket 14 answer 4), priced by its publisher under
 # the INSURER's perspective and read here as one contract cost line under the
@@ -488,6 +573,20 @@ def _pin_containment_limit(parents: list[dict], parent_trees: dict[str, Path] | 
 
 
 def _resolve_unpinned_sha(tree_path: Path, kind: str, version: str, name: str | None = None) -> str:
+    # A VENDORED tree (ticket 45) is not a git repository and its content digest
+    # is not the publisher's commit. The SHA the publisher's own clone resolved
+    # to is recorded in the provenance the adopter signed, so a re-derivation
+    # with the clone absent names the same parent commit the signed artefact
+    # names -- rather than a digest of the copy, which would make every
+    # re-derivation disagree with the thing it is re-deriving.
+    provenance = Path(tree_path) / VENDORED_PROVENANCE
+    if provenance.exists():
+        try:
+            recorded = json.loads(provenance.read_text()).get("sha")
+        except json.JSONDecodeError:
+            recorded = None
+        if recorded:
+            return str(recorded)
     if kind == "feed" and name:
         version_dir = feed_file("", name, version, tree_path).parent
     else:
@@ -633,6 +732,135 @@ def _converter(name: str, tree_path: Path) -> Path:
         if candidate.exists():
             return candidate
     raise Refused(f"no converter for feed {name!r} under {tree_path}")
+
+
+# --------------------------------------------------------------------------
+# 1b. the vendored feed tree (eco-system ticket 45)
+# --------------------------------------------------------------------------
+
+
+def vendored_rel(party: str, version: str) -> str:
+    """`composed/feeds/<party>/<version>` -- the ticket's own layout."""
+    return "/".join((*VENDORED_DIR, party, str(version)))
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def vendor_feed(edge: dict, tree: Path, sha: str) -> tuple[str, dict[str, str], dict]:
+    """The adopter's own copy of ONE priced feed: the publisher's party
+    artefact, the payload at the version this adopter pins, and the converter
+    that prices it -- each at the publisher's own relative path, so a vendored
+    tree is read by feed_file(), _converter() and pin_content with no special
+    case anywhere.
+
+    Returns (base path relative to the adopter, files by relative path, the
+    provenance record). Every file is digested INTO the record and the record
+    is rendered, so the adopter's own tag signs the digests and a later
+    re-derivation is held to them.
+
+    Refuses -- never partially vendors -- when a file it must copy is not
+    there: a half-vendored tree re-derives half a price, which is worse than
+    saying it cannot look (ADR-0020)."""
+    name, version = _feed_name(edge), str(edge["version"])
+    tree = Path(tree)
+    feed_path = feed_file(edge["party"], name, version, tree)
+    if not feed_path.exists():
+        raise Refused(f"missing instrument: no file at {feed_path} for feed {name!r}@{version}")
+    feed_rel = str(feed_path.relative_to(tree))
+    files = {feed_rel: feed_path.read_text()}
+    # The publisher's own party artefact travels too, where it has one: it is
+    # what says WHERE that publisher keeps the feed (ADR-0019 point 5), and
+    # without it a vendored tree can only be read through the two pre-envelope
+    # locations feed_file still bridges. A publisher that ships none is
+    # recorded as shipping none rather than given one it never signed.
+    party_yaml = tree / "party.yaml"
+    if party_yaml.exists():
+        files["party.yaml"] = party_yaml.read_text()
+
+    converter_rel: str | None = None
+    converter_from: str | None = None
+    if name in FEED_CONVERTERS:
+        converter = _converter(name, tree)
+        # `<name>/to_fair_scenario.py` is the FIRST place _converter looks, so a
+        # vendored tree ships its converter there whichever party's copy priced
+        # it -- and the record says whose copy that was. The threat register's
+        # publisher ships none of its own today and platform's is used; that is
+        # a fact about the estate, and it is written down rather than smoothed
+        # over by copying the file to a path that implies the publisher's.
+        converter_rel = f"{name}/{converter.name}"
+        converter_from = next((p for p, t in (("platform", PLATFORM_DIR),)
+                               if str(converter).startswith(str(t))
+                               and not str(converter).startswith(str(tree))), edge["party"])
+        files[converter_rel] = converter.read_text()
+
+    record = {
+        "party": edge["party"], "kind": edge["kind"], "name": name, "version": version,
+        "sha": sha,
+        "feed_path": feed_rel,
+        "party_artefact": "party.yaml" if party_yaml.exists() else None,
+        "converter": converter_rel,
+        "converter_from": converter_from,
+        "published_at": _feed_as_of(feed_path),
+        "files": {rel: _digest(text) for rel, text in sorted(files.items())},
+    }
+    files[VENDORED_PROVENANCE] = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    return vendored_rel(edge["party"], version), files, record
+
+
+def vendored_tree(adopter_dir: Path, party: str, version: str) -> Path | None:
+    """The adopter's own vendored copy of a publisher's tree, if it carries one
+    for this exact pin AND every file in it still digests to what the adopter's
+    own signature recorded. A tampered copy is a MISSING instrument, not a
+    cheaper one: it refuses (ADR-0020) rather than pricing from bytes nobody
+    signed."""
+    base = Path(adopter_dir) / vendored_rel(party, version)
+    provenance = base / VENDORED_PROVENANCE
+    if not provenance.exists():
+        return None
+    try:
+        record = json.loads(provenance.read_text())
+    except json.JSONDecodeError as e:
+        raise Refused(f"missing instrument: {provenance} is not readable JSON ({e}), so the "
+                       f"vendored copy of {party}@{version} cannot be trusted to re-derive "
+                       f"anything") from None
+    for rel, digest in (record.get("files") or {}).items():
+        path = base / rel
+        if not path.exists():
+            raise Refused(f"missing instrument: {provenance} records {rel}, and the vendored "
+                           f"copy of {party}@{version} does not carry it")
+        if _digest(path.read_text()) != digest:
+            raise Refused(f"missing instrument: the vendored {rel} for {party}@{version} does "
+                           f"not match the digest {provenance} signed, so the bytes this "
+                           f"composition would price from are not the bytes anybody signed")
+    return base
+
+
+def _feed_publishers(adopter_dir: Path, parent_trees: dict[str, Path]) -> dict[str, list[str]]:
+    """feed name -> every party this composition can see that DECLARES it
+    publishes that name on its own signed party.yaml. `publishes[]` is the only
+    discovery record there is (ADR-0019 point 5), so this is what the estate can
+    honestly say about whether a publisher has an alternate: it is a survey of
+    the pinned parent set and the adopter itself, and it never asserts that no
+    alternate exists anywhere -- only that none is visible from here."""
+    found: dict[str, list[str]] = {}
+    for tree in [Path(adopter_dir), *(Path(t) for t in parent_trees.values())]:
+        party_yaml = tree / "party.yaml"
+        if not party_yaml.exists():
+            continue
+        try:
+            doc = yaml.safe_load(party_yaml.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        who = doc.get("party")
+        for record in doc.get("publishes") or []:
+            if record.get("kind") != "feed" or not record.get("name") or not who:
+                continue
+            names = found.setdefault(record["name"], [])
+            if who not in names:
+                names.append(who)
+    return {name: sorted(parties) for name, parties in found.items()}
 
 
 # --------------------------------------------------------------------------
@@ -1211,8 +1439,14 @@ def _price_entry(source: str, kind: str, perspective: str, currency: str, amount
     if kind not in PRICE_KINDS:
         raise Refused(f"unknown price kind {kind!r} (known: {', '.join(PRICE_KINDS)})")
     customers = (perspective_doc.get("size") or {}).get("customers")
+    # `amount` is None only on a ticket-45 switching entry whose counterfactual
+    # could not be priced at all. A restatement of a figure nobody has is not a
+    # zero and not an error; it is absent, exactly as it is for a party that
+    # signs no customer count.
     per_customer = ({"amount": amount / customers, "currency": currency}
-                     if isinstance(customers, int) and customers > 0 else None)
+                     if isinstance(customers, int) and customers > 0
+                     and isinstance(amount, (int, float)) and not isinstance(amount, bool)
+                     else None)
     return {"source": source, "kind": kind, "perspective": perspective,
             "currency": currency, "amount": amount, "per_customer": per_customer, **extra}
 
@@ -1256,6 +1490,16 @@ def _load_scenario(rel_path: str, root: Path = PLATFORM_DIR) -> dict:
     return json.loads((Path(root) / rel_path).read_text())
 
 
+# One converter run per (converter bytes, payload bytes, arguments). Ticket 45
+# re-prices the whole edge set once per substitutable publisher to MEASURE the
+# switching cost, which multiplies the converter subprocesses this module runs
+# by the number of feed edges. The key is CONTENT, not a path or a version, so a
+# fixture that rewrites a payload in place under the same version is a different
+# key and is really re-run -- a cache keyed on the pin would have quietly
+# answered a stale price to the very tests that plant a change.
+_CONVERTER_CACHE: dict[tuple, dict] = {}
+
+
 def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) -> dict:
     """Resolve the feed file, unwrap its envelope, hand the payload to the
     publisher's converter as a file (the converters take a path, unchanged)."""
@@ -1263,15 +1507,22 @@ def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) ->
     if not path.exists():
         raise Refused(f"feed {name}@{version}: no file at {path}")
     payload = load_feed_payload(path, name, version)
+    converter = _converter(name, tree_path)
+    body = json.dumps(payload, sort_keys=True)
+    key = (name, body, _digest(converter.read_text()), tuple(args))
+    if key in _CONVERTER_CACHE:
+        return copy.deepcopy(_CONVERTER_CACHE[key])
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
         json.dump(payload, fh)
     try:
         result = subprocess.run(
-            [sys.executable, str(_converter(name, tree_path)), *args[:1], fh.name, *args[1:]],
+            [sys.executable, str(converter), *args[:1], fh.name, *args[1:]],
             capture_output=True, text=True, check=True)
     finally:
         Path(fh.name).unlink(missing_ok=True)
-    return json.loads(result.stdout)
+    scenario = json.loads(result.stdout)
+    _CONVERTER_CACHE[key] = copy.deepcopy(scenario)
+    return scenario
 
 
 def _threat_scenario(feed_version: str, party: str, tree_path: Path = PLATFORM_DIR) -> dict:
@@ -2631,11 +2882,112 @@ def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
     }
 
 
+# --------------------------------------------------------------------------
+# 8e. the switching cost (eco-system ticket 45; ADR-0020)
+# --------------------------------------------------------------------------
+
+
+def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
+                       parent_trees: dict[str, Path], prev_header: dict | None,
+                       *, adopter_dir: Path, perspective_doc: dict,
+                       band_currency: str | None, floor: str | None,
+                       prev_prices: list[dict] | None, full_prices: list[dict]) -> list[dict]:
+    """One `switching` entry per substitutable parent edge, under the adopter's
+    own perspective and in the adopter's own reporting currency.
+
+    The amount is what this adopter's PRICEABLE EXPOSURE loses if this publisher
+    goes: the whole edge set is re-priced with that publisher's feed edges
+    dropped and the two exposures are differenced through the estate's one
+    summing helper, so nothing crosses a perspective or a currency on the way.
+    It is an annual rate because every figure in prices[] is one;
+    `over_pin_life` carries it over the window the pin has actually stood.
+
+    Refuses -- never defaults -- where the window has only one end: an edge with
+    no signed `since`, or a composition whose pinned feeds carry no published_at
+    to be as-of. A pin's life is a window between two signed dates (ADR-0020)."""
+    reporting = _reporting_currency(perspective_doc)
+    as_of = _composition_as_of(edges, parent_trees)
+    exposure_of = (lambda entries: _sum_prices(
+        [e for e in entries if e.get("kind") in EXPOSURE_KINDS], adopter_party, reporting))
+    full_exposure = exposure_of(full_prices)
+    publishers = _feed_publishers(adopter_dir, parent_trees)
+    # The percent-of-turnover half of every regime price scales against the
+    # perspective party's OWN signed size; without one the publisher prices at
+    # its statutory cap, which is a ceiling every firm shares and therefore says
+    # nothing about THIS one. Priced (a cap is a published number, not a guess),
+    # flagged, and graded as a could-not-look by the check rather than a pass.
+    sized = isinstance((perspective_doc.get("size") or {}).get("turnover"), dict)
+    entries: list[dict] = []
+    for edge in edges:
+        if edge["kind"] not in FEED_KINDS:
+            continue
+        name = _feed_name(edge)
+        since = edge.get("since")
+        if not since:
+            raise Refused(
+                f"missing instrument: the {edge['party']} feed edge {name!r}@{edge['version']} "
+                f"declares no `since`, so the life of the pin its switching cost is annualised "
+                f"over is a window with one end")
+        if not as_of:
+            raise Refused(
+                f"missing instrument: no feed {adopter_party} pins carries a published_at, so "
+                f"this composition has no as-of date and the life of the {name!r} pin cannot be "
+                f"measured against one")
+        # THE COUNTERFACTUAL. It can refuse, and when it does that refusal is
+        # the answer rather than an error: driftwood's own forward-intel
+        # borrows its loss-event frequency from the threat register it
+        # subscribes to, so with that publisher dropped the twin has no
+        # frequency to annualise on and composition will not guess one. The
+        # switching cost is then not a number at all -- it is "this adopter
+        # stops being able to price its own book" -- and the entry says so, in
+        # the publisher's own words, with NO amount. Never a pass, never a
+        # guess. Subtracting the entry we were about to lose would have printed
+        # a confident figure here and been wrong.
+        could_not_look: str | None = None
+        without: list[dict] = []
+        try:
+            without = compute_prices(
+                [e for e in edges if e is not edge], adopter_party, tolerance, parent_trees,
+                prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
+                band_currency=band_currency, floor=floor, prev_prices=prev_prices,
+                include_switching=False)
+        except Refused as e:
+            could_not_look = str(e)
+        amount = None if could_not_look else full_exposure - exposure_of(without)
+        # A counterfactual that refused prices NOTHING, so nothing is kept: the
+        # whole book goes unpriceable, not just the dropped publisher's line.
+        kept = {(e["kind"], e.get("name")) for e in without} if could_not_look is None else set()
+        months = _months_apart(str(since), as_of)
+        entries.append(_price_entry(
+            edge["party"], SWITCHING_KIND, adopter_party, reporting, amount, perspective_doc,
+            name=name, version=edge["version"],
+            since=str(since), as_of=as_of, pin_life_months=months,
+            over_pin_life=None if amount is None else amount * months / MONTHS_PER_YEAR,
+            could_not_look=could_not_look,
+            # Every party visible from here that declares it publishes this same
+            # feed name, minus the one this edge pins. Empty is a surveyed
+            # absence printed by name, never an assumption that none exists.
+            alternates=[p for p in publishers.get(name, []) if p != edge["party"]],
+            # What stops being priced AT ALL if this edge goes -- carried beside
+            # the amount, never summed into it, because a premium is a cost and
+            # an exposure is not, and one array must not add them together.
+            unpriceable=[{"kind": e["kind"], "source": e["source"], "name": e.get("name"),
+                           "perspective": e["perspective"], "currency": e["currency"],
+                           "amount": e["amount"]}
+                          for e in full_prices if (e["kind"], e.get("name")) not in kept],
+            sized=sized,
+            basis=SWITCHING_BASIS,
+            dropped_edges=[f"{edge['party']}/{edge['kind']}"
+                            + (f":{name}" if name else "") + f"@{edge['version']}"]))
+    return entries
+
+
 def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | None,
                     parent_trees: dict[str, Path], prev_header: dict | None,
                     *, adopter_dir: Path, perspective_doc: dict,
                     band_currency: str | None = None, floor: str | None = None,
-                    prev_prices: list[dict] | None = None) -> list[dict]:
+                    prev_prices: list[dict] | None = None,
+                    include_switching: bool = True) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -2679,6 +3031,15 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                        prev_prices or [], lef_by_feed, band_currency)
     if twin is not None:
         prices.append(twin)
+    if include_switching:
+        # Last, and over the finished list: a switching cost is a statement
+        # ABOUT the prices above it, and re-pricing an edge set that already
+        # contains one would price the statement.
+        prices += compute_switching(
+            edges, adopter_party, tolerance, parent_trees, prev_header,
+            adopter_dir=adopter_dir, perspective_doc=perspective_doc,
+            band_currency=band_currency, floor=floor, prev_prices=prev_prices,
+            full_prices=prices)
     return prices
 
 
@@ -2701,6 +3062,7 @@ def _refused(errors: list[str]) -> dict:
         "prices": [],
         "deltas": [],
         "limits": [],
+        "vendored": [],
     }
 
 
@@ -2736,6 +3098,28 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         # the catalogue is signed by the same tag as the composed artefact
         # (ADR-0017's "no separate pin"), so no tag of its own is needed.
         parent_trees[adopter_party] = adopter_dir
+    # Eco-system ticket 45. A feed parent whose CLONE is not here is priced from
+    # the adopter's own vendored copy of it, if the adopter carries one that
+    # still digests to what its own signature recorded. This is the whole point
+    # of vendoring: an adopter that cannot reach a publisher can still restate
+    # its own signed history. The substitution is never silent -- every party
+    # read this way is named on an open limits[] entry below.
+    from_vendor: list[str] = []
+    for edge in edges:
+        if edge["kind"] not in FEED_KINDS or edge["party"] == adopter_party:
+            continue
+        tree = parent_trees.get(edge["party"])
+        if tree is not None and Path(tree).is_dir():
+            continue
+        try:
+            vendored = vendored_tree(adopter_dir, edge["party"], str(edge["version"]))
+        except Refused as e:
+            missing.append(f"{edge['party']}/{edge['kind']}@{edge['version']}: {e}")
+            continue
+        if vendored is not None:
+            parent_trees[edge["party"]] = vendored
+            if edge["party"] not in from_vendor:
+                from_vendor.append(edge["party"])
     for edge in edges:
         party, kind, version = edge["party"], edge["kind"], edge["version"]
         tree = parent_trees.get(party)
@@ -2847,6 +3231,16 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "status": "closed" if len(implementations_parties) >= 2 else "open",
     }]
     limits.append(_pin_containment_limit(parents, parent_trees, merged))
+    feed_edges = [e for e in edges if e["kind"] in FEED_KINDS and e["party"] != adopter_party]
+    limits.append({
+        "name": VENDORED_LIMIT,
+        "detail": ("priced from the adopter's own vendored copy because the publisher's clone "
+                    "was not there to read: " + ", ".join(from_vendor)) if from_vendor else
+                   "every priced feed was read from its publisher's own pinned tree",
+        "count": len(from_vendor),
+        "checked": len(feed_edges),
+        "status": "open" if from_vendor else "closed",
+    })
 
     restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
                                                                 parent_trees)
@@ -2983,6 +3377,39 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
 
+    # Eco-system ticket 45: the adopter's own copy of every payload it was
+    # priced from and the converter that priced it, rendered into the composed
+    # tree so the adopter's OWN tag signs it. Nothing in composed/ reads it and
+    # no Flux Kustomization points at composed/feeds/ (the adopter's
+    # ResourceSet ranges composed/policies/v<version> only); it is there so a
+    # reader with this repository and nothing else can re-derive these prices.
+    vendored_records: list[dict] = []
+    for edge in feed_edges:
+        base = vendored_rel(edge["party"], str(edge["version"]))
+        if any(r["path"] == base for r in vendored_records):
+            # Two feeds from one party at one version would land on one another
+            # in `composed/feeds/<party>/<version>/`. Refuse rather than
+            # overwrite: a silently clobbered payload re-derives the wrong price
+            # and looks fine doing it.
+            refusals.append({"kind": "missing-instrument", "subject": edge["party"],
+                              "detail": f"missing instrument: two feed edges of {edge['party']} "
+                                        f"at {edge['version']} both vendor to {base}, and one "
+                                        f"would overwrite the other",
+                              "needs_composition": True})
+            continue
+        try:
+            _, files, record = vendor_feed(
+                edge, parent_trees[edge["party"]],
+                next(p["sha"] for p in parents if p["party"] == edge["party"]
+                      and p.get("name") == edge.get("name")))
+        except Refused as e:
+            refusals.append({"kind": "missing-instrument", "subject": edge["party"],
+                              "detail": str(e), "needs_composition": True})
+            continue
+        for rel, content in files.items():
+            rendered[f"{base}/{rel}"] = content
+        vendored_records.append({**record, "path": base})
+
     for (version, family, base), meta in sorted(merged.items()):
         doc = render_member(meta["doc"], meta["action"], adopter_party, meta["source_ref"], meta["path"])
         # The member's own identity, not its source path's basename -- an
@@ -3031,6 +3458,15 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     # Which versioned rule picked the tier (ADR-0021). Recorded only where the
     # adopter actually ships a selection-policy package -- a null key on an
     # adopter that ships none would be noise in a rendered, Flux-applied file.
+    # Which feed payloads and converters this artefact carries its own copy of,
+    # and what they digest to (ticket 45). On the header, so the adopter's own
+    # tag signs the digests: a vendored copy nobody signed is not an instrument,
+    # it is a file.
+    if vendored_records:
+        header["vendored-feeds"] = [
+            {"party": r["party"], "name": r["name"], "version": r["version"],
+             "path": r["path"], "sha": r["sha"], "files": r["files"]}
+            for r in vendored_records]
     selection_policy = _selection_policy_version(adopter_dir)
     if selection_policy is not None:
         header["selection-policy"] = selection_policy
@@ -3056,6 +3492,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "prices": prices,
         "deltas": deltas,
         "limits": limits,
+        "vendored": vendored_records,
     }
     return document, rendered
 
@@ -3543,10 +3980,13 @@ def selfcheck() -> None:
         assert entry["perspective"] == "driftwood", entry
         assert entry["currency"] == _reporting_currency(driftwood_doc) == "GBP", entry
         assert entry["kind"] in PRICE_KINDS, entry
-        if customers:
+        if customers and entry["amount"] is not None:
             assert entry["per_customer"] == {"amount": entry["amount"] / customers,
                                               "currency": entry["currency"]}, entry
         else:
+            # No signed customer count, or (ticket 45) a switching entry whose
+            # counterfactual could not be priced: a restatement of a figure
+            # nobody has is absent, never a zero.
             assert entry["per_customer"] is None, entry
     print("OK prices[]: every entry names its perspective, currency, source and kind, and "
           "restates its own amount per customer against driftwood's OWN signed size "
@@ -4829,15 +5269,13 @@ def selfcheck() -> None:
         # ADR-0022: isolated is a REAL label value -- a running, unreachable
         # cage -- so this travels as a label, never as an issue.
         assert price["proposed_as"] == "label", price
-        for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
-                continue
-            assert files1[path] == content, path
-        assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
+        _assert_only_the_moved_feed_changed(rendered0, files1)
     print("OK prices[]: an ico penalty-schema bump (v1 -> v2) moves the uncaged uk-gdpr/lower-"
           "tier exposure through ico's own converter; on driftwood's real band both versions "
           "land on isolated, the bottom rung, so the document prints no tier change and it "
-          "travels as a label; no rendered file changes -- a byte comparison proves it")
+          "travels as a label; no rendered POLICY file changes -- a byte comparison proves it, "
+          "and the only file that does move is the adopter's own vendored copy of the payload "
+          "that moved")
 
     # --- a threat-register bump (v1 -> v2) moves tuppence's exposure
     # through the feeds module; same real-band 'no change' shape ---
@@ -4855,13 +5293,10 @@ def selfcheck() -> None:
         assert price["old_price"] != price["new_price"], price  # v2 raises tuppence's LEF
         assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
-        for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
-                continue
-            assert files1[path] == content, path
+        _assert_only_the_moved_feed_changed(rendered0, files1)
     print("OK prices[]: a threat-register bump (v1 -> v2) moves tuppence's exposure through the "
           "feeds module; on the real band both versions land on isolated, no tier change; no "
-          "rendered file changes")
+          "rendered POLICY file changes")
 
     # --- a fixture band that a bump crosses prints a proposed tier, and
     # the mark flips from 'label' (a real tier) as soon as it stops being
@@ -4891,14 +5326,181 @@ def selfcheck() -> None:
         assert price["proposed_tier"] == "quarantine", price
         assert price["changed"] is True, price
         assert price["proposed_as"] == "label", price  # quarantine is a real label value
-        for path, content in rendered0.items():
-            if path == "composed/HEADER.yaml":
-                continue
-            assert files1[path] == content, path
-        assert files1.keys() == rendered0.keys(), (files1.keys(), rendered0.keys())
+        _assert_only_the_moved_feed_changed(rendered0, files1)
     print("OK prices[]: a fixture ico band (v1->v2) that crosses driftwood's real GBP40,000 "
           "tolerance prints a proposed tier through compose() (isolated -> quarantine, "
-          "changed=True), marked as a label; no rendered file changes")
+          "changed=True), marked as a label; no rendered POLICY file changes")
+
+    # ------------------------------------------------------------------
+    # ECO-SYSTEM TICKET 45: switching cost, and the vendored feed tree
+    # ------------------------------------------------------------------
+    # One switching entry per SUBSTITUTABLE parent edge -- a feed, because a
+    # feed is discovered through publishes[] and any party may publish one
+    # (ADR-0019 point 5). Its amount is measured, not modelled: the same
+    # composition is re-priced with that publisher's feed edges dropped and
+    # the two priceable exposures are differenced.
+    # `document` and `rendered` above are rebound by the fixtures in between, so
+    # this section composes the real driftwood again rather than grading a
+    # leftover -- the mistake this very assertion caught on its first run.
+    doc45, rendered45 = compose(driftwood, _real_parent_trees())
+    assert doc45["outcome"] == "composed", doc45["refusals"]
+    drift_doc = yaml.safe_load((driftwood / "party.yaml").read_text())
+    feed_edges = [e for e in drift_doc["inherits"] if e.get("kind") in FEED_KINDS]
+    switching = [e for e in doc45["prices"] if e["kind"] == "switching"]
+    assert len(switching) == len(feed_edges), (len(switching), len(feed_edges))
+    by_name = {e["name"]: e for e in switching}
+    assert set(by_name) == {_feed_name(e) for e in feed_edges}, sorted(by_name)
+    for entry in switching:
+        assert entry["perspective"] == "driftwood", entry
+        assert entry["currency"] == "GBP", entry
+        assert entry["source"] != "driftwood", entry
+        # Every price carries a perspective and a currency, and restates itself
+        # per customer against the perspective party's own signed size.
+        assert entry["sized"] is True, entry
+        if entry["amount"] is None:
+            # A counterfactual that could not be priced is a NAMED could-not-
+            # look: no amount, no restatement, and the publisher's own refusal
+            # carried verbatim.
+            assert entry["could_not_look"] and entry["over_pin_life"] is None, entry
+            assert entry["per_customer"] is None, entry
+        else:
+            assert entry["could_not_look"] is None, entry
+            assert entry["per_customer"]["currency"] == "GBP", entry
+            assert math.isclose(entry["per_customer"]["amount"] * drift_doc["size"]["customers"],
+                                entry["amount"]), entry
+            assert math.isclose(entry["over_pin_life"],
+                                entry["amount"] * entry["pin_life_months"] / MONTHS_PER_YEAR), entry
+        # Annualised over the pin's life: a rate, and the window it has been
+        # running over, from the edge's own signed `since` and the composition's
+        # own as-of. No clock is read (D1).
+        assert entry["since"] == "2026-08-28", entry
+        assert entry["as_of"] and entry["pin_life_months"] >= 0, entry
+        # Nobody in this estate publishes a second feed of any of these names,
+        # so the alternate set is EMPTY and said so by name -- never assumed.
+        assert entry["alternates"] == [], entry
+        assert entry["basis"] == SWITCHING_BASIS, entry
+
+    # The regime feed is the biggest single line driftwood prices, and dropping
+    # ico takes exactly that line out of the priceable exposure.
+    ico_regime_price = next(e for e in doc45["prices"]
+                            if e["kind"] == "feed" and e["name"] == "penalty-schema")
+    assert math.isclose(by_name["penalty-schema"]["amount"], ico_regime_price["amount"]), \
+        (by_name["penalty-schema"]["amount"], ico_regime_price["amount"])
+    # Dropping the THREAT publisher is not a number at all, and re-composing is
+    # the only way to find that out: driftwood's own forward-intel borrows its
+    # loss-event frequency from the threat register it subscribes to, so with
+    # that publisher gone the twin has no frequency to annualise on and the
+    # whole composition refuses. Subtracting the line we were about to lose
+    # would have printed a confident GBP19,558 and been wrong by the rest of
+    # the book. The entry carries no amount, the publisher's own refusal
+    # verbatim, and every price that stops being computable.
+    threat = by_name["threat-register"]
+    assert threat["amount"] is None and "no lef" in threat["could_not_look"], threat
+    assert {(u["kind"], u.get("name")) for u in threat["unpriceable"]} == \
+        {(e["kind"], e.get("name")) for e in doc45["prices"] if e["kind"] != "switching"}, threat
+    # The insurer's quote is a COST, not exposure. Dropping it moves the
+    # priceable exposure by nothing, and the premium that goes with it is
+    # NAMED rather than folded into a figure it does not belong in.
+    quote = by_name["quote-driftwood"]
+    assert math.isclose(quote["amount"], 0.0, abs_tol=1e-9), quote
+    assert [(u["kind"], u["source"]) for u in quote["unpriceable"]] == [("premium", "insurer")], quote
+    print("OK prices[]: one `switching` entry per feed edge, each measured by re-composing with "
+          "that publisher's edges dropped -- ico's costs its whole regime line, the threat "
+          "publisher's is not a number at all because driftwood's own twin borrows that feed's "
+          "LEF and stops pricing without it, and the insurer's moves the exposure by nothing "
+          "and names the premium it would lose instead of folding it in")
+
+    # --- the vendored feed tree: the adopter's own copy of every priced
+    # payload and the converter that priced it, under its own signature ---
+    vendored = {p: c for p, c in rendered45.items() if p.startswith("composed/feeds/")}
+    for edge in feed_edges:
+        base = f"composed/feeds/{edge['party']}/{edge['version']}"
+        assert f"{base}/party.yaml" in vendored, sorted(vendored)
+        assert f"{base}/PROVENANCE.json" in vendored, sorted(vendored)
+        record = json.loads(vendored[f"{base}/PROVENANCE.json"])
+        assert record["party"] == edge["party"] and record["name"] == edge["name"], record
+        assert record["sha"] == next(p["sha"] for p in doc45["parents"]
+                                     if p["party"] == edge["party"]
+                                     and p.get("name") == edge["name"]), record
+        # Every vendored file is digested INTO the record, and the record is
+        # rendered, so the adopter's own tag signs the digests.
+        for rel, digest in record["files"].items():
+            assert f"{base}/{rel}" in vendored, (rel, sorted(vendored))
+            assert hashlib.sha256(vendored[f"{base}/{rel}"].encode()).hexdigest() == digest, rel
+        assert vendored[f"{base}/{record['feed_path']}"] == \
+            feed_file("", edge["name"], edge["version"],
+                      _real_parent_trees()[edge["party"]]).read_text(), record
+    # The threat register's publisher ships no converter of its own: composition
+    # falls back to platform's copy, and the record says whose copy priced it.
+    assert json.loads(vendored["composed/feeds/feeds/v2/PROVENANCE.json"])["converter_from"] \
+        == "platform", vendored["composed/feeds/feeds/v2/PROVENANCE.json"]
+    # A quote feed is priced without a converter at all, so none is vendored --
+    # a named absence, never an empty file that pretends to be one.
+    assert json.loads(vendored["composed/feeds/insurer/v1/PROVENANCE.json"])["converter"] is None
+    header_doc = yaml.safe_load(rendered45["composed/HEADER.yaml"])
+    assert sorted(v["path"] for v in header_doc["vendored-feeds"]) == \
+        sorted(f"composed/feeds/{e['party']}/{e['version']}" for e in feed_edges), header_doc
+    print("OK composed/feeds/: every priced payload, the publisher's own party artefact and the "
+          "converter that priced it are vendored under the adopter's own signature, digested "
+          "into a PROVENANCE.json the header names, with the converter's real source party "
+          "recorded and a quote feed's absent converter named rather than faked")
+
+    # --- and the point of vendoring: the prices re-derive with the publisher
+    # clone ABSENT (ticket 45's verify-portability, proved here at the seam) ---
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _adopter_copy("driftwood", Path(tmp) / "driftwood")
+        for extra in ("twin", "selection-policy"):
+            shutil.copytree(driftwood / extra, work / extra)
+        _, first = compose(work, _real_parent_trees())
+        for rel, content in first.items():
+            target = work / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+        # The reference is this same tree composed with every clone PRESENT, so
+        # the comparison is publisher-absent against publisher-present and not
+        # against a differently-shaped copy.
+        doc_present, _ = compose(work, _real_parent_trees())
+        without_ico = {p: t for p, t in _real_parent_trees().items() if p != "ico"}
+        doc_absent, _ = compose(work, without_ico)
+        assert doc_absent["outcome"] == "composed", doc_absent["refusals"]
+        priced = {(e["kind"], e.get("name")): e["amount"] for e in doc_absent["prices"]}
+        assert priced, doc_absent["prices"]
+        for entry in doc_present["prices"]:
+            got = priced[(entry["kind"], entry.get("name"))]
+            if entry["amount"] is None:
+                assert got is None, (entry, got)
+            else:
+                assert math.isclose(got, entry["amount"]), (entry, got)
+        limit = next(l for l in doc_absent["limits"] if l["name"] == VENDORED_LIMIT)
+        assert limit["status"] == "open" and "ico" in limit["detail"], limit
+        # ...and a TAMPERED vendored payload is refused, not priced: the digest
+        # the adopter's own tag signs is what the re-derivation is held to.
+        payload = work / "composed" / "feeds" / "ico" / "v3" / "penalty-schema" / "v3" / "feed.json"
+        payload.write_text(payload.read_text().replace("uk-gdpr", "uk-gdpr ", 1))
+        doc_tampered, _ = compose(work, without_ico)
+        assert doc_tampered["outcome"] == "refused", doc_tampered["prices"]
+        assert any("missing instrument" in e and "digest" in e
+                   for e in doc_tampered["party_artefact_errors"]), doc_tampered
+    print("OK portability: with ico's clone ABSENT, driftwood re-derives every price it signed, "
+          "from its own vendored payload and converter, and prints the substitution as an open "
+          "limit; a tampered vendored payload refuses against the digest its own tag signed")
+
+    # --- a feed edge with no `since` cannot be annualised over a pin's life,
+    # and that is a missing instrument, not a defaulted window (ADR-0020) ---
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _adopter_copy("driftwood", Path(tmp) / "driftwood")
+        doc_party = yaml.safe_load((work / "party.yaml").read_text())
+        for e in doc_party["inherits"]:
+            if e.get("name") == "penalty-schema":
+                e.pop("since", None)
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_party, **YAML_KWARGS))
+        doc_nosince, _ = compose(work, _real_parent_trees())
+        assert doc_nosince["prices"] == [], doc_nosince["prices"]
+        assert any(r["kind"] == "missing-instrument" and "since" in r["detail"]
+                   and "penalty-schema" in r["detail"] for r in doc_nosince["refusals"]), \
+            doc_nosince["refusals"]
+    print("OK switching: a feed edge carrying no `since` refuses as a missing instrument naming "
+          "the edge -- a pin's life is a window between two signed dates, never a default")
 
     # --- no scheduler, no wall-clock read anywhere in composition.py
     # itself, except through an explicit --as-of passed to the feeds
@@ -4959,9 +5561,10 @@ def selfcheck() -> None:
         "printing old/new price and old/proposed tier every run; on the real bands neither "
         "changes a tier; a fixture band that a bump crosses prints a proposed tier; every "
         "selected tier is a real label value now that ADR-0022 retired the deny rung and made "
-        "the bottom rung a running, unreachable `isolated` cage; no rendered file ever "
-        "changes on a price move; and composition itself reads no wall clock and calls no "
-        "scheduler. TICKET 25 (the £ seam, ADR-0020/ADR-0021): every prices[] entry names its "
+        "the bottom rung a running, unreachable `isolated` cage; no rendered POLICY file ever "
+        "changes on a price move (narrowed by ticket 45: the adopter's own vendored copy of "
+        "the payload that moved does, and nothing under composed/feeds/ is an applied object); "
+        "and composition itself reads no wall clock and calls no scheduler. TICKET 25 (the £ seam, ADR-0020/ADR-0021): every prices[] entry names its "
         "perspective, currency, source and kind and restates its own amount per customer "
         "against the perspective party's OWN signed size; the one summing helper "
         "(fair.sum_prices) refuses any list crossing a perspective or a currency; a regime "
@@ -4984,8 +5587,45 @@ def selfcheck() -> None:
         "signed tag that carries it -- never a refusal and never a claimed signature; and only "
         "a checkout that can show the publisher's tag namespace says `untagged` at all, so a "
         "tagless checkout, a lightweight tag and a flattened annotated tag read `unobserved` "
-        "rather than booking a hole over a signature that is really there."
+        "rather than booking a hole over a signature that is really there. "
+        "ECO-SYSTEM TICKET 45 (the switching cost, computed in composition): every "
+        "substitutable parent -- a feed, because publishes[] is what discovers one -- carries a "
+        "`switching` entry under the adopter's own perspective and currency, measured by "
+        "RE-COMPOSING with that publisher's edges dropped rather than by subtracting the line "
+        "about to be lost, annualised and carried over the life the pin has actually stood "
+        "from the edge's own signed `since` to this composition's own as-of; a counterfactual "
+        "that cannot be priced at all is a named could-not-look carrying the publisher's own "
+        "refusal and no amount; a premium that stops being computable is named beside the "
+        "figure and never folded into it; an edge with no `since` refuses as a missing "
+        "instrument; every priced payload, its publisher's party artefact and the converter "
+        "that priced it are vendored under composed/feeds/<party>/<version>/ and digested into "
+        "the header the adopter's own tag signs; and with a publisher's clone ABSENT the "
+        "adopter re-derives every price it signed from that vendored copy, printing the "
+        "substitution as an open limit, while a tampered copy refuses against its own signed "
+        "digest."
     )
+
+
+
+def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str, str]) -> None:
+    """A price move rewrites no rendered POLICY file -- the estate's oldest
+    promise about pricing, and the byte comparison that proves it.
+
+    Narrowed 2026-09-06 (eco-system ticket 45). The adopter now vendors the
+    payload it was priced from under `composed/feeds/<party>/<version>/`, so a
+    bump DOES add its new version's copy and drop the old one's. That is the
+    whole point of vendoring and not a leak of a price into an applied file:
+    nothing under composed/feeds/ is a Kubernetes object, no Kustomization path
+    reaches it, and the promise it would break -- a tier appearing in something
+    Kyverno reads -- is untouched. The narrowing is stated here rather than by
+    quietly widening the comparison."""
+    vendored = "/".join(VENDORED_DIR) + "/"
+    for path, content in before.items():
+        if path == "composed/HEADER.yaml" or path.startswith(vendored):
+            continue
+        assert after[path] == content, path
+    assert {p for p in after if not p.startswith(vendored)} == \
+        {p for p in before if not p.startswith(vendored)}, (sorted(after), sorted(before))
 
 
 def _write_versions_yaml(root: Path, versions: list[dict]) -> None:
