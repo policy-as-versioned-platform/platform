@@ -4320,7 +4320,7 @@ def selfcheck() -> None:
             assert d4[0]["amount"] == p1["amount"], d4
             assert sig["tag"] in d4[0]["detail"], d4
             _commit(doc4, rendered4)
-            doc5, _ = compose(work, parent_trees)
+            doc5, rendered5 = compose(work, parent_trees)
             assert _premium(doc5)["hole"] is None and _pin_deltas(doc5) == [], doc5["deltas"]
             print("OK closed pin: composing against the insurer's real signed tag closes the "
                   "hole, prints one closed-untagged-pin delta, and the next composition "
@@ -4332,13 +4332,35 @@ def selfcheck() -> None:
             # case moves the pin itself, so its render is not the same input.
             # (The header records the parent SHAs, which differ between the
             # fixture insurer trees, so it is compared without.)
-            moved = [k for k in rendered1
-                     if k != "composed/HEADER.yaml"
-                     and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
-            assert not moved, moved
-            print("OK untagged pin: the rendered artefact is byte-identical across untagged, "
-                  "recorded and unobserved -- signature state lives in the evidence, never the "
-                  "render")
+            # HANDBOOK.md is excluded here for the opposite reason to HEADER.yaml, and the
+            # exclusion is asserted rather than assumed (ticket 34). What this leg protects is
+            # the objects the ENGINE applies: a signature state must not change what Kyverno
+            # admits. The handbook is applied by nobody and read by a human, and the one fact
+            # ticket 69 priced is exactly "money committed against a quote no signature carries"
+            # -- a page that hid it would be hiding the number the £ seam exists to report.
+            engine = [k for k in rendered1
+                      if k not in ("composed/HEADER.yaml", "composed/HANDBOOK.md")
+                      and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
+            assert not engine, engine
+            # The sentence asserted is the one the page derives from the hole's own fields --
+            # its kind and its `source/name@version` -- and it must be present while the hole is
+            # open (untagged, then recorded: the parent SHAs differ between those two renders,
+            # so "the pages differ" proved nothing -- review F-03) and absent once the hole has
+            # healed (rendered5, composed against the insurer's real signed tag).
+            hb = "composed/HANDBOOK.md"
+            hole_sentence = (f"{UNTAGGED_PIN_HOLE_KIND} `{hole['source']}/{hole['name']}"
+                             f"@{hole['version']}`")
+            assert hole_sentence in rendered1[hb] and hole_sentence in rendered2[hb], \
+                f"the handbook does not name the untagged pin as {hole_sentence}"
+            assert handbook._money(hole["amount"], hole["currency"]) in rendered1[hb], \
+                "the handbook does not state the premium the hole is priced at"
+            assert UNTAGGED_PIN_HOLE_KIND not in rendered5[hb], \
+                "the handbook still names an untagged pin after the hole healed"
+            print("OK untagged pin: every object the engine applies is byte-identical across "
+                  "untagged, recorded and unobserved -- signature state lives in the evidence, "
+                  "never the enforced render -- and the handbook, which nothing applies, names "
+                  "the hole as %s with its premium while it is open and drops it once it heals"
+                  % hole_sentence)
 
     # --- no sum crosses a perspective or a currency: the one summing helper
     # REFUSES a mixed list rather than returning a number (spec.md, "The £ seam") ---
@@ -4965,13 +4987,31 @@ def selfcheck() -> None:
     # Stripping it is a no-op on every other rendered file: HEADER.yaml is
     # its own separate file, and "holes"/"selected-controls" appear
     # nowhere else in what composition renders. ---
+    # HANDBOOK.md is excluded and then asserted the other way (ticket 34): the claim this leg
+    # makes is about the files the ENGINE reads, and the handbook is read by a human, not by
+    # Kyverno. It exists to say what is NOT covered, so the holes and the selected set are the
+    # part of it that matters most; a handbook without them would be the dashboard the north
+    # star refuses.
     for path, text in rendered.items():
-        if path == "composed/HEADER.yaml":
+        if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
             continue
         assert '"holes"' not in text and "holes:" not in text, path
         assert "selected-controls" not in text, path
+    # The strings asserted are the ones the page derives from THIS header's own lists --
+    # the Source caption alone already contains the words "holes" and "selected-controls",
+    # so a page that dropped both counts used to pass here (review F-03).
+    handbook_text = rendered["composed/HANDBOOK.md"]
+    hdr_for_page = yaml.safe_load(rendered["composed/HEADER.yaml"])
+    n_selected, n_holes = len(hdr_for_page["selected-controls"]), len(hdr_for_page["holes"])
+    assert n_selected > 0 and n_holes > 0, (n_selected, n_holes)  # or the assertion is vacuous
+    assert f"- Controls selected: {n_selected}" in handbook_text, \
+        f"the handbook does not state the {n_selected} selected controls"
+    assert f"(`holes[]`): {n_holes}" in handbook_text, \
+        f"the handbook does not state the {n_holes} holes"
     print("OK HEADER.yaml: 'holes' and 'selected-controls' live only in the advisory header -- "
-          "stripping it leaves every other rendered file unchanged")
+          "stripping it leaves every file the engine reads unchanged -- and the handbook, which "
+          "the engine never reads, states both counts (%d selected, %d holes)"
+          % (n_selected, n_holes))
 
     # ======================================================================
     # ticket 15: the governed namespace lint
@@ -5076,7 +5116,11 @@ def selfcheck() -> None:
         header1 = yaml.safe_load(rendered1["composed/HEADER.yaml"])
         assert header1["ungoverned-namespaces"] == ["acme"], header1["ungoverned-namespaces"]
         for path, text in rendered1.items():
-            if path == "composed/HEADER.yaml":
+            # HANDBOOK.md is excluded, and asserted the other way below (ticket 34): what this
+            # leg protects is that no file the ENGINE reads carries composition's own namespace
+            # bookkeeping. The handbook is read by a human and says which namespaces are outside
+            # the cage on purpose.
+            if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert "ungoverned" not in text, path
             assert "acme" not in text, path
@@ -5086,6 +5130,9 @@ def selfcheck() -> None:
             # a leak of composition's own ungoverned-namespace bookkeeping.
             if path != "composed/governed-namespace-guard.yaml":
                 assert GOVERNED_LABEL not in text, path
+        hb1 = rendered1["composed/HANDBOOK.md"]
+        assert "Ungoverned namespaces (1): `acme`" in hb1, \
+            "the handbook does not name the namespaces outside the cage"
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
@@ -5346,7 +5393,8 @@ def selfcheck() -> None:
     # --- an ico penalty-schema bump (v1 -> v2) moves the uncaged exposure
     # on uk-gdpr/lower-tier through ico's own converter; on driftwood's
     # real band both versions land on the same tier, so the document
-    # prints no change; no rendered file changes on the price move ---
+    # prints no change; no file the engine reads changes on the price move,
+    # and the handbook does (ticket 34) ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
         # Start the copy at v1 whatever the real party is pinned to today: this
@@ -5369,12 +5417,19 @@ def selfcheck() -> None:
         # cage -- so this travels as a label, never as an issue.
         assert price["proposed_as"] == "label", price
         _assert_only_the_moved_feed_changed(rendered0, files1)
+        # ...and the handbook, which nothing applies, states the moved amount (ticket 34). The
+        # string asserted is the one the page derives with _money() from THIS entry, so a page
+        # with no price rows cannot pass by moving for some other reason (review F-03).
+        moved_money = handbook._money(price["amount"], price["currency"])
+        assert moved_money in files1["composed/HANDBOOK.md"] and moved_money not in rendered0["composed/HANDBOOK.md"], \
+            f"the handbook does not state the moved ico amount {moved_money}"
     print("OK prices[]: an ico penalty-schema bump (v1 -> v2) moves the uncaged uk-gdpr/lower-"
           "tier exposure through ico's own converter; on driftwood's real band both versions "
           "land on isolated, the bottom rung, so the document prints no tier change and it "
           "travels as a label; no rendered POLICY file changes -- a byte comparison proves it, "
-          "and the only file that does move is the adopter's own vendored copy of the payload "
-          "that moved")
+          "the only file that does move is the adopter's own vendored copy of the payload "
+          "that moved -- and the handbook states the new amount %s, which the page before the "
+          "bump did not carry" % moved_money)
 
     # --- a threat-register bump (v1 -> v2) moves tuppence's exposure
     # through the feeds module; same real-band 'no change' shape ---
@@ -5393,9 +5448,12 @@ def selfcheck() -> None:
         assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
         _assert_only_the_moved_feed_changed(rendered0, files1)
+        moved_money = handbook._money(price["amount"], price["currency"])
+        assert moved_money in files1["composed/HANDBOOK.md"] and moved_money not in rendered0["composed/HANDBOOK.md"], \
+            f"the handbook does not state the moved threat-register amount {moved_money}"
     print("OK prices[]: a threat-register bump (v1 -> v2) moves tuppence's exposure through the "
           "feeds module; on the real band both versions land on isolated, no tier change; no "
-          "rendered POLICY file changes")
+          "rendered POLICY file changes, and the handbook states the new amount %s" % moved_money)
 
     # --- a fixture band that a bump crosses prints a proposed tier, and
     # the mark flips from 'label' (a real tier) as soon as it stops being
@@ -5426,9 +5484,13 @@ def selfcheck() -> None:
         assert price["changed"] is True, price
         assert price["proposed_as"] == "label", price  # quarantine is a real label value
         _assert_only_the_moved_feed_changed(rendered0, files1)
+        assert "`quarantine`" in files1["composed/HANDBOOK.md"] \
+            and "`quarantine`" not in rendered0["composed/HANDBOOK.md"], \
+            "the handbook did not report the tier the crossing bump proposes"
     print("OK prices[]: a fixture ico band (v1->v2) that crosses driftwood's real GBP40,000 "
           "tolerance prints a proposed tier through compose() (isolated -> quarantine, "
-          "changed=True), marked as a label; no rendered POLICY file changes")
+          "changed=True), marked as a label; no rendered POLICY file changes and the "
+          "handbook names the proposed tier `quarantine`, which it did not before the bump")
 
     # ------------------------------------------------------------------
     # ECO-SYSTEM TICKET 45: switching cost, and the vendored feed tree
@@ -5746,7 +5808,8 @@ def selfcheck() -> None:
         "selected tier is a real label value now that ADR-0022 retired the deny rung and made "
         "the bottom rung a running, unreachable `isolated` cage; no rendered POLICY file ever "
         "changes on a price move (narrowed by ticket 45: the adopter's own vendored copy of "
-        "the payload that moved does, and nothing under composed/feeds/ is an applied object); "
+        "the payload that moved does, and nothing under composed/feeds/ is an applied object; "
+        "and by ticket 34: the handbook, which nothing applies, states the moved amount); "
         "and composition itself reads no wall clock and calls no scheduler. TICKET 25 (the £ seam, ADR-0020/ADR-0021): every prices[] entry names its "
         "perspective, currency, source and kind and restates its own amount per customer "
         "against the perspective party's OWN signed size; the one summing helper "
@@ -5801,12 +5864,21 @@ def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str,
     nothing under composed/feeds/ is a Kubernetes object, no Kustomization path
     reaches it, and the promise it would break -- a tier appearing in something
     Kyverno reads -- is untouched. The narrowing is stated here rather than by
-    quietly widening the comparison."""
+    quietly widening the comparison.
+
+    Narrowed once more by eco-system ticket 34: composed/HANDBOOK.md is read by a
+    human and by nothing Kyverno runs, and it states every price, so it MUST move
+    on a price move. It is excluded from the byte-equality and asserted the other
+    way here; each caller then asserts the specific derived string the page must
+    have gained, so a page with no price rows cannot pass this by moving for
+    some other reason (review F-03)."""
     vendored = "/".join(VENDORED_DIR) + "/"
     for path, content in before.items():
-        if path == "composed/HEADER.yaml" or path.startswith(vendored):
+        if path in ("composed/HEADER.yaml", handbook.HANDBOOK_PATH) or path.startswith(vendored):
             continue
         assert after[path] == content, path
+    assert after[handbook.HANDBOOK_PATH] != before[handbook.HANDBOOK_PATH], \
+        "the handbook did not move on a price move"
     assert {p for p in after if not p.startswith(vendored)} == \
         {p for p in before if not p.startswith(vendored)}, (sorted(after), sorted(before))
 
