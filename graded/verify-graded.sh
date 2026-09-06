@@ -756,6 +756,16 @@ MUT
     echo "  -- ticket 89's bottom-rung cage IS installed; the claim route (label an unclaimed pod with a"
     echo "     served version) is the same refusal by the same mechanism and is not probed twice."
   else
+    # DATED, 2026-09-06 (eco-system ticket 98). The hub's offline scan excludes
+    # posture/policies/ as an authoring tree, on this repository's own statement that only a
+    # demo up.sh applies it -- and no Kustomization does. It is on kind-driftwood ANYWAY:
+    # `kubectl get mutatingpolicy` returns an unsuffixed `stamp-posture` created 2026-08-20,
+    # from an earlier `kubectl apply -k posture/` (posture/kustomization.yaml lists `policies`).
+    # Harmless today -- it writes one label, and metadata is mutable on UPDATE -- but "the
+    # authoring copy is never applied" is a disclosed limit with a live counterexample, and a
+    # disclosed limit goes stale like any other assertion. Deliberately NOT turned into a check
+    # here and NOT removed from the cluster: if that body ever writes more than a label, this
+    # tail is where it would be caught.
     echo "  ??   NOT LOOKED AT: the claim route of ticket 89's S3 instance (label a bottom-rung pod with a"
     echo "       served version) needs governed-namespace-cage on $CTX, and this cluster carries the"
     echo "       pre-ticket-89 ValidatingPolicy instead. The rung change was observed by moving the"
