@@ -11,8 +11,30 @@ dependencies. Full thesis, design decisions (ADRs) and the other five parties:
 [policy-as-versioned-flux](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux).
 
 **The shared discipline** — the governance machinery every institution inherits
-as a *pinned, signed dependency* (the `config-base` pattern, one level up), so
-the same apparatus is inherited rather than copy-pasted per institution.
+as a *pinned, signed dependency*: the versioned policy sets, the FAIR engine,
+the distribution templates and the feed contract, each published from here
+under a signed tag and pinned by `{tag, commit}` in the institution's own repo.
+
+> **Corrected 2026-09-06 (eco-system ticket 80 item 10).** This paragraph used to
+> call the adopter apparatus "the `config-base` pattern, one level up", inherited
+> "rather than copy-pasted per institution". Measured on 2026-09-06 at each
+> adopter's own `origin/main` — `driftwood` `96f4d0d`, `tuppence` `f7c9f6a`,
+> `ludlow` `d40b3fb`: the three
+> adopter gates are `.github/scripts/adopter-gate.py` (1087 lines) on driftwood,
+> `.github/scripts/adopter-gate.py` (829) on tuppence and
+> `.github/scripts/adopter_gate.py` (1213) on ludlow — three separate files, not
+> even a shared filename, with 131 identical non-comment lines common to all
+> three. So the gate is **copy-pasted per institution**, and this repository
+> publishes no package it comes from.
+>
+> **Which it is: three independent forks, on purpose, for this build.** Ticket 75
+> Q7 settled it — "the three adopters stay three independent forks for this
+> build, because three independent consumers is what NORTH-STAR §4 demonstrates
+> and a shared package is a packaging decision that waits on the first real
+> divergence" (delegated, ADR-0025, 2026-09-02). What the institutions really do
+> inherit as a pinned, signed dependency is the list above; the gate that reads
+> those pins is each institution's own, and the day two of them need to diverge
+> is the day a shared package earns its keep.
 
 What lives here (built across later tickets — this is the skeleton):
 
