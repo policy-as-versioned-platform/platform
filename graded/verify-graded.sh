@@ -660,22 +660,161 @@ YAML
   [ -z "$UERR" ] || fail "an UPDATE to a running isolated pod was REFUSED — the cage denied a workload: $UERR"
   echo "  ok   a running isolated pod accepts an UPDATE (kubectl label) — the mutation is idempotent"
 
+  # ---- eco-system ticket 98: the one refusal by another name the estate ACCEPTS ----
+  # A mutation carries no Deny-shaped text and can stop a workload just as dead. The hub's
+  # verify/refusal-by-another-name/ grades that offline in four legs; the half that needs an API
+  # SERVER is this one, and it is the half that has never had a cluster on a citable run
+  # (P2-6). Nothing is simulated here: the refusal below is the API server's own, or this step
+  # fails.
+  #
+  # Ticket 89 (S3, 2026-09-05) decided this refusal is CORRECT and left it in place: a pod's
+  # cage is written at admission from what it declared then, so a workload cannot move itself
+  # off its rung by asserting a label afterwards, and the remediation is a RECREATE. It is on
+  # the hub's register.yaml as an accepted refusal. This step is what keeps that record honest:
+  # if the API server ever ACCEPTS the edit, the row describes something the estate no longer
+  # does, and this goes red rather than the record going quietly stale.
+  say "8b. live (ticket 98): a running pod whose rung changes under it — the refusal the estate accepts"
+  T98_NS="cage-verify-t98"
+  cleanup_t98() {
+    timeout 180 kubectl --context "$CTX" delete ns "$T98_NS" --ignore-not-found --wait=true \
+      >/dev/null 2>&1 || true
+  }
+  trap 'rm -rf "$WORK"; cleanup_live; cleanup_t98' EXIT
+  cleanup_t98
+  timeout 20 kubectl --context "$CTX" apply -f - >/dev/null <<YAML || fail "could not create the ticket-98 probe namespace on $CTX"
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: $T98_NS
+  labels: { "policy-as-versioned.dev/governed": "true", "posture.acme.io/tier": "quarantine" }
+YAML
+  T98ERR="$(timeout 30 kubectl --context "$CTX" -n "$T98_NS" run t98-probe \
+            --image="$PROBE_IMAGE" --restart=Never \
+            --labels="policy-as-versioned.dev/policy-version=$NEWEST" 2>&1 >/dev/null || true)"
+  [ -z "$T98ERR" ] || fail "the ticket-98 probe pod was REFUSED at admission, so the refusal this step exists to observe could not be reached: $T98ERR"
+  read -r T98PC T98PRIO <<<"$(timeout 20 kubectl --context "$CTX" -n "$T98_NS" get pod t98-probe \
+    -o jsonpath='{.spec.priorityClassName} {.spec.priority}')"
+  [ "$T98PC" = "cage-quarantine-${NEWEST//./-}" ] \
+    || fail "the ticket-98 probe was admitted carrying '$T98PC', not its Namespace's cage-quarantine-${NEWEST//./-} — nothing to move"
+  echo "  ok   admitted and caged at quarantine: $T98PC / $T98PRIO"
+  # Move the DECLARATION, not the pod: the Namespace is where the tier is declared (ADR-0022),
+  # so this is the same rung change ticket 89's live instance produces by adding a claim, and it
+  # is reachable on a cluster that does not yet carry ticket 89's machinery.
+  timeout 20 kubectl --context "$CTX" label ns "$T98_NS" posture.acme.io/tier=baseline \
+    --overwrite >/dev/null || fail "could not move the Namespace's declared tier"
+  T98UPD="$(timeout 30 kubectl --context "$CTX" -n "$T98_NS" label pod t98-probe \
+            t98=moved --overwrite 2>&1 >/dev/null || true)"
+  if [ -z "$T98UPD" ]; then
+    fail "the API server ACCEPTED an UPDATE that rewrites priorityClassName and priority on a running pod. Either the cage stopped rewriting them or Kubernetes stopped refusing: the hub's verify/refusal-by-another-name/register.yaml records this refusal as accepted-and-correct, and that row now describes something this estate does not do"
+  fi
+  grep -qi "pod updates may not change fields other than" <<<"$T98UPD" \
+    || fail "the UPDATE was refused for some other reason than pod-spec immutability, so this is not the refusal the register records: $T98UPD"
+  grep -qi "priorityclassname" <<<"$T98UPD" \
+    || fail "the refusal does not name priorityClassName, so the field the cage rewrote is not the field the API server objected to: $T98UPD"
+  echo "  ok   OBSERVED, on this API server: a mutation with no Deny in it refused the update —"
+  printf '       %s\n' "$(tr '\n' ' ' <<<"$T98UPD" | cut -c1-300)"
+  echo "  ok   this is the ACCEPTED refusal (ticket 89 S3): the remediation is to RECREATE the pod with"
+  echo "       the rung it should have, never to edit a running one. Recorded in the hub's"
+  echo "       verify/refusal-by-another-name/register.yaml, which is graded in both directions."
+  # The API server names its own mutable-field list in that message. The hub's offline table
+  # (refusal_scan.MUTABLE_ON_UPDATE) is the same five, and this is where the two are compared:
+  # the offline check's central constant is graded by the API server rather than by belief.
+  #
+  # REVIEW, 2026-09-06 (F4). This was five `grep -q` calls -- PRESENCE, not set equality -- so a
+  # WIDENED Kubernetes list kept every one of them green while the hub's hazard set silently
+  # stopped matching the API server's. The ticket claimed set equality and the code did not do
+  # it. It parses the back-ticked names out of the message and compares BOTH ways now, so a
+  # field Kubernetes adds is as red as a field it removes.
+  printf '%s' "$T98UPD" > "$WORK/t98-refusal.txt"
+  python3 - "$WORK/t98-refusal.txt" <<'MUT' || fail "the API server's own mutable-on-update list is not the set the hub's refusal_scan.MUTABLE_ON_UPDATE table carries"
+import re, sys
+# The hub's table, minus `metadata` and `status`, which are not spec fields and which this
+# message never names. Kept as a literal because the hub is another repository; the hub pins the
+# same tuple in tests/test_refusal_by_another_name.py with this message quoted beside it.
+WANT = {"spec.containers[*].image", "spec.initContainers[*].image", "spec.activeDeadlineSeconds",
+        "spec.tolerations", "spec.terminationGracePeriodSeconds"}
+text = open(sys.argv[1]).read()
+m = re.search(r"may not change fields other than(.*?)(?:\n\n|@@|\Z)", text, re.S)
+if not m:
+    raise SystemExit("the refusal message does not carry the 'may not change fields other than' "
+                     "sentence, so its field list could not be read at all")
+got = set(re.findall(r"`([^`]+)`", m.group(1)))
+if not got:
+    raise SystemExit("no back-ticked field names in the refusal message: the API server changed "
+                     "how it words this and the comparison below would have been vacuous")
+if got != WANT:
+    raise SystemExit(f"the API server's mutable-on-update set has MOVED. added={sorted(got-WANT)} "
+                     f"removed={sorted(WANT-got)}. The hub's refusal_scan.MUTABLE_ON_UPDATE and "
+                     f"its pinning test must be updated in the same edit as this line")
+print(f"    set equality, both ways: {len(got)} fields, {' '.join(sorted(got))}")
+MUT
+  echo "  ok   the API server's own mutable-on-update list is EXACTLY the five the hub's offline table carries (compared as a set, in both directions)"
+  # The exact instance ticket 89 measured needs ticket 89's machinery on the cluster. Named, not
+  # skipped over: the refusal above is the same mechanism, observed, so this tail does not go
+  # dark while the machinery is in flight.
+  if timeout 10 kubectl --context "$CTX" get mutatingpolicy governed-namespace-cage >/dev/null 2>&1; then
+    echo "  -- ticket 89's bottom-rung cage IS installed; the claim route (label an unclaimed pod with a"
+    echo "     served version) is the same refusal by the same mechanism and is not probed twice."
+  else
+    # DATED, 2026-09-06 (eco-system ticket 98). The hub's offline scan excludes
+    # posture/policies/ as an authoring tree, on this repository's own statement that only a
+    # demo up.sh applies it -- and no Kustomization does. It is on kind-driftwood ANYWAY:
+    # `kubectl get mutatingpolicy` returns an unsuffixed `stamp-posture` created 2026-08-20,
+    # from an earlier `kubectl apply -k posture/` (posture/kustomization.yaml lists `policies`).
+    # Harmless today -- it writes one label, and metadata is mutable on UPDATE -- but "the
+    # authoring copy is never applied" is a disclosed limit with a live counterexample, and a
+    # disclosed limit goes stale like any other assertion. Deliberately NOT turned into a check
+    # here and NOT removed from the cluster: if that body ever writes more than a label, this
+    # tail is where it would be caught.
+    echo "  ??   NOT LOOKED AT: the claim route of ticket 89's S3 instance (label a bottom-rung pod with a"
+    echo "       served version) needs governed-namespace-cage on $CTX, and this cluster carries the"
+    echo "       pre-ticket-89 ValidatingPolicy instead. The rung change was observed by moving the"
+    echo "       Namespace's declaration, which is the same mechanism on the same fields."
+  fi
+  cleanup_t98
+
   # ---- neither guard may be offline-only (review, 2026-08-28) -------------
-  for g in policy-version-orphan-guard governed-namespace-requires-claim; do
-    timeout 10 kubectl --context "$CTX" get validatingpolicy "$g" >/dev/null 2>&1 \
-      || fail "$g is not installed on $CTX — an offline-only proof of an admission control is not a proof (graded/up.sh applies it)"
-  done
-  OERR="$(timeout 30 kubectl --context "$CTX" -n "$UNTIERED_NS" run cage-probe-orphan \
-          --image="$PROBE_IMAGE" --restart=Never \
-          --labels="policy-as-versioned.dev/policy-version=9.9.9" 2>&1 >/dev/null || true)"
-  grep -q "policy-version-orphan-guard" <<<"$OERR" \
-    || fail "a pod claiming the UNDECLARED version 9.9.9 was not refused by the orphan guard: ${OERR:-it was admitted}"
-  echo "  ok   a pod claiming an undeclared version is refused live by the orphan guard"
-  CERR="$(timeout 30 kubectl --context "$CTX" -n "$UNTIERED_NS" run cage-probe-noclaim \
-          --image="$PROBE_IMAGE" --restart=Never 2>&1 >/dev/null || true)"
-  grep -q "governed-namespace-requires-claim" <<<"$CERR" \
-    || fail "a pod with NO policy-version claim was admitted uncaged in a governed Namespace: ${CERR:-it was admitted}"
-  echo "  ok   a pod with no claim at all is refused live in a governed Namespace — silence is not an exemption"
+  #
+  # DATED NOTE, 2026-09-06 (eco-system ticket 98, review F7). Everything in this block grades a
+  # REFUSAL, and eco-system ticket 89 (merged to platform main 2026-09-05) replaced both guards
+  # with MUTATIONS: `governed-namespace-requires-claim` is a MutatingPolicy that cages an
+  # unclaimed pod on the bottom rung, and the orphan guard is `Audit` beside
+  # `policy-version-orphan-cage`. Nothing is denied any more, so on a cluster carrying ticket
+  # 89's machinery these three assertions grade a mechanism that no longer exists, and the
+  # sentences they print — "is refused live" — contradict the doctrine at source.
+  #
+  # It passes today only because the KinD clusters still carry the PRE-ticket-89 objects. That
+  # is exactly the drift ticket 89's D1 forbids: a record and the code disagreeing, with the
+  # record winning because nobody ran it. So the block branches on what the cluster ACTUALLY
+  # carries rather than on what this script was written against, the same way step 8b above
+  # branches. Rewriting it to drive the mutations is ticket 89's work, not ticket 98's:
+  # distribution/verify-governed-namespace-guard.sh and distribution/verify-orphan-guard.sh
+  # already grade the mutation bodies, and extending THIS tail to drive them on a cluster needs
+  # a cluster carrying them, which none does yet.
+  if timeout 10 kubectl --context "$CTX" get mutatingpolicy governed-namespace-cage >/dev/null 2>&1; then
+    echo "  ??   NOT LOOKED AT: this cluster carries eco-system ticket 89's machinery (2026-09-05),"
+    echo "       which replaced both guards with mutations — an unclaimed pod is CAGED on the bottom"
+    echo "       rung, not refused, and the orphan guard is Audit beside policy-version-orphan-cage."
+    echo "       The three refusal assertions below grade a mechanism that no longer exists, so they"
+    echo "       are not run. Driving the mutations from this tail is ticket 89's work; offline they"
+    echo "       are graded by distribution/verify-governed-namespace-guard.sh and verify-orphan-guard.sh."
+  else
+    for g in policy-version-orphan-guard governed-namespace-requires-claim; do
+      timeout 10 kubectl --context "$CTX" get validatingpolicy "$g" >/dev/null 2>&1 \
+        || fail "$g is not installed on $CTX — an offline-only proof of an admission control is not a proof (graded/up.sh applies it)"
+    done
+    OERR="$(timeout 30 kubectl --context "$CTX" -n "$UNTIERED_NS" run cage-probe-orphan \
+            --image="$PROBE_IMAGE" --restart=Never \
+            --labels="policy-as-versioned.dev/policy-version=9.9.9" 2>&1 >/dev/null || true)"
+    grep -q "policy-version-orphan-guard" <<<"$OERR" \
+      || fail "a pod claiming the UNDECLARED version 9.9.9 was not refused by the orphan guard: ${OERR:-it was admitted}"
+    echo "  ok   a pod claiming an undeclared version is refused live by the PRE-ticket-89 orphan guard (this cluster carries the ValidatingPolicy; ticket 89 replaces it with an Audit report plus a cage)"
+    CERR="$(timeout 30 kubectl --context "$CTX" -n "$UNTIERED_NS" run cage-probe-noclaim \
+            --image="$PROBE_IMAGE" --restart=Never 2>&1 >/dev/null || true)"
+    grep -q "governed-namespace-requires-claim" <<<"$CERR" \
+      || fail "a pod with NO policy-version claim was admitted uncaged in a governed Namespace: ${CERR:-it was admitted}"
+    echo "  ok   a pod with no claim at all is refused live by the PRE-ticket-89 guard — silence is not an exemption, and from ticket 89 on it is the bottom rung rather than a refusal"
+  fi
 
   # ---- the regression guard for the bug this run used to CAUSE -------------
   for ns in "$UNTIERED_NS"; do
