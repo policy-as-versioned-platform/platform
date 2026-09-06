@@ -197,3 +197,49 @@ python3 composition.py --selfcheck      # runnable asserts; SKIPs (exit 0) if th
 `compose` writes the rendered files under `<out or adopter-dir>/composed/`, prints the evidence
 document as JSON, and exits non-zero on a refusal. `verify` re-renders from a fresh resolution of
 the same parent trees and diffs byte-for-byte against whatever is already committed.
+
+## The handbook (ticket 34; ADR-0007's last-mile section)
+
+`handbook.py` renders one page of Markdown, `composed/HANDBOOK.md`, from an adopter's composed
+artefact and from nothing else. `compose()` calls it after it has built the evidence document and
+puts the result in the same `rendered` mapping as `HEADER.yaml`, so the page lands in the same pull
+request as the artefact, is byte-compared by the same `verify`, is failed by the same drift check
+in each adopter's `compose-check` job, and is carried under the same gitsign tag.
+
+The property that makes the page worth reading is that it is a **pure function of the artefact**:
+it reads no clock, no environment, no network and no file outside the mapping it is handed. So it
+is re-derivable by anyone who holds the artefact, and a page that said something the artefact does
+not could not survive a byte comparison against a re-render.
+
+Where a sentence would need a field the artefact does not carry — no `exposure`, no
+`selection-policy`, a price with no `lef_basis` — the render **names the absent field** and states
+nothing in its place. It never defaults to prose and never defaults to zero (ADR-0020). Every such
+absence is listed and counted in the page's last section and again in its footer, so a disclosed
+limit is a number that moves rather than a sentence that goes stale. A price with no `perspective`
+or no `currency` is refused outright: it is not a price this render will state.
+
+What it is **not**: a plain-language summary of anybody's reasoning. The original generator's
+`claude -p` summaries are not derivable from the artefact and would break the property above, so
+they are a human-run Claude Code skill (`.claude/skills/handbook-summaries/` in the hub) whose
+output lands by its own pull request, outside `composed/`.
+
+```sh
+python3 handbook.py render ../../driftwood                 # from the working tree
+python3 handbook.py render ../../driftwood --ref v1.1.0    # from the tree at a ref
+python3 handbook.py --selfcheck                            # the render seam's own tests
+./verify-fresh.sh ../../driftwood v1.1.0                   # render-at-ref equals the page at that ref
+./verify-fresh.sh                                          # no adopter named: the tool's own proofs
+```
+
+`verify-fresh.sh` with no arguments reads **no adopter** — NORTH-STAR §2 forbids the publisher
+reading an institution's repository, and this script ships in the publisher's tree. It proves the
+tool over planted git repositories instead. The estate-wide read of the real adopters is the hub's
+`verify/handbook/verify-handbook-is-a-compose-time-render.sh`.
+
+**Retired with it**: the original `handbook-generator`'s `verify.sh` — an end-to-end script that
+generated a handbook against a real signed tag and then graded its own output. Nothing replaces it
+because nothing needs to: the chain that used to justify it is now three checks the estate already
+runs on every change — each adopter's `compose-check` fails on drift in the page, `cut-release.yml`
+runs `composition.py verify` before a tag is cut, and `verify-fresh.sh` re-renders from a served
+ref. `verify.sh` was never lifted into this estate, so there is no file here to delete; this
+paragraph is the retirement.

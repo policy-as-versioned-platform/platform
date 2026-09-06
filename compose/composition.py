@@ -296,6 +296,11 @@ import party_artefact  # noqa: E402
 # in git plumbing, because the hub is not a party and pins no platform) in the hub's
 # verify/feed-contract.
 import pin_content  # noqa: E402
+# Ticket 34: the human-readable render. It is produced HERE, from the artefact this module has
+# just rendered and the evidence document it has just built, so it lands in the same `rendered`
+# mapping -- same pull request, same drift check, same signed tag. It reads nothing else.
+sys.path.insert(0, str(HERE))
+import handbook  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -3057,6 +3062,17 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         "deltas": deltas,
         "limits": limits,
     }
+    # The handbook (ticket 34; ADR-0007's last-mile section). A pure function of `rendered` and
+    # `document` -- the two things this call has just derived from the pinned parents -- so it is
+    # re-derivable by anyone holding the artefact, which is what `verify-fresh.sh` grades at a tag.
+    # It goes INTO `rendered`, so `verify()` compares it byte for byte like every other file, the
+    # adopters' compose-check fails on any drift in it, and `cut-release.yml` proves it re-renders
+    # before the tag that carries it is cut.
+    #
+    # A refused composition renders no artefact for anyone to install, so it renders no page
+    # either -- the refusal document is the whole output, exactly as before ticket 34.
+    if document["outcome"] == "composed":
+        rendered[handbook.HANDBOOK_PATH] = handbook.render(dict(rendered), document)
     return document, rendered
 
 
