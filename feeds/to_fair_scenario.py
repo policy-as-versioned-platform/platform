@@ -22,8 +22,9 @@ every other scenario in this estate.
 Headline entry (eco-system ticket 84). `cve` and `eol` price ONE entry each, and
 composition prices a whole feed for an adopter: it has no cve id or component
 of its own to name. With the entry omitted the converter prices the feed's
-HEADLINE -- the entry with the largest expected annual loss, mode(lef) x
-mode(lm), for `eol` as ramped at `--as-of` -- and the scenario's `note` names
+HEADLINE -- the entry with the largest mode-product, mode(lef) x mode(lm), an
+ordinal proxy that can diverge from fair.py's PERT expectation (review F5),
+for `eol` as ramped at `--as-of` -- and the scenario's `note` names
 which entry that is, how many the feed carries and which ones this line does
 not price. One entry, not a sum: fair.py's own selfcheck refuses summing
 independent risks' ALEs after the fact, and PERT triples do not add. The
@@ -75,8 +76,9 @@ def _headline(candidates: dict[str, tuple[tuple, tuple]]) -> tuple[str, str]:
         raise SystemExit("FAIL: the feed carries no entry to price")
     ranked = sorted(candidates, key=lambda k: (-_expected(*candidates[k]), k))
     others = ", ".join(ranked[1:]) or "none"
-    return ranked[0], (f"headline entry {ranked[0]} of {len(ranked)} (largest expected annual "
-                       f"loss, mode lef x mode lm); not priced by this line: {others}.")
+    return ranked[0], (f"headline entry {ranked[0]} of {len(ranked)} (largest mode-product "
+                       f"entry, mode lef x mode lm -- an ordinal proxy, not fair.py's PERT "
+                       f"expectation; ticket 75 Q4); not priced by this line: {others}.")
 
 
 def cve_scenario(feed: dict, cve_id: str | None = None,

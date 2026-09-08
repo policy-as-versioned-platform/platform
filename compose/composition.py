@@ -2269,9 +2269,19 @@ def _composition_as_of(edges: list[dict], parent_trees: dict[str, Path],
     never one this module reads. The scheduled proposer passes the day it runs
     on and commits nothing (ADR-0024); the composition an adopter signs passes
     none, so a signed artefact still re-derives from signed facts alone."""
+    return _composition_as_of_source(edges, parent_trees, override)[0]
+
+
+def _composition_as_of_source(edges: list[dict], parent_trees: dict[str, Path],
+                              override: str | None = None) -> tuple[str | None, str]:
+    """(as_of, where it came from): the caller's --as-of, an edge's own since,
+    or a pinned envelope's published_at -- named, so a refusal can say which
+    (review F8)."""
     if override:
-        return override
-    dates: list[str] = [str(e["since"])[:10] for e in edges if e.get("since")]
+        return override, "the caller's --as-of"
+    dated: list[tuple[str, str]] = [
+        (str(e["since"])[:10], f"the since {e['party']}/{_parent_key(e)} was signed with")
+        for e in edges if e.get("since")]
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
@@ -2279,10 +2289,12 @@ def _composition_as_of(edges: list[dict], parent_trees: dict[str, Path],
         name = _feed_name(edge)
         if tree is None or not name:
             continue
-        as_of = _feed_as_of(feed_file(edge["party"], name, edge["version"], Path(tree)))
-        if as_of:
-            dates.append(as_of)
-    return max(dates) if dates else None
+        stamped = _feed_as_of(feed_file(edge["party"], name, edge["version"], Path(tree)))
+        if stamped:
+            dated.append((stamped, f"the published_at of {edge['party']}/{name}@{edge['version']}"))
+    if not dated:
+        return None, "nothing: no pinned feed carries a published_at, no edge carries a since"
+    return max(dated)
 
 
 def _feed_currency(name: str, payload: dict) -> str | None:
@@ -2542,19 +2554,26 @@ def _feed_scenario(name: str, version: str, party: str, tree_path: Path,
 
 def newest_published_major(tree: Path | None, party: str, name: str,
                            version: str) -> tuple[dict | None, dict]:
-    """The newest SIGNED major of `name` on the publisher's checkout that is
-    ahead of the pinned major, with what was observed on the way. "Published"
-    is a signed tag: an untagged directory publishes nothing (ADR-0019), and a
-    `supersedes:` field was deliberately not added -- the tag namespace is
-    already the publisher's declaration, and a second one could drift from it.
+    """The SIGNED majors of `name` ahead of the pinned major on the publisher's
+    checkout, with what was observed on the way. "Published" is a signed tag:
+    an untagged directory publishes nothing (ADR-0019), and a `supersedes:`
+    field was deliberately not added -- the tag namespace is already the
+    publisher's declaration, and a second one could drift from it.
 
-    Returns (newer, observation). `newer` is {version, tag, tagged, published_at}
-    or None; `observation` is {"state": behind | current | unobserved, "detail"}.
-    The same could-not-look rules as pin_signature_state: a checkout that
-    cannot show the publisher's tags observes nothing, and a tag ahead that is
-    not an annotated object here, or carries no signature block, is not counted
-    as published -- a missed supersede line is recoverable on the next
-    composition, a fabricated one is a false number in a signed artefact."""
+    Returns (newer, observation). `newer` is None or
+    {version, tag, tagged, published_at, since_tag, since}: `version`/`tag` the
+    NEWEST signed major ahead whose directory this checkout carries (the
+    target a retirement moves to), `since_tag`/`since` the OLDEST signed major
+    ahead (the day the pin first fell behind -- review F3: measuring from the
+    newest let a pin two majors behind pay less than one behind). A signed
+    major ahead whose directory is not here is named on the observation and
+    skipped for the target, never a reason to write no line (review F1: the
+    adopters check the publisher out at one pinned commit, so the newest tag's
+    directory is routinely absent, and "unobserved" there made being behind
+    silently free). `observation` is {"state": behind | current | unobserved,
+    "detail"}; the tags NOT counted (lightweight, flattened, unsigned) are
+    always named on it. The same could-not-look rules as pin_signature_state:
+    a checkout that cannot show the publisher's tags observes nothing."""
     pinned = int(_major_dir(version)[1:])
     if tree is None or not (Path(tree) / ".git").exists():
         return None, {"state": "unobserved",
@@ -2584,26 +2603,34 @@ def newest_published_major(tree: Path | None, party: str, name: str,
             not_counted.append(tag)
             continue
         ahead.append((tag, date, int(found.group(1))))
+    uncounted = (f"; {', '.join(sorted(not_counted))} sit(s) ahead but is not an annotated tag "
+                 f"object here or carries no signature block, and an unsigned tag publishes "
+                 f"nothing") if not_counted else ""
     if not ahead:
-        detail = (f"no signed tag of the form {name}/vN.x.y with N > {pinned} on the {party} "
-                  f"checkout, so the pinned v{pinned} is the newest published major")
-        if not_counted:
-            detail += (f"; {', '.join(sorted(not_counted))} sit(s) ahead but is not an annotated "
-                       f"tag object here or carries no signature block, and an unsigned tag "
-                       f"publishes nothing")
-        return None, {"state": "current", "detail": detail}
-    tag, date, major = max(ahead, key=lambda a: _tag_version_key(a[0]))
-    path = feed_file(party, name, f"v{major}", Path(tree))
-    if not path.exists():
-        return None, {"state": "unobserved",
-                      "detail": f"tag {tag} signs {name} v{major} ahead of the pinned v{pinned}, "
-                                f"but this checkout carries no {path.relative_to(Path(tree))} "
-                                f"to read it from"}
-    return ({"version": f"v{major}", "tag": tag, "tagged": date,
-             "published_at": _feed_as_of(path)},
-            {"state": "behind",
-             "detail": f"tag {tag}, signed {date}, publishes {name} v{major} ahead of the "
-                       f"pinned v{pinned}"})
+        return None, {"state": "current",
+                      "detail": f"no signed tag of the form {name}/vN.x.y with N > {pinned} on the "
+                                f"{party} checkout, so the pinned v{pinned} is the newest published "
+                                f"major{uncounted}"}
+    ordered = sorted(ahead, key=lambda a: _tag_version_key(a[0]))
+    oldest_tag, oldest_date, _ = ordered[0]
+    unreadable: list[str] = []
+    for tag, date, major in reversed(ordered):
+        path = feed_file(party, name, f"v{major}", Path(tree))
+        if path.exists():
+            newer = {"version": f"v{major}", "tag": tag, "tagged": date,
+                     "published_at": _feed_as_of(path), "since_tag": oldest_tag,
+                     "since": oldest_date}
+            skipped = (f"; {', '.join(unreadable)} signed ahead of it but unreadable here (this "
+                       f"checkout carries no directory for it)") if unreadable else ""
+            return newer, {"state": "behind",
+                           "detail": f"tag {tag}, signed {date}, publishes {name} v{major} ahead of "
+                                     f"the pinned v{pinned}; behind since {oldest_date}, the day "
+                                     f"{oldest_tag} was cut{skipped}{uncounted}"}
+        unreadable.append(tag)
+    return None, {"state": "unobserved",
+                  "detail": f"{', '.join(unreadable)} sign(s) {name} majors ahead of the pinned "
+                            f"v{pinned}, but this checkout carries no directory for any of them "
+                            f"to price against{uncounted}"}
 
 
 def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | None, *,
@@ -2621,14 +2648,29 @@ def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | Non
     counting one line twice that nobody has asked for."""
     party, name, version = edge["party"], _feed_name(edge) or "", str(edge["version"])
     newer, observed = newest_published_major(tree, party, name, version)
+    if observed["state"] == "current" and (entry.get("pin_signature") or {}).get("state") != "signed":
+        # Review F7: "current" would say the pinned major is the newest PUBLISHED
+        # one, and an untagged pin is not published at all.
+        observed = {"state": "unpublished",
+                    "detail": f"the pinned {version} of {name} carries no signed tag of its own "
+                              f"(see pin_signature), and nothing signed is ahead of it either; "
+                              f"it is a hole, not a current pin"}
     entry["superseded"] = observed
     if newer is None:
         return None
-    since = newer["tagged"]
+    since = newer["since"]
     limits: list[str] = []
     if not as_of:
         limits.append("no pinned feed carries a published_at, no edge carries a since and no "
                       "--as-of was given, so there is no as_of to ramp to: the ramp is held at 1.0")
+    elif as_of < since:
+        # Review F2. The signed artefact's as-of is its newest signed input, which
+        # can precede the day the publisher cut the newer tag; the honest figure is
+        # zero, said with both dates, and only a clock's --as-of re-composition
+        # grows this line. Never a backwards window printed as a price.
+        limits.append(f"zero (as_of {as_of} precedes the tag day {since}): the signed artefact's "
+                      f"as-of is its newest signed input; only a re-composition --as-of a later "
+                      f"day (the scheduled proposer's) grows this line")
     ramp = _ramp(since, as_of)
     base = float(entry["amount"])
     return _price_entry(
@@ -3174,7 +3216,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
     no signed `since`, or a composition whose pinned feeds carry no published_at
     to be as-of. A pin's life is a window between two signed dates (ADR-0020)."""
     reporting = _reporting_currency(perspective_doc)
-    as_of_override, as_of = as_of, _composition_as_of(edges, parent_trees, as_of)
+    as_of_override = as_of
+    as_of, as_of_source = _composition_as_of_source(edges, parent_trees, as_of)
     exposure_of = (lambda entries: _sum_prices(
         [e for e in entries if e.get("kind") in EXPOSURE_KINDS], adopter_party, reporting))
     full_exposure = exposure_of(full_prices)
@@ -3198,9 +3241,20 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 f"over is a window with one end")
         if not as_of:
             raise Refused(
-                f"missing instrument: no feed {adopter_party} pins carries a published_at, so "
-                f"this composition has no as-of date and the life of the {name!r} pin cannot be "
-                f"measured against one")
+                f"missing instrument: no feed {adopter_party} pins carries a published_at and no "
+                f"edge carries a since, so this composition has no as-of date and the life of "
+                f"the {name!r} pin cannot be measured against one")
+        if str(since)[:10] > as_of:
+            # Review F11. A since later than this composition's as-of is only
+            # reachable when the as-of came from somewhere else -- the caller's
+            # --as-of, or another input -- and a pin signed after the day it is
+            # priced as of is a window that runs backwards, by the day, not by
+            # the whole month _months_apart rounds to.
+            raise Refused(
+                f"missing instrument: the {edge['party']} feed edge {name!r}@{edge['version']} "
+                f"was signed since {since}, and this composition's as-of is {as_of} "
+                f"({as_of_source}), which is earlier -- a pin's life cannot be measured over a "
+                f"window that runs backwards")
         # THE COUNTERFACTUAL. It can refuse, and when it does that refusal is
         # the answer rather than an error: driftwood's own forward-intel
         # borrows its loss-event frequency from the threat register it
@@ -3245,9 +3299,9 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
             # has stood |N| months.
             raise Refused(
                 f"missing instrument: the {edge['party']} feed edge {name!r}@{edge['version']} "
-                f"was signed since {since}, and the newest published_at among the feeds "
-                f"{adopter_party} pins is {as_of}, which is earlier -- a pin's life cannot be "
-                f"measured over a window that runs backwards")
+                f"was signed since {since}, and this composition's as-of is {as_of} "
+                f"({as_of_source}), which is earlier -- a pin's life cannot be measured over a "
+                f"window that runs backwards")
         entries.append(_price_entry(
             edge["party"], SWITCHING_KIND, adopter_party, reporting, amount, perspective_doc,
             name=name, version=edge["version"],
@@ -3909,10 +3963,11 @@ def main(argv: list[str]) -> int:
             c.add_argument("--out", type=Path, default=None)
             c.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
                            help="the date to price as of (ticket 84): the eol converter's "
-                                "--as-of and the supersede ramp's end. Omitted, the newest "
-                                "published_at among the pinned feeds is used, so a signed "
-                                "composition never depends on a clock; the scheduled "
-                                "proposer passes the day it runs on and commits nothing")
+                                "--as-of and the supersede ramp's end. Omitted, this "
+                                "composition's as-of is its newest SIGNED input -- a pinned "
+                                "envelope's published_at or an edge's own since -- so a signed "
+                                "composition never depends on a clock; the scheduled proposer "
+                                "passes the day it runs on and commits nothing")
     args = p.parse_args(argv[1:])
 
     if args.cmd == "compose":
@@ -3991,6 +4046,40 @@ def _feeds_clone(dest: Path) -> Path:
     behind a really published v2, and a cve or eol pin is really untagged."""
     subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "feeds"), str(dest)],
                    check=True, capture_output=True)
+    return dest
+
+
+def _fixture_publisher(dest: Path, *, dirs: tuple[str, ...], tags: dict[str, str]) -> Path:
+    """A throwaway publisher repo of this fixture's own -- no real publisher's
+    name on it -- with `<fixture-feed>/<vN>/feed.json` directories and annotated
+    tags whose message carries a FIXTURE block of the shape the readers key on
+    (`-----BEGIN`). It claims no signature: the block says FIXTURE in its own
+    name, and only a repo named fixture-publisher ever carries it. `tags` maps
+    tag -> the date it is cut on (GIT_COMMITTER_DATE), so `since` is testable."""
+    dest.mkdir(parents=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@invalid",
+           "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@invalid"}
+    # A fixture's own git runs no hooks: the owner's global pre-commit hook is a
+    # rate-limited network call and a fixture commit must not depend on it.
+    hooks = dest / ".nohooks"
+    hooks.mkdir()
+    git = ["git", "-C", str(dest), "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+           "-c", f"core.hooksPath={hooks}"]
+    subprocess.run(["git", "init", "-q", str(dest)], check=True)
+    for major in dirs:
+        d = dest / "fixture-feed" / major
+        d.mkdir(parents=True)
+        (d / "feed.json").write_text(json.dumps({"kind": "feed", "name": "fixture-feed",
+                                                 "version": f"{major[1:]}.0.0",
+                                                 "published_by": "fixture-publisher",
+                                                 "published_at": "2026-07-31T00:00:00+00:00",
+                                                 "payload": {}}))
+    subprocess.run(git + ["add", "-A"], check=True, capture_output=True, env=env)
+    subprocess.run(git + ["commit", "-q", "-m", "fixture"], check=True, capture_output=True, env=env)
+    for tag, date in tags.items():
+        subprocess.run(git + ["tag", "-a", tag, "-m",
+                              f"{tag}\n-----BEGIN FIXTURE BLOCK (no signature, a fixture's shape)-----\n"],
+                       check=True, capture_output=True, env={**env, "GIT_COMMITTER_DATE": f"{date}T12:00:00Z"})
     return dest
 
 
@@ -6080,6 +6169,11 @@ def selfcheck() -> None:
         assert fresh["penalty-schema"]["over_pin_life"] == 0.0, fresh["penalty-schema"]
         assert fresh["threat-register"]["pin_life_months"] == _months_apart("2026-08-28", "2026-12-01") == 4, \
             fresh["threat-register"]
+        # ...and by the DAY (review F11): --as-of five days before the since, same month
+        doc_days, _ = compose(work, _real_parent_trees(), as_of="2026-11-26")
+        assert any(r["kind"] == "missing-instrument" and "runs backwards" in r["detail"]
+                   and "2026-12-01" in r["detail"] and "2026-11-26" in r["detail"]
+                   and "the caller's --as-of" in r["detail"] for r in doc_days["refusals"]), doc_days["refusals"]
         doc_backwards, _ = compose(work, _real_parent_trees(), as_of="2026-05-15")
         assert doc_backwards["prices"] == [], doc_backwards["prices"]
         assert any(r["kind"] == "missing-instrument" and "runs backwards" in r["detail"]
@@ -6147,7 +6241,9 @@ def selfcheck() -> None:
         assert re.match(r"^threat-register/v2\.\d+\.\d+$", s["newer"]["tag"]), s["newer"]
         assert s["newer"]["version"] == "v2" and s["newer"]["published_at"], s["newer"]
         tagged = _tag_date(s["newer"]["tag"])
-        assert tagged and s["since"] == s["newer"]["tagged"] == tagged, (s["since"], tagged)
+        assert tagged and s["newer"]["tagged"] == tagged, (s["newer"], tagged)
+        # since is the OLDEST signed major ahead (review F3); with one major ahead it is the same tag
+        assert s["newer"]["since_tag"] == s["newer"]["tag"] and s["since"] == tagged, s["newer"]
         assert s["as_of"] == _composition_as_of(_edges(work), trees), s["as_of"]
         assert s["perspective"] == "tuppence" and s["currency"] == "GBP", s
         assert s["base"] == line["amount"] and s["ramp"] == _ramp(s["since"], s["as_of"]), s
@@ -6167,6 +6263,9 @@ def selfcheck() -> None:
         assert abs(s2["ramp"] - 2.0) < 1e-9 and abs(s2["amount"] - s2["base"]) < 1e-6, s2
         s0 = next(e for e in compose(work, trees, as_of=before)[0]["prices"] if e["kind"] == SUPERSEDE_KIND)
         assert s0["as_of"] == before and s0["since"] == tagged and s0["ramp"] == 1.0 and s0["amount"] == 0.0, s0
+        assert any(lim.startswith("zero (as_of") and before in lim and tagged in lim for lim in s0["limits"]), \
+            ("a zero that is a backwards window says so, with both dates (review F2)", s0["limits"])
+        assert not [lim for lim in s["limits"] if lim.startswith("zero")] or s["as_of"] < s["since"]
         print("OK supersede: tuppence's threat-register@v1 sits behind the feeds publisher's real "
               "signed %s (cut %s); the line prices %.2f %s at the composition's own as-of %s "
               "(ramp %.4f on a %.2f base), %.2f a year past the tag under --as-of, and 0.00 "
@@ -6191,9 +6290,42 @@ def selfcheck() -> None:
             assert got[0] is None and got[1]["state"] == "current" and "v2.0.0" in got[1]["detail"], got
             lightweight = _tag_shape_repo(Path(shapes) / "light", tag="v2.0.0", annotated=False)
             assert newest_published_major(lightweight, "fixture-publisher", "fixture-feed", "v1")[0] is None
+            # Review F1 (red before: (None, unobserved), line ABSENT): a signed v3 whose
+            # directory this checkout does not carry -- the shape every adopter's pinned
+            # checkout presents the day a newer tag is cut on a later commit -- still prices
+            # against the newest READABLE signed major, names v3, and (review F3) is behind
+            # since the OLDEST signed major ahead was cut.
+            pub = _fixture_publisher(Path(shapes) / "publisher", dirs=("v1", "v2"),
+                                     tags={"fixture-feed/v2.0.0": "2026-09-01", "fixture-feed/v3.0.0": "2026-09-05"})
+            got_newer, got_obs = newest_published_major(pub, "fixture-publisher", "fixture-feed", "v1")
+            assert got_newer is not None and got_newer["version"] == "v2" and got_newer["tag"] == "fixture-feed/v2.0.0", got_obs
+            assert got_newer["since_tag"] == "fixture-feed/v2.0.0" and got_newer["since"] == "2026-09-01", got_newer
+            assert got_obs["state"] == "behind" and "fixture-feed/v3.0.0" in got_obs["detail"] \
+                and "unreadable here" in got_obs["detail"], got_obs
+            # ...and with v3's directory present, v3 is the target and since is STILL v2's cut day
+            pub3 = _fixture_publisher(Path(shapes) / "publisher3", dirs=("v1", "v2", "v3"),
+                                      tags={"fixture-feed/v2.0.0": "2026-09-01", "fixture-feed/v3.0.0": "2026-09-05"})
+            got3, obs3 = newest_published_major(pub3, "fixture-publisher", "fixture-feed", "v1")
+            assert got3 is not None and got3["version"] == "v3" and got3["since"] == "2026-09-01" \
+                and got3["since_tag"] == "fixture-feed/v2.0.0", (got3, obs3)
+            # a pin at v2 in the same repo is behind v3 since v3's own cut day
+            got2, _ = newest_published_major(pub3, "fixture-publisher", "fixture-feed", "v2")
+            assert got2 is not None and got2["since"] == "2026-09-05", got2
+            # nothing readable at all: unobserved, naming every signed tag ahead
+            pub0 = _fixture_publisher(Path(shapes) / "publisher0", dirs=("v1",),
+                                      tags={"fixture-feed/v2.0.0": "2026-09-01"})
+            got0, obs0 = newest_published_major(pub0, "fixture-publisher", "fixture-feed", "v1")
+            assert got0 is None and obs0["state"] == "unobserved" and "fixture-feed/v2.0.0" in obs0["detail"], obs0
+            # the not-counted tags are named on a behind observation too (review F4)
+            subprocess.run(["git", "-C", str(pub), "-c", "tag.gpgsign=false", "tag", "fixture-feed/v4.0.0"],
+                           check=True, capture_output=True)
+            _, obs_l = newest_published_major(pub, "fixture-publisher", "fixture-feed", "v1")
+            assert obs_l["state"] == "behind" and "fixture-feed/v4.0.0" in obs_l["detail"] and "publishes nothing" in obs_l["detail"], obs_l
         print("OK supersede: the same pin at v2 prints no line and the feed entry says `current`; "
               "no tag at all is `unobserved`; an unsigned or lightweight tag ahead publishes "
-              "nothing and is named rather than counted")
+              "nothing and is named rather than counted; a signed major ahead whose directory "
+              "the checkout does not carry is named and the line prices against the newest "
+              "readable one, behind since the OLDEST signed major ahead was cut")
 
         # (b) an untagged cve pin is a PRICED HOLE naming the tag that does not
         # exist, never a refusal -- and it prices through the cve converter.
@@ -6212,7 +6344,7 @@ def selfcheck() -> None:
         assert "cve/v2.x.y" in hole["detail"] and "no signed tag" in hole["priced_by"], hole
         d_b = [d for d in doc_b["deltas"] if d["kind"] == "new-untagged-pin" and d["name"] == "cve"]
         assert len(d_b) == 1 and d_b[0]["amount"] == cve["amount"], doc_b["deltas"]
-        assert cve["superseded"]["state"] == "current", cve["superseded"]
+        assert cve["superseded"]["state"] == "unpublished", cve["superseded"]
         assert not [e for e in doc_b["prices"] if e["kind"] == SUPERSEDE_KIND and e["name"] == "cve"]
         rec = next(r for r in doc_b["vendored"] if r["name"] == "cve")
         assert rec["invocation"] == ["cve"] and rec["converter_from"] == "platform", rec

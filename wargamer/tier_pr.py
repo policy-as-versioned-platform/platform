@@ -593,6 +593,12 @@ def apply_pin_retirement(text: str, party: str, name: str, frm: str, to: str) ->
     Returns (text, changed, why). Raises AmbiguousDeclaration when more than
     one line names the edge. Not changed, with the reason, when no line names
     it or the line already pins at or past `to` -- the forward-only clamp."""
+    # Review F10: `to` is written into the file textually, so it must be a bare
+    # major and nothing else -- a forged `newer.version` carrying a quote and a
+    # newline would inject a second edge.
+    for label, value in (("from", frm), ("to", to)):
+        if not re.fullmatch(r"v\d+", str(value)):
+            raise ValueError(f"retirement {label} version {value!r} is not a bare major (vN); refused")
     hits = list(_edge_pattern(party, name).finditer(text))
     if len(hits) > 1:
         raise AmbiguousDeclaration(f"{len(hits)} inherits[] lines name {party}/{name}")
@@ -632,7 +638,7 @@ def _land_retirement(p: dict, adopter_dir: Path, base: str, dry_run: bool,
     try:
         new_text, changed, why = apply_pin_retirement(party_yaml.read_text(), party, name,
                                                       c["from"], c["to"])
-    except AmbiguousDeclaration as e:
+    except (AmbiguousDeclaration, ValueError) as e:
         result["error"] = f"{party_yaml}: {e} -- nothing landed"
         return result
     if not changed:
@@ -650,7 +656,7 @@ def _land_retirement(p: dict, adopter_dir: Path, base: str, dry_run: bool,
     on_base = party_yaml.read_text()
     try:
         new_text, changed, why = apply_pin_retirement(on_base, party, name, c["from"], c["to"])
-    except AmbiguousDeclaration as e:
+    except (AmbiguousDeclaration, ValueError) as e:
         _git("checkout", "-q", base, cwd=adopter_dir)
         result["error"] = f"party.yaml on origin/{base}: {e} -- nothing landed"
         return result
@@ -1264,6 +1270,15 @@ def selfcheck() -> None:
             raise AssertionError("two lines naming one edge must be refused, not edited")
         assert _advances("v1", "v2") and _advances("v1.0.0", "v2") and not _advances("v2", "v2") \
             and not _advances("v2", "v1") and not _advances("garbage", "v2")
+        # Review F10: a forged target that would inject a second edge is refused, not written
+        forged = 'v2", since: \'2026-09-08\' }\n  - { party: evil, kind: feed, name: x, version: "v9'
+        try:
+            apply_pin_retirement(party_text.replace("{V}", "v1"), "feeds", "threat-register", "v1", forged)
+        except ValueError as e:
+            assert "not a bare major" in str(e), e
+        else:
+            raise AssertionError("a forged target version must be refused before any text is written")
+
 
         # ADMITTED: base pins v1, the evidence says v2 is signed -> a PR on party.yaml only
         _pin("v1")
@@ -1291,6 +1306,18 @@ def selfcheck() -> None:
                          f'key="{retire_key}"'):
             assert expected in body, (f"the retirement body must carry {expected!r}", body)
         assert "posture.acme.io/tier" not in body, body
+
+        # ...and through run(): the forged `newer.version` lands nothing and names why
+        _fresh()
+        forged_sup = _supersede("v1", "v2")
+        forged_sup["newer"]["version"] = forged
+        evidence.write_text(json.dumps({"prices": [forged_sup]}))
+        forged_out = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                   org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert len(forged_out) == 1 and "landed" not in forged_out[0], forged_out
+        assert "not a bare major" in (forged_out[0].get("error") or forged_out[0].get("why") or ""), forged_out
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+        assert _git("show", "main:party.yaml", cwd=work, capture=True).stdout == party_text.replace("{V}", "v1")
 
         # ADMITTED beside a HELD tier: the party is declared isolated and a line
         # crosses (4b's shape) -- the tier proposal is held by name, and the
