@@ -795,6 +795,14 @@ def vendor_feed(edge: dict, tree: Path, sha: str) -> tuple[str, dict[str, str], 
                                and not str(converter).startswith(str(tree))), edge["party"])
         files[converter_rel] = converter.read_text()
 
+    # Review F1: the command that really priced this feed, and the digest of what
+    # it returned. `args[0]` is the subcommand, the payload path is inserted
+    # after it, and `args[1:]` follow -- the convention _run_converter uses, so a
+    # replayer needs no second copy of it. `payload_version_key` is the one other
+    # thing a replayer must know: load_feed_payload fills that key from the
+    # envelope when the body does not carry it, and a converter that reads it
+    # would otherwise see a different payload than the one that was priced.
+    invocation = _INVOCATIONS.get((name, version)) if converter_rel else None
     record = {
         "party": edge["party"], "kind": edge["kind"], "name": name, "version": version,
         "sha": sha,
@@ -802,6 +810,9 @@ def vendor_feed(edge: dict, tree: Path, sha: str) -> tuple[str, dict[str, str], 
         "party_artefact": "party.yaml" if party_yaml.exists() else None,
         "converter": converter_rel,
         "converter_from": converter_from,
+        "invocation": (invocation or {}).get("args"),
+        "scenario_sha256": (invocation or {}).get("scenario_sha256"),
+        "payload_version_key": FEED_VERSION_KEY.get(name, "feed_version") if converter_rel else None,
         "published_at": _feed_as_of(feed_path),
         "files": {rel: _digest(text) for rel, text in sorted(files.items())},
     }
@@ -1499,6 +1510,20 @@ def _load_scenario(rel_path: str, root: Path = PLATFORM_DIR) -> dict:
 # answered a stale price to the very tests that plant a change.
 _CONVERTER_CACHE: dict[tuple, dict] = {}
 
+# Eco-system ticket 45, review F1. The exact invocation each feed was priced
+# through, and the digest of the scenario it produced -- recorded AS IT HAPPENS
+# and vendored beside the converter, so a reader with the adopter's repository
+# and nothing else can replay the real command instead of guessing at one.
+#
+# The first cut of the hub's portability check guessed `--selfcheck`, which
+# neither real converter accepts: ico's is an argparse SUBCOMMAND and its parser
+# rewrites an unknown first token to `build`, so `--selfcheck` became
+# `build --selfcheck` and exited 2; the threat register's converter exited 2 for
+# a missing `cmd`. The leg passed only because the FIXTURE converter special-
+# cased the flag. A derived record cannot make that mistake: the command written
+# down is the command that ran.
+_INVOCATIONS: dict[tuple[str, str], dict] = {}
+
 
 def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) -> dict:
     """Resolve the feed file, unwrap its envelope, hand the payload to the
@@ -1510,8 +1535,19 @@ def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) ->
     converter = _converter(name, tree_path)
     body = json.dumps(payload, sort_keys=True)
     key = (name, body, _digest(converter.read_text()), tuple(args))
+
+    def _record(scenario: dict) -> dict:
+        # Keyed on (name, version) because that is what a vendored directory is
+        # keyed on. Written on the cached path too: a cache hit priced this feed
+        # just as much as a miss did.
+        _INVOCATIONS[(name, str(version))] = {
+            "args": list(args),
+            "scenario_sha256": _digest(json.dumps(scenario, sort_keys=True)),
+        }
+        return scenario
+
     if key in _CONVERTER_CACHE:
-        return copy.deepcopy(_CONVERTER_CACHE[key])
+        return _record(copy.deepcopy(_CONVERTER_CACHE[key]))
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
         json.dump(payload, fh)
     try:
@@ -1522,7 +1558,7 @@ def _run_converter(name: str, version: str, tree_path: Path, args: list[str]) ->
         Path(fh.name).unlink(missing_ok=True)
     scenario = json.loads(result.stdout)
     _CONVERTER_CACHE[key] = copy.deepcopy(scenario)
-    return scenario
+    return _record(scenario)
 
 
 def _threat_scenario(feed_version: str, party: str, tree_path: Path = PLATFORM_DIR) -> dict:
@@ -2295,14 +2331,22 @@ def _sized_turnover(perspective_doc: dict, currency: str, as_of: str | None,
 
 
 def _months_apart(a: str, b: str) -> int:
-    """Whole months between two YYYY-MM-DD strings, from the strings alone --
-    no clock, no calendar library (D1: this module never reads either)."""
+    """Whole months from `a` to `b`, SIGNED, from the two YYYY-MM-DD strings
+    alone -- no clock, no calendar library (D1: this module never reads either).
+
+    Signed since 2026-09-06 (ticket 45, review F3). It used to return abs(), and
+    both callers were wrong for it. A pin's life measured backwards -- an as-of
+    BEFORE the `since` the adopter signed -- graded as "the pin has stood 3
+    months" instead of refusing. And a size signed AFTER the feed was published,
+    which is the ordinary case for a fresh restatement, counted its recency as
+    age and could be called stale for being new. Negative now means b precedes
+    a, and each caller says what it does with that."""
     try:
         ay, am = int(a[:4]), int(a[5:7])
         by, bm = int(b[:4]), int(b[5:7])
     except ValueError:
         return 0        # an unreadable date is not evidence of staleness
-    return abs((by * 12 + bm) - (ay * 12 + am))
+    return (by * 12 + bm) - (ay * 12 + am)
 
 
 def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | None,
@@ -2887,6 +2931,22 @@ def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
 # --------------------------------------------------------------------------
 
 
+def _portable_reason(text: str, adopter_dir: Path, parent_trees: dict[str, Path]) -> str:
+    """A refusal carried INTO a signed artefact must read the same on every
+    machine (ticket 45, review F2). price_twin names the feed it could not read
+    by absolute path, and that path is the builder's home directory; committed
+    into composed/evidence.json it makes the adopter's own signed bytes depend
+    on whose laptop composed them, and a runner re-composing the same tree
+    produces a different string. Every tree this composition read is stripped to
+    the name the estate knows it by."""
+    for prefix, label in sorted(
+            ([(str(Path(adopter_dir).resolve()), "")]
+             + [(str(Path(t).resolve()), f"<{party}>/") for party, t in parent_trees.items()]),
+            key=lambda pair: -len(pair[0])):
+        text = text.replace(prefix + os.sep, label).replace(prefix, label.rstrip("/"))
+    return text
+
+
 def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        parent_trees: dict[str, Path], prev_header: dict | None,
                        *, adopter_dir: Path, perspective_doc: dict,
@@ -2943,21 +3003,43 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
         # the publisher's own words, with NO amount. Never a pass, never a
         # guess. Subtracting the entry we were about to lose would have printed
         # a confident figure here and been wrong.
+        # Leaving a publisher means losing EVERY feed it supplies this adopter,
+        # not just the one edge being priced (review F8: the record said "that
+        # publisher's feed edges" while the code dropped one). Where a publisher
+        # supplies more than one feed the entries share an amount on purpose --
+        # it is one cost, the cost of leaving that publisher -- and switching
+        # entries are never summed, so nothing double-counts. Today every
+        # publisher supplies each adopter exactly one feed, so this changes no
+        # figure in the estate; it makes the sentence true.
+        dropped = [e for e in edges
+                   if e["kind"] in FEED_KINDS and e["party"] == edge["party"]]
         could_not_look: str | None = None
         without: list[dict] = []
         try:
             without = compute_prices(
-                [e for e in edges if e is not edge], adopter_party, tolerance, parent_trees,
+                [e for e in edges if e not in dropped], adopter_party, tolerance, parent_trees,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
                 include_switching=False)
         except Refused as e:
-            could_not_look = str(e)
+            could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
         # A counterfactual that refused prices NOTHING, so nothing is kept: the
         # whole book goes unpriceable, not just the dropped publisher's line.
         kept = {(e["kind"], e.get("name")) for e in without} if could_not_look is None else set()
         months = _months_apart(str(since), as_of)
+        if months < 0:
+            # Review F3. A window that runs backwards is not a window. It happens
+            # for a real reason -- the as-of is the newest `published_at` among
+            # the pinned feeds, so pinning a feed published BEFORE the day the
+            # edge was signed puts the two in this order -- and the honest answer
+            # is that this composition cannot measure the pin's life, not that it
+            # has stood |N| months.
+            raise Refused(
+                f"missing instrument: the {edge['party']} feed edge {name!r}@{edge['version']} "
+                f"was signed since {since}, and the newest published_at among the feeds "
+                f"{adopter_party} pins is {as_of}, which is earlier -- a pin's life cannot be "
+                f"measured over a window that runs backwards")
         entries.append(_price_entry(
             edge["party"], SWITCHING_KIND, adopter_party, reporting, amount, perspective_doc,
             name=name, version=edge["version"],
@@ -2977,8 +3059,9 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                           for e in full_prices if (e["kind"], e.get("name")) not in kept],
             sized=sized,
             basis=SWITCHING_BASIS,
-            dropped_edges=[f"{edge['party']}/{edge['kind']}"
-                            + (f":{name}" if name else "") + f"@{edge['version']}"]))
+            dropped_edges=[f"{e['party']}/{e['kind']}"
+                            + (f":{_feed_name(e)}" if _feed_name(e) else "")
+                            + f"@{e['version']}" for e in dropped]))
     return entries
 
 
@@ -5489,11 +5572,85 @@ def selfcheck() -> None:
         assert doc_tampered["outcome"] == "refused", doc_tampered["prices"]
         assert any("missing instrument" in e and "digest" in e
                    for e in doc_tampered["party_artefact_errors"]), doc_tampered
-    print("OK portability: with ico's clone ABSENT, driftwood re-derives every price it signed "
-          "and re-renders all %d files of its composed artefact BYTE-IDENTICALLY -- header, "
-          "parent SHAs and all -- from its own vendored payload and converter, printing the "
-          "substitution as an open limit; a tampered vendored payload refuses against the "
-          "digest its own tag signed" % len(rendered_present))
+    _vendored_files = len([k for k in rendered_present
+                            if k.startswith("/".join(VENDORED_DIR) + "/")])
+    print("OK portability: with ico's clone ABSENT, driftwood re-derives every price it signed, "
+          "and every one of the %d files it RENDERS comes back byte-identical -- %d of them the "
+          "vendored tree itself, the rest the composed policy set and composed/HEADER.yaml with "
+          "its parent SHAs. composed/evidence.json is not among them: it is written from the "
+          "document rather than rendered, and its prices are the comparison just above. The "
+          "substitution prints as an open limit, and a tampered vendored payload refuses "
+          "against the digest its own tag signed"
+          % (len(rendered_present), _vendored_files))
+
+    # --- review F1: the vendored copy carries the command that priced it, and
+    # replaying that command against the vendored payload, in a bare directory
+    # with no publisher clone and no estate, reproduces the very digest the
+    # adopter signed. This is the leg the first cut got wrong by guessing a
+    # `--selfcheck` flag neither real converter accepts ---
+    for record in doc45["vendored"]:
+        if record["converter"] is None:
+            assert record["invocation"] is None and record["scenario_sha256"] is None, record
+            continue
+        assert isinstance(record["invocation"], list) and record["invocation"], record
+        assert record["payload_version_key"], record
+        base = f"composed/feeds/{record['party']}/{record['version']}"
+        with tempfile.TemporaryDirectory() as bare:
+            script = Path(bare) / Path(record["converter"]).name
+            script.write_text(rendered45[f"{base}/{record['converter']}"])
+            envelope = json.loads(rendered45[f"{base}/{record['feed_path']}"])
+            body = dict(envelope.get("payload", envelope))
+            body.setdefault(record["payload_version_key"], record["version"])
+            payload = Path(bare) / "payload.json"
+            payload.write_text(json.dumps(body))
+            args = record["invocation"]
+            replay = subprocess.run(
+                [sys.executable, str(script), args[0], str(payload), *args[1:]],
+                capture_output=True, text=True, cwd=bare)
+            assert replay.returncode == 0, (record["name"], replay.stderr[-400:])
+            assert _digest(json.dumps(json.loads(replay.stdout), sort_keys=True)) \
+                == record["scenario_sha256"], record["name"]
+    print("OK composed/feeds/: each vendored copy records the exact command that priced it and "
+          "the digest of what that command returned -- and replaying it against the vendored "
+          "payload alone, in a bare directory, reproduces the digest for %s"
+          % ", ".join(r["name"] for r in doc45["vendored"] if r["converter"]))
+
+    # --- review F2: nothing this composition signs carries the path of the
+    # machine that composed it ---
+    blob = json.dumps(doc45["prices"])
+    for absolute in (str(DEFAULT_ESTATE_CLONE), str(driftwood), str(PLATFORM_DIR)):
+        assert absolute not in blob, absolute
+    threat_reason = next(e["could_not_look"] for e in doc45["prices"]
+                          if e["kind"] == "switching" and e["name"] == "threat-register")
+    assert threat_reason.startswith("missing instrument: twin/forward-intel/"), threat_reason
+    print("OK prices[]: no entry carries the absolute path of the machine that composed it -- "
+          "the twin's own refusal travels into the signed artefact naming "
+          "`twin/forward-intel/v1/feed.json`, which reads the same on every runner")
+
+    # --- review F3: a window that runs backwards is refused, not abs()'d ---
+    with tempfile.TemporaryDirectory() as tmp:
+        work = _adopter_copy("driftwood", Path(tmp) / "driftwood")
+        doc_party = yaml.safe_load((work / "party.yaml").read_text())
+        for e in doc_party["inherits"]:
+            if e.get("name") == "penalty-schema":
+                e["since"] = "2026-12-01"       # after every pinned feed's published_at
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_party, **YAML_KWARGS))
+        doc_backwards, _ = compose(work, _real_parent_trees())
+        assert doc_backwards["prices"] == [], doc_backwards["prices"]
+        assert any(r["kind"] == "missing-instrument" and "runs backwards" in r["detail"]
+                   and "2026-12-01" in r["detail"] for r in doc_backwards["refusals"]), \
+            doc_backwards["refusals"]
+    assert _months_apart("2026-08-28", "2026-05-15") < 0, "months must be signed"
+    # Today every edge was signed on the same day as the newest feed publication,
+    # so the window is zero months and `over_pin_life` is 0.0 on every entry. It
+    # is correct arithmetic over two signed dates, not a placeholder, and it
+    # stays 0.0 until a pinned feed publishes after the pin date. Asserted so
+    # that the day it stops being true, somebody is told.
+    assert {e["pin_life_months"] for e in doc45["prices"] if e["kind"] == "switching"} == {0}
+    print("OK switching: an as-of EARLIER than the edge's signed `since` refuses naming both "
+          "dates rather than reporting the window's absolute size; and on today's estate every "
+          "pin was signed the day of the newest feed publication, so the window is 0 months and "
+          "over_pin_life is 0.0 -- arithmetic over two signed dates, not a placeholder")
 
     # --- a feed edge with no `since` cannot be annualised over a pin's life,
     # and that is a missing instrument, not a defaulted window (ADR-0020) ---
