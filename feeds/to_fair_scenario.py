@@ -18,6 +18,17 @@ Three feeds:
 
 Deny state (all three): loss path closed, lef ~ (0,0,1), same convention as
 every other scenario in this estate.
+
+Headline entry (eco-system ticket 84). `cve` and `eol` price ONE entry each, and
+composition prices a whole feed for an adopter: it has no cve id or component
+of its own to name. With the entry omitted the converter prices the feed's
+HEADLINE -- the entry with the largest mode-product, mode(lef) x mode(lm), an
+ordinal proxy that can diverge from fair.py's PERT expectation (review F5),
+for `eol` as ramped at `--as-of` -- and the scenario's `note` names
+which entry that is, how many the feed carries and which ones this line does
+not price. One entry, not a sum: fair.py's own selfcheck refuses summing
+independent risks' ALEs after the fact, and PERT triples do not add. The
+headline is the ordinal reading of the feed (ticket 75 Q4), said on the line.
 """
 from __future__ import annotations
 
@@ -53,7 +64,33 @@ def threat_scenario(feed: dict, institution: str) -> dict:
 
 
 # --- CVE feed --------------------------------------------------------------------
-def cve_scenario(feed: dict, cve_id: str, annual_events_if_exploited=(1, 2, 6)) -> dict:
+def _expected(lef: tuple, lm: tuple) -> float:
+    """mode(lef) x mode(lm): the ordinal the headline is picked on."""
+    return float(lef[1]) * float(lm[1])
+
+
+def _headline(candidates: dict[str, tuple[tuple, tuple]]) -> tuple[str, str]:
+    """(entry id, note fragment) for the entry with the largest expected
+    annual loss; ties break on the id so the pick is deterministic."""
+    if not candidates:
+        raise SystemExit("FAIL: the feed carries no entry to price")
+    ranked = sorted(candidates, key=lambda k: (-_expected(*candidates[k]), k))
+    others = ", ".join(ranked[1:]) or "none"
+    return ranked[0], (f"headline entry {ranked[0]} of {len(ranked)} (largest mode-product "
+                       f"entry, mode lef x mode lm -- an ordinal proxy, not fair.py's PERT "
+                       f"expectation; ticket 75 Q4); not priced by this line: {others}.")
+
+
+def cve_scenario(feed: dict, cve_id: str | None = None,
+                 annual_events_if_exploited=(1, 2, 6)) -> dict:
+    headline = ""
+    if cve_id is None:
+        lo, mode, hi = annual_events_if_exploited
+        cve_id, headline = _headline({
+            k: ((lo * c["epss"], mode * c["epss"], hi * c["epss"]),
+                tuple(feed["severity_lm_gbp"][c["severity"]]))
+            for k, c in feed["cves"].items()})
+        headline = " " + headline
     cve = feed["cves"][cve_id]
     lm = tuple(feed["severity_lm_gbp"][cve["severity"]])
     # lef: epss (0..1 exploit-probability proxy) scales an editorial "if this CVE
@@ -64,7 +101,7 @@ def cve_scenario(feed: dict, cve_id: str, annual_events_if_exploited=(1, 2, 6)) 
     return {
         "version": feed["feed_version"],
         "name": f"cve:{feed['feed_version']} {cve_id}",
-        "note": f"{cve['component']} CVSS {cve['cvss']} ({cve['severity']}), epss={epss}. Source: {cve['source']}.",
+        "note": f"{cve['component']} CVSS {cve['cvss']} ({cve['severity']}), epss={epss}. Source: {cve['source']}.{headline}",
         "warn": {"lef": list(lef), "lm": list(lm)},
         "deny": {"lef": list(DENY_LEF), "lm": list(lm)},
     }
@@ -89,7 +126,15 @@ def eol_ramp(eol_date: str, as_of: str) -> float:
     return 1.0 + min(years_past, 4.0)
 
 
-def eol_scenario(feed: dict, component: str, as_of: str) -> dict:
+def eol_scenario(feed: dict, component: str | None, as_of: str) -> dict:
+    headline = ""
+    if component is None:
+        def _ramped(c: dict) -> tuple:
+            r = eol_ramp(c["eol_date"], as_of)
+            return tuple(x * r for x in c["base_lef"])
+        component, headline = _headline({
+            k: (_ramped(c), tuple(c["base_lm_gbp"])) for k, c in feed["components"].items()})
+        headline = " " + headline
     c = feed["components"][component]
     ramp = eol_ramp(c["eol_date"], as_of)
     lo, mode, hi = c["base_lef"]
@@ -98,7 +143,7 @@ def eol_scenario(feed: dict, component: str, as_of: str) -> dict:
     return {
         "version": feed["feed_version"],
         "name": f"eol:{feed['feed_version']} {component}@{as_of}",
-        "note": f"eol_date={c['eol_date']}, as_of={as_of}, ramp={ramp:.2f}x. Source: {c['source']}.",
+        "note": f"eol_date={c['eol_date']}, as_of={as_of}, ramp={ramp:.2f}x. Source: {c['source']}.{headline}",
         "warn": {"lef": list(lef), "lm": list(lm)},
         "deny": {"lef": list(DENY_LEF), "lm": list(lm)},
     }
@@ -150,8 +195,31 @@ def selfcheck():
     assert 1.0 < r_1yr < r_2yr < r_10yr, (r_1yr, r_2yr, r_10yr)
     assert r_10yr == 5.0, r_10yr  # capped at +4x
 
+    # Ticket 84: the headline pick is deterministic, names what it did not price,
+    # and for eol moves with --as-of (a component past EOL longer ramps higher).
+    cve_feed = {"feed_version": "vX", "severity_lm_gbp": {"critical": (50_000, 150_000, 400_000),
+                                                           "high": (10_000, 40_000, 120_000)},
+                "cves": {"A-low-epss": {"component": "a", "cvss": 9.0, "severity": "critical",
+                                        "epss": 0.10, "source": "s"},
+                         "B-high-epss": {"component": "b", "cvss": 7.5, "severity": "high",
+                                         "epss": 0.90, "source": "s"}}}
+    head = cve_scenario(cve_feed)
+    # A: 2*0.10*150000 = 30000; B: 2*0.90*40000 = 72000 -> B is the headline
+    assert "B-high-epss" in head["name"] and "headline entry B-high-epss of 2" in head["note"], head
+    assert "not priced by this line: A-low-epss" in head["note"], head
+    assert cve_scenario(cve_feed, "A-low-epss")["note"].endswith("Source: s."), "a named entry carries no headline note"
+    eol_feed = {"feed_version": "vX", "components": {
+        "old": {"eol_date": "2020-01-01", "source": "s", "base_lef": (1, 1, 2), "base_lm_gbp": (1_000, 1_000, 2_000)},
+        "big": {"eol_date": "2030-01-01", "source": "s", "base_lef": (1, 2, 4), "base_lm_gbp": (1_000, 1_000, 2_000)}}}
+    # on old's EOL day nothing has ramped: old 1*1000=1000 < big 2*1000=2000 -> big
+    assert "big@" in eol_scenario(eol_feed, None, "2020-01-01")["name"]
+    # four years on, old ramps 5.0 (capped): 5000 > big's 2000 -> the headline moved with --as-of
+    assert "old@" in eol_scenario(eol_feed, None, "2024-01-01")["name"]
+    checked += 4
+
     assert checked >= 9, f"expected to check every feed-version x entry, only checked {checked}"
-    print(f"ok  {checked} feed entries valid (lo<=mode<=hi); EOL ramp monotonic & capped "
+    print(f"ok  {checked} feed entries valid (lo<=mode<=hi); headline pick deterministic and "
+          f"named; EOL ramp monotonic & capped "
           f"(1yr={r_1yr:.2f}x 2yr={r_2yr:.2f}x 10yr={r_10yr:.2f}x)")
 
 
@@ -164,14 +232,14 @@ def main(argv=None):
     pt.add_argument("institution")
     pt.add_argument("-o", "--out")
 
-    pc = sub.add_parser("cve", help="cve feed -> scenario")
+    pc = sub.add_parser("cve", help="cve feed -> scenario (omit cve_id: the feed's headline entry)")
     pc.add_argument("feed")
-    pc.add_argument("cve_id")
+    pc.add_argument("cve_id", nargs="?", default=None)
     pc.add_argument("-o", "--out")
 
-    pe = sub.add_parser("eol", help="eol feed -> scenario (time-varying)")
+    pe = sub.add_parser("eol", help="eol feed -> scenario (time-varying; omit component: the headline as of --as-of)")
     pe.add_argument("feed")
-    pe.add_argument("component")
+    pe.add_argument("component", nargs="?", default=None)
     pe.add_argument("--as-of", default=datetime.date.today().isoformat())
     pe.add_argument("-o", "--out")
 

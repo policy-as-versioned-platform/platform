@@ -32,6 +32,16 @@ Runs in the ADOPTER's own repo, on the adopter's own GH_TOKEN, through its
 pinned `platform` dependency -- the same shape shift-left.yml already uses
 for the version cross-check gate (ADR-0015: "same-repo credential").
 
+Ticket 84: a `supersede` prices[] line -- a feed pin behind a newer major its
+publisher has SIGNED -- lands as a RETIREMENT pull request that moves that one
+`inherits[]` edge forward in the adopter's own `party.yaml`, keyed on the
+ledger's `retirement` kind. It never touches the Namespace, so ticket 78's
+tighten-only clamp has nothing to say about it; its own clamp is FORWARD-ONLY:
+the target must be ahead of what `origin/<base>` pins at the moment of the
+write, and it comes off a signed tag composition observed, so a retirement can
+neither move a pin backwards nor onto an unsigned version. A held tier
+proposal does not hold a retirement: they are different questions.
+
 Dedupe: `wargamer.propose()`'s own branch name IS the key. A second run
 resets that branch to the current base and force-pushes a single fresh
 commit reflecting the current £ (never accumulates history), then updates
@@ -410,7 +420,50 @@ def _party_paragraph(p: dict) -> str:
     )
 
 
+def _retirement_body(p: dict) -> str:
+    """The retirement PR body (ticket 84): what moves, the tag that makes the
+    newer major published, the price of staying behind under the adopter's own
+    perspective as of the day it was priced, and what this proposer does NOT
+    do -- re-compose. compose-check regenerates `composed/` on this PR and
+    refuses drift, exactly as it does on a Renovate bump, so whoever merges
+    re-composes; Renovate may open the same one-line edit as a plain version
+    bump, and this is the PR that carries the price and the ledger key."""
+    c, r, price = p["change"], p.get("retirement") or {}, p.get("price") or {}
+    return (
+        f"{p.get('ledger_marker', '')}\n\n"
+        f"Proposed by the war-gamer's supersede line (eco-system ticket 84; ticket 13 D5; "
+        f"ADR-0010's publisher-side supersede). **What moves:** `party.yaml` `inherits[]` "
+        f"`{c['edge']['party']}/{c['edge']['name']}` `{c['from']}` -> `{c['to']}`, the newest "
+        f"major that publisher has signed (tag `{r.get('tag')}`, cut {r.get('tagged')}, "
+        f"envelope published_at {r.get('published_at')}). Nothing else is edited: not the "
+        f"governed Namespace, not `composed/`.\n\n"
+        f"**The price of staying behind:** {_money(price, 'to')} against the line's own "
+        f"{_money(price, 'from')} under the `{price.get('perspective', p.get('org', '?'))}` "
+        f"perspective, as of {r.get('as_of')} -- ramp {r.get('ramp')} since {r.get('since')} "
+        f"(the day the tag was cut), +1x per year behind and capped at +4x; re-priced on every "
+        f"clock run until the pin moves.\n\n"
+        f"**Forward-only (ticket 84's clamp):** this proposer moves a pin only onto a major ahead "
+        f"of what `origin/{p.get('base', 'main')}` pins at the moment of the write, and only onto "
+        f"one composition observed a signed tag for; it is held, by name, otherwise. Ticket 78's "
+        f"tighten-only clamp binds the Namespace tier and is untouched by this change.\n\n"
+        f"**What this PR does not carry:** a re-composition. `compose-check` regenerates "
+        f"`composed/` and refuses drift, as it does on a Renovate bump; re-compose and commit "
+        f"before merging. Renovate may open the same edit as a version bump -- this is the PR "
+        f"that carries the price and the ledger key.\n\n"
+        f"**Priced under:** selection policy `{p.get('policy_version') or 'none published'}`, "
+        f"curve `{p.get('curve_hash') or 'none published'}`.\n\n"
+        f"Evidence: {json.dumps(p['from_evidence'], sort_keys=True)}\n\n"
+        f"{p.get('as_of_note', '')}\n\n"
+        f"Closing this PR without merging is the rejection: the ledger is DERIVED from "
+        f"closed-unmerged PRs on this branch (ADR-0024), keyed on the `retirement` kind, and a "
+        f"still newer major is a new question that will be raised again.\n\n"
+        f"Never merged by this proposer -- opened for human review only."
+    ).strip()
+
+
 def _pr_body(p: dict) -> str:
+    if p.get("retirement"):
+        return _retirement_body(p)
     c = p["change"]
     price = p.get("price") or {}
     line_move = ""
@@ -509,6 +562,120 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
     return result
 
 
+# --------------------------------------------------------------------------
+# ticket 84: landing a retirement -- one inherits[] edge moves forward
+# --------------------------------------------------------------------------
+def _edge_pattern(party: str, name: str) -> re.Pattern:
+    """The flow-style `inherits[]` line the three adopters write:
+    `- { party: feeds, kind: feed, name: threat-register, version: "v1", since: '...' }`
+    (any spacing; the version is the quoted group)."""
+    return re.compile(
+        rf"""^(\s*-\s*\{{\s*party:\s*{re.escape(party)}\s*,\s*kind:\s*feed\s*,\s*name:\s*"""
+        rf"""{re.escape(name)}\s*,\s*version:\s*")([^"]+)(".*)$""", re.M)
+
+
+def _major(version: str) -> int | None:
+    digits = re.match(r"v?(\d+)", str(version or ""))
+    return int(digits.group(1)) if digits else None
+
+
+def _advances(current: str | None, to: str) -> bool:
+    """Would pinning `to` move the edge FORWARD from `current`? Majors only,
+    because a feed pin is declared by major. Unreadable either side is False:
+    a clamp that cannot tell forward from backward must not guess."""
+    a, b = _major(current or ""), _major(to)
+    return a is not None and b is not None and b > a
+
+
+def apply_pin_retirement(text: str, party: str, name: str, frm: str, to: str) -> tuple[str, bool, str]:
+    """Move ONE feed edge's version in party.yaml, textually, so the file's
+    comments and layout survive (the edit Renovate's customManager makes).
+    Returns (text, changed, why). Raises AmbiguousDeclaration when more than
+    one line names the edge. Not changed, with the reason, when no line names
+    it or the line already pins at or past `to` -- the forward-only clamp."""
+    # Review F10: `to` is written into the file textually, so it must be a bare
+    # major and nothing else -- a forged `newer.version` carrying a quote and a
+    # newline would inject a second edge.
+    for label, value in (("from", frm), ("to", to)):
+        if not re.fullmatch(r"v\d+", str(value)):
+            raise ValueError(f"retirement {label} version {value!r} is not a bare major (vN); refused")
+    hits = list(_edge_pattern(party, name).finditer(text))
+    if len(hits) > 1:
+        raise AmbiguousDeclaration(f"{len(hits)} inherits[] lines name {party}/{name}")
+    if not hits:
+        return text, False, f"no inherits[] line pins {party}/feed:{name}"
+    current = hits[0].group(2)
+    if not _advances(current, to):
+        return text, False, (f"party.yaml pins {party}/{name} at {current}, and {to} is not "
+                             f"ahead of it: a retirement only moves a pin forward")
+    if current != frm:
+        # Ahead of the evidence but still behind the target: the price was
+        # computed at `frm`, so say so, but the move is still forward.
+        why = f"party.yaml pins {current} (the evidence priced {frm}); moved forward to {to}"
+    else:
+        why = f"{frm} -> {to}"
+    new_text = text[:hits[0].start(2)] + to + text[hits[0].end(2):]
+    return new_text, True, why
+
+
+def _land_retirement(p: dict, adopter_dir: Path, base: str, dry_run: bool,
+                     repo: str | None) -> dict:
+    c = p["change"]
+    party, name = c["edge"]["party"], c["edge"]["name"]
+    result = {"branch": p["branch"], "proposal_kind": p["proposal_kind"],
+              "manifest": "party.yaml", "retirement": p.get("retirement")}
+    p["manifest"] = "party.yaml"
+    p["base"] = base
+    if not _advances(c["from"], c["to"]):
+        result.update(held="forward-only", current_pin=c["from"], target=c["to"],
+                      why=f"{c['to']} is not ahead of the pinned {c['from']}: a retirement only "
+                          f"moves a pin forward")
+        return result
+    party_yaml = adopter_dir / "party.yaml"
+    if not party_yaml.exists():
+        result["error"] = f"{party_yaml} does not exist -- no pin to retire"
+        return result
+    try:
+        new_text, changed, why = apply_pin_retirement(party_yaml.read_text(), party, name,
+                                                      c["from"], c["to"])
+    except (AmbiguousDeclaration, ValueError) as e:
+        result["error"] = f"{party_yaml}: {e} -- nothing landed"
+        return result
+    if not changed:
+        result.update(held="forward-only", target=c["to"], why=why)
+        return result
+    if dry_run:
+        result["landed"] = "dry-run"
+        result["diff"] = new_text
+        return result
+
+    _git("fetch", "origin", base, cwd=adopter_dir)
+    _git("checkout", "-q", "-B", p["branch"], f"origin/{base}", cwd=adopter_dir)
+    # Re-read and re-clamp on what origin/base pins NOW: a pin Renovate or a
+    # human moved under this run must not be moved backwards by it.
+    on_base = party_yaml.read_text()
+    try:
+        new_text, changed, why = apply_pin_retirement(on_base, party, name, c["from"], c["to"])
+    except (AmbiguousDeclaration, ValueError) as e:
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result["error"] = f"party.yaml on origin/{base}: {e} -- nothing landed"
+        return result
+    if not changed:
+        _git("checkout", "-q", base, cwd=adopter_dir)
+        result.update(held="forward-only", target=c["to"], why=f"on origin/{base}: {why}")
+        return result
+    party_yaml.write_text(new_text)
+    _git("add", "party.yaml", cwd=adopter_dir)
+    diff = _git("diff", "--cached", "--quiet", cwd=adopter_dir, check=False)
+    if diff.returncode != 0:
+        _git("commit", "-q", "-m", p["title"], cwd=adopter_dir)
+    _git("push", "--force", "origin", f"HEAD:refs/heads/{p['branch']}", cwd=adopter_dir)
+    result["landed"] = _open_or_update_pr(p, base, repo)
+    result["moved"] = why
+    _git("checkout", "-q", base, cwd=adopter_dir)
+    return result
+
+
 def _tightens(current: str | None, tier: str) -> bool:
     """Would writing `tier` tighten a Namespace that declares `current`? The
     same rule wargamer.select_party_tier() folds with, applied once more at the
@@ -588,15 +755,24 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
             selection = wargamer.select_party_tier(prices, current=current, floor=floor)
         except ValueError as e:
             ns_error = f"missing instrument: {e}"
-    rows = wargamer.wargame_cage_tier(prices, org, selection=selection) if prices else []
+    tier_rows = wargamer.wargame_cage_tier(prices, org, selection=selection) if prices else []
+    # Ticket 84: a supersede line is a retirement row. It edits party.yaml, not
+    # the Namespace, so a held tier selection does not hold it: they are
+    # different questions with different ledger kinds.
+    retire_rows = wargamer.wargame_retirement(prices, org) if prices else []
+    held_rows: list[dict] = []
     if selection and selection["held"]:
         print(f"note: proposer holds -- {selection['basis']}", file=sys.stderr)
-        return [{"branch": wargamer.propose(row)["branch"],
-                 "proposal_kind": "pull_request", "held": "tighten-only",
-                 "line": row["control"], "line_tier": row["price"].get("proposed_tier"),
-                 "party_tier": selection["tier"], "current_tier": selection["current"],
-                 "why": selection["basis"]}
-                for row in rows if row["drift"]]
+        held_rows = [{"branch": wargamer.propose(row)["branch"],
+                      "proposal_kind": "pull_request", "held": "tighten-only",
+                      "line": row["control"], "line_tier": row["price"].get("proposed_tier"),
+                      "party_tier": selection["tier"], "current_tier": selection["current"],
+                      "why": selection["basis"]}
+                     for row in tier_rows if row["drift"]]
+        tier_rows = []
+        if not retire_rows:
+            return held_rows
+    rows = tier_rows + retire_rows
 
     # The ledger is DERIVED from closed-unmerged PRs on this repo's own dedupe
     # branches (ADR-0024). Offline it comes back empty AND SAYS SO on STDERR.
@@ -616,7 +792,7 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
         print(f"note: {ledger_note}", file=sys.stderr)
 
     disp = proposer_bounds.bound(rows, rejections)
-    landed = []
+    landed = list(held_rows)
     for d in disp:
         p = d["proposal"]
         if not p:
@@ -630,14 +806,17 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
         # fall back to the priced entry's own fields when no twin line published.
         p["curve_hash"] = shape["curve_hash"] or price.get("curve_hash") or ""
         p["policy_version"] = shape["policy_version"] or price.get("policy_version") or ""
-        if ns_error:
-            landed.append({"branch": p["branch"], "proposal_kind": p["proposal_kind"],
-                           "error": ns_error})
-            continue
         if as_of:
             p["as_of_note"] = (f"Re-composed and priced at **{as_of}** by the daily clock "
                                f"(ADR-0024): a date-driven band crossing with no new tag is "
                                f"a proposal trigger, and the clock committed nothing.")
+        if p.get("retirement"):
+            landed.append(_land_retirement(p, adopter_dir, base, dry_run, repo))
+            continue
+        if ns_error:
+            landed.append({"branch": p["branch"], "proposal_kind": p["proposal_kind"],
+                           "error": ns_error})
+            continue
         landed.append(_land(p, adopter_dir, ns_hits[0], base, dry_run, repo))
     return landed
 
@@ -1039,6 +1218,173 @@ def selfcheck() -> None:
             "show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
         _declare("baseline")     # back to one declaration for what follows
 
+        # --- 4g. ticket 84: a RETIREMENT proposal. A supersede line -- the pin
+        #     behind a newer major the publisher has signed -- lands a PR that
+        #     moves that one inherits[] edge forward in party.yaml, comments and
+        #     layout intact, and touches nothing else. Admitted and refused
+        #     shapes, both by name. ---
+        party_text = (
+            'party: driftwood\n'
+            'roles: [risk-bearer, adopter]\n'
+            'baseline: MODERATE\n'
+            'inherits:\n'
+            '  - { party: platform, kind: implementations, version: "2.0.1", since: \'2026-08-28\' }\n'
+            '  # the register: the line a retirement moves\n'
+            '  - { party: feeds,    kind: feed, name: threat-register,   version: "{V}", since: \'2026-08-28\' }\n'
+            '  - { party: ico,      kind: feed, name: penalty-schema,    version: "v3", since: \'2026-08-28\' }\n'
+            'overlay:\n'
+            '  add: []\n'
+            '  restate: []\n'
+            'publishes: []\n')
+
+        def _pin(version: str) -> None:
+            (work / "party.yaml").write_text(party_text.replace("{V}", version))
+            _git("add", "-A", cwd=work)
+            _git("commit", "-q", "-m", f"pin threat-register {version}", cwd=work)
+            _git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=work)
+
+        def _supersede(frm: str, to: str, amount: float = 4_268.49) -> dict:
+            return {"source": "feeds", "kind": "supersede", "name": "threat-register",
+                    "version": frm, "currency": "GBP", "perspective": "driftwood",
+                    "newer": {"version": to, "tag": f"threat-register/{to}.0.0",
+                              "tagged": "2026-09-01", "published_at": "2026-07-31"},
+                    "since": "2026-09-01", "as_of": "2026-09-08", "ramp": 1.0192,
+                    "base": 222_574.31, "amount": amount, "proposed_tier": None, "changed": False}
+
+        retire_branch = "wargamer/retire-driftwood-feeds-threat-register-v1-to-v2"
+        retire_key = "driftwood/retirement/feeds-threat-register-to-v2"
+        # the pure edit: exact layout survives, the comment survives, the siblings are untouched
+        edited, changed, why = apply_pin_retirement(party_text.replace("{V}", "v1"),
+                                                    "feeds", "threat-register", "v1", "v2")
+        assert changed and why == "v1 -> v2", why
+        assert edited == party_text.replace("{V}", "v2"), edited
+        assert apply_pin_retirement(edited, "feeds", "threat-register", "v1", "v2")[1] is False
+        assert apply_pin_retirement(party_text.replace("{V}", "v3"), "feeds", "threat-register",
+                                    "v1", "v2")[1] is False, "v3 is past v2: forward-only"
+        assert apply_pin_retirement(party_text.replace("{V}", "v1"), "feeds", "cve", "v1", "v2")[1] is False
+        try:
+            apply_pin_retirement(edited + edited, "feeds", "threat-register", "v2", "v3")
+        except AmbiguousDeclaration:
+            pass
+        else:
+            raise AssertionError("two lines naming one edge must be refused, not edited")
+        assert _advances("v1", "v2") and _advances("v1.0.0", "v2") and not _advances("v2", "v2") \
+            and not _advances("v2", "v1") and not _advances("garbage", "v2")
+        # Review F10: a forged target that would inject a second edge is refused, not written
+        forged = 'v2", since: \'2026-09-08\' }\n  - { party: evil, kind: feed, name: x, version: "v9'
+        try:
+            apply_pin_retirement(party_text.replace("{V}", "v1"), "feeds", "threat-register", "v1", forged)
+        except ValueError as e:
+            assert "not a bare major" in str(e), e
+        else:
+            raise AssertionError("a forged target version must be refused before any text is written")
+
+
+        # ADMITTED: base pins v1, the evidence says v2 is signed -> a PR on party.yaml only
+        _pin("v1")
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [
+            _line("feeds", "feed", "isolated", "isolated", False), _supersede("v1", "v2")]}))
+        retired = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                org="driftwood", rejections_path=None, base="main",
+                                dry_run=False)
+        assert len(retired) == 1 and retired[0]["landed"]["action"] == "created", retired
+        assert retired[0]["branch"] == retire_branch and retired[0]["manifest"] == "party.yaml", retired
+        assert retired[0]["moved"] == "v1 -> v2", retired
+        on_branch = _git("show", f"{retire_branch}:party.yaml", cwd=work, capture=True).stdout
+        assert on_branch == party_text.replace("{V}", "v2"), on_branch
+        assert _git("show", f"{retire_branch}:gitops/apps/namespace.yaml", cwd=work,
+                    capture=True).stdout == _git("show", "main:gitops/apps/namespace.yaml",
+                                                 cwd=work, capture=True).stdout, \
+            "a retirement must not touch the governed Namespace"
+        assert _git("show", "main:party.yaml", cwd=work, capture=True).stdout == \
+            party_text.replace("{V}", "v1"), "main untouched"
+        body = next(c for c in _read_log(gh_log) if c[:2] == ["pr", "create"])
+        body = body[body.index("--body") + 1]
+        for expected in ("party.yaml", "`v1` -> `v2`", "threat-register/v2.0.0", "2026-09-01",
+                         "226,842.80 GBP", "222,574.31 GBP", "Forward-only", "re-compose",
+                         f'key="{retire_key}"'):
+            assert expected in body, (f"the retirement body must carry {expected!r}", body)
+        assert "posture.acme.io/tier" not in body, body
+
+        # ...and through run(): the forged `newer.version` lands nothing and names why
+        _fresh()
+        forged_sup = _supersede("v1", "v2")
+        forged_sup["newer"]["version"] = forged
+        evidence.write_text(json.dumps({"prices": [forged_sup]}))
+        forged_out = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                   org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert len(forged_out) == 1 and "landed" not in forged_out[0], forged_out
+        assert "not a bare major" in (forged_out[0].get("error") or forged_out[0].get("why") or ""), forged_out
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+        assert _git("show", "main:party.yaml", cwd=work, capture=True).stdout == party_text.replace("{V}", "v1")
+
+        # ADMITTED beside a HELD tier: the party is declared isolated and a line
+        # crosses (4b's shape) -- the tier proposal is held by name, and the
+        # retirement still lands: different question, different ledger kind.
+        _git("branch", "-D", retire_branch, cwd=work)
+        _declare("isolated")
+        _fresh()
+        evidence.write_text(json.dumps({"prices": crossing_on_isolated + [_supersede("v1", "v2")]}))
+        both = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                             org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert len(both) == 2, both
+        assert both[0].get("held") == "tighten-only" and both[0]["line"] == "feeds-feed", both
+        assert both[1]["branch"] == retire_branch and both[1]["landed"]["action"] == "created", both
+        _declare("baseline")
+
+        # REFUSED, by name: origin/main already pins v2 (Renovate, or a human,
+        # moved it under the run) and the evidence is stale -> held forward-only,
+        # no branch, no PR; and a proposal that would move BACKWARDS (v2 -> v1)
+        # is held by the same clamp before any git is touched.
+        _git("branch", "-D", retire_branch, cwd=work)
+        _pin("v2")
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [_supersede("v1", "v2")]}))
+        stale_pin = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  org="driftwood", rejections_path=None, base="main",
+                                  dry_run=False)
+        assert len(stale_pin) == 1 and stale_pin[0].get("held") == "forward-only", stale_pin
+        assert "landed" not in stale_pin[0] and "v2 is not ahead" in stale_pin[0]["why"], stale_pin
+        assert not any(c[:2] == ["pr", "create"] for c in _read_log(gh_log)), _read_log(gh_log)
+        assert _git("show-ref", "--verify", "--quiet", f"refs/heads/{retire_branch}",
+                    cwd=work, check=False).returncode != 0, "a held retirement creates no branch"
+        _fresh()
+        evidence.write_text(json.dumps({"prices": [_supersede("v2", "v1")]}))
+        backwards = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                  org="driftwood", rejections_path=None, base="main",
+                                  dry_run=False)
+        assert len(backwards) == 1 and backwards[0].get("held") == "forward-only", backwards
+        assert "v1 is not ahead of the pinned v2" in backwards[0]["why"], backwards
+        assert not any(c[0] == "pr" and c[1] == "create" for c in _read_log(gh_log))
+
+        # the ledger keys the retirement on its own kind: a closed-unmerged
+        # retirement suppresses the same question, and a still newer major is new
+        _pin("v1")
+        shape84 = rejection_ledger.fingerprint([_supersede("v1", "v2")])
+        state = json.loads(gh_state.read_text())
+        state["closed"] = [{"number": 9, "headRefName": retire_branch, "mergedAt": None,
+                            "closedAt": closed_yesterday,
+                            "body": rejection_ledger.marker(retire_key, shape84["curve_hash"],
+                                                            shape84["policy_version"])}]
+        state["pr"] = None
+        gh_state.write_text(json.dumps(state))
+        gh_log.write_text("")
+        evidence.write_text(json.dumps({"prices": [_supersede("v1", "v2")]}))
+        quiet = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                              org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert quiet == [], ("yesterday's closed retirement must suppress the same question", quiet)
+        evidence.write_text(json.dumps({"prices": [_supersede("v1", "v3")]}))
+        newer_q = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert len(newer_q) == 1 and newer_q[0]["landed"]["action"] == "created", newer_q
+        assert newer_q[0]["branch"].endswith("-v1-to-v3"), newer_q
+        assert 'version: "v3"' in _git("show", f"{newer_q[0]['branch']}:party.yaml", cwd=work,
+                                       capture=True).stdout
+        _git("branch", "-D", newer_q[0]["branch"], cwd=work)
+        state["closed"] = []
+        gh_state.write_text(json.dumps(state))
+
         # --- 5. structural safety: this module has no way to merge/dispose,
         #     and no way to open an issue either ---
         me = sys.modules[__name__]
@@ -1085,6 +1431,11 @@ def selfcheck() -> None:
         "(a line landing looser than the declaration is held); TWO governed Namespace "
         "DOCUMENTS in one manifest is counted as two and lands nothing, and "
         "apply_tier_declaration refuses to rewrite the first and leave the second; "
+        "a supersede line lands a RETIREMENT PR moving one inherits[] edge forward in party.yaml "
+        "and nothing else (ticket 84) -- admitted beside a held tier, held by name when the base "
+        "already pins at or past the target or the move would run backwards, keyed "
+        "<org>/retirement/<slug> in the derived ledger so a closed one suppresses the same "
+        "question and a still newer major is a new one; "
         "no merge()/approve()/dispose() "
         "anywhere in this module, and no DISPOSING GH CALL either -- the argv this module "
         "builds is read, a planted `_gh(\"pr\", \"merge\", \"--squash\", \"--admin\", ...)` and "

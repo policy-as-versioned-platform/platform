@@ -315,6 +315,45 @@ def wargame_cage_tier(prices, org, selection=None):
     return rows
 
 
+# --- ticket 84: a retirement row per supersede line ---------------------------
+RETIREMENT_KIND = "retirement"
+SUPERSEDE_KIND = "supersede"
+
+
+def wargame_retirement(prices, org):
+    """Eco-system ticket 84 (ticket 13 D5). Every `supersede` prices[] entry --
+    a feed pin behind a newer major its publisher has SIGNED, priced by
+    composition -- is a retirement drift row, in the same row shape the other
+    war-games use so proposer_bounds gates it with no second formula.
+
+    `drift` is True by construction: a signed newer major is a structural fact
+    about the publisher, not a band-edge move, so `tolerance` is None and the
+    bounds grade the row at STRUCTURAL_CONFIDENCE. The price of staying behind
+    (the supersede amount) travels on the row for the PR body, and grows on
+    every clock run until the pin moves.
+
+    The dedupe key proposer_bounds derives is `<org>/retirement/<publisher>-<name>-to-<newer>`
+    -- the `kind` the ledger reserved for this (ADR-0024 D5), and a still newer
+    major is a new question rather than a re-ask of a closed one."""
+    rows = []
+    for price in prices:
+        if price.get("kind") != SUPERSEDE_KIND:
+            continue
+        newer = price.get("newer") or {}
+        if not newer.get("version"):
+            continue                       # nothing signed ahead: composition wrote no target
+        rows.append({
+            "kind": RETIREMENT_KIND,
+            "org": org,
+            "control": f"{price['source']}-{price.get('name')}-to-{newer['version']}",
+            "tolerance": None,
+            "risk_bought_current": price.get("amount"),
+            "drift": True,
+            "price": price,
+        })
+    return rows
+
+
 # --- propose (never dispose) --------------------------------------------------
 def propose(row):
     """Turn a drift row into a proposal. Opened, never merged; carries the
@@ -326,6 +365,8 @@ def propose(row):
         return None
     if row["kind"] == "cage-tier":
         return _propose_tier(row)
+    if row["kind"] == RETIREMENT_KIND:
+        return _propose_retirement(row)
     slug = f"{row['org']}-{row['control']}".replace("@", "-").replace(".", "-")
     return {
         "branch": f"wargamer/retune-{slug}",
@@ -399,6 +440,62 @@ def _propose_tier(row):
         "price": {
             "source": price["source"], "kind": price["kind"],
             "from": price.get("old_price"), "to": price.get("new_price"),
+            "currency": price.get("currency"), "perspective": price.get("perspective"),
+            "curve_hash": price.get("curve_hash"),
+            "policy_version": price.get("policy_version"),
+        },
+        "proposal_kind": "pull_request",
+        "required_gate": GATE,
+        "merged": False,               # propose-never-dispose: the agent never merges
+        "auto_merge": False,
+        "disposition": "OPEN -- awaiting human review + version cross-check gate",
+    }
+
+
+def _propose_retirement(row):
+    """Ticket 84: a supersede line becomes a proposal that tier_pr.py lands as
+    a pull request moving ONE `inherits[]` feed edge in the adopter's own
+    party.yaml from the pinned major to the newest major the publisher has
+    signed -- the same edit a Renovate bump makes, carrying the price of
+    staying behind and keyed on the ledger's `retirement` kind. Forward-only:
+    the clamp in tier_pr.py refuses a target that is not ahead of what the
+    base pins at the moment of the write. Always a pull request; never
+    merged by this proposer."""
+    price = row["price"]
+    newer = price["newer"]
+    slug = (f"retire-{row['org']}-{price['source']}-{price.get('name')}-{price.get('version')}"
+            f"-to-{newer['version']}").replace("@", "-").replace(".", "-")
+    base = price.get("base")
+    amount = price.get("amount")
+    return {
+        "branch": f"wargamer/{slug}",
+        "title": (f"[war-gamer] retire {price['source']}/{price.get('name')}@{price.get('version')} "
+                  f"({row['org']}): pin to {newer['version']}"),
+        "actor": "wargamer-agent",
+        # No `signed` literal (see propose()): propose-tier.yml signs the commit
+        # with gitsign and verifies it against the adopter's own regexp.
+        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log, "
+                    "stamped by the landing workflow, not claimed here",
+        "from_evidence": {"source": price["source"], "kind": SUPERSEDE_KIND,
+                           "name": price.get("name"), "version": price.get("version"),
+                           "newer": newer},
+        "change": {
+            "target": "party.yaml",
+            "edge": {"party": price["source"], "name": price.get("name")},
+            "from": price.get("version"),
+            "to": newer["version"],
+        },
+        "retirement": {
+            "since": price.get("since"), "as_of": price.get("as_of"), "ramp": price.get("ramp"),
+            "base": base, "tag": newer.get("tag"), "tagged": newer.get("tagged"),
+            "published_at": newer.get("published_at"), "basis": price.get("basis"),
+        },
+        # The price of staying behind, for the PR body: the line's own amount and
+        # that amount plus the surcharge, under the line's own perspective.
+        "price": {
+            "source": price["source"], "kind": SUPERSEDE_KIND,
+            "from": base,
+            "to": (base + amount) if isinstance(base, (int, float)) and isinstance(amount, (int, float)) else None,
             "currency": price.get("currency"), "perspective": price.get("perspective"),
             "curve_hash": price.get("curve_hash"),
             "policy_version": price.get("policy_version"),
@@ -566,12 +663,41 @@ def selfcheck():
     assert tier_prop["change"]["line_to"] == "restricted", tier_prop
     assert "signed" not in tier_prop, tier_prop
 
+    # 6. ticket 84: a supersede line is a RETIREMENT row and proposal; a cage-tier
+    #    row over the same entry never drifts, so the two cannot double-propose.
+    sup = {"source": "feeds", "kind": "supersede", "name": "threat-register", "version": "v1",
+           "newer": {"version": "v2", "tag": "threat-register/v2.0.0", "tagged": "2026-09-01",
+                     "published_at": "2026-07-31"},
+           "since": "2026-09-01", "as_of": "2026-09-08", "ramp": 1.0192, "base": 222_574.31,
+           "amount": 4_268.49, "currency": "GBP", "perspective": "driftwood",
+           "proposed_tier": None, "changed": False}
+    ret_rows = wargame_retirement([line("feeds", "isolated"), sup], "driftwood")
+    assert len(ret_rows) == 1 and ret_rows[0]["kind"] == RETIREMENT_KIND, ret_rows
+    assert ret_rows[0]["control"] == "feeds-threat-register-to-v2" and ret_rows[0]["drift"] is True, ret_rows
+    assert ret_rows[0]["tolerance"] is None, "a signed newer major is structural, not band-edge"
+    ret = propose(ret_rows[0])
+    assert ret["branch"] == "wargamer/retire-driftwood-feeds-threat-register-v1-to-v2", ret["branch"]
+    assert ret["change"] == {"target": "party.yaml", "edge": {"party": "feeds", "name": "threat-register"},
+                             "from": "v1", "to": "v2"}, ret["change"]
+    assert ret["retirement"]["tag"] == "threat-register/v2.0.0" and ret["retirement"]["since"] == "2026-09-01", ret
+    assert abs(ret["price"]["to"] - (222_574.31 + 4_268.49)) < 1e-6 and ret["price"]["from"] == 222_574.31, ret["price"]
+    assert ret["merged"] is False and ret["auto_merge"] is False and ret["required_gate"], ret
+    assert "signed" not in ret, ret
+    assert not wargame_retirement([line("feeds", "isolated")], "driftwood"), "no supersede line, no row"
+    assert not wargame_retirement([dict(sup, newer={})], "driftwood"), "no signed target, no row"
+    cage_rows = wargame_cage_tier([sup], "driftwood", selection=None)
+    assert len(cage_rows) == 1 and cage_rows[0]["drift"] is False and propose(cage_rows[0]) is None, cage_rows
+    assert select_party_tier([sup, line("ico", "quarantine")], current="baseline")["tier"] == "quarantine", \
+        "a supersede line proposes no tier and must not disturb the party fold"
+
     print(
         "ok  collected v1->v3 signed feed + %d-scenario library (human-seed + AI); "
         "war-game: driftwood cart-PII £%.0f>£%.0f band -> Audit->Deny drift, ludlow steady; "
         "%d scenario-path drift(s); proposed %d PR(s) claiming no signature of their own, 0 merged, "
         "all carry the gate; the party tier is the strictest priced line, clamped to the floor, "
-        "never looser than the Namespace declares (ticket 78)."
+        "never looser than the Namespace declares (ticket 78); a supersede line is a retirement "
+        "row keyed <org>/retirement/<publisher>-<name>-to-<newer> that moves the pin forward in "
+        "party.yaml and nothing else (ticket 84)."
         % (len(intel["library"]["risks"]), dw["risk_bought_current"], dw["tolerance"],
            sum(1 for r in scn if r["drift"]), len(props))
     )

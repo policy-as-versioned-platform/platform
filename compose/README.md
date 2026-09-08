@@ -142,10 +142,42 @@ itself needs.
 - **Pricing touches no rendered file.** Pricing and threat edges carry no rule and are never looped
   into the members/render step, so a price move changes `prices[]` and the header's `parents[]`
   entry for that one edge, and nothing else composition renders — proved byte-for-byte.
-- **No wall clock anywhere in this module.** Neither converter this section calls takes an `--as-of`
-  at all (`ico`'s `build`, the feeds module's `threat` subcommand); an `eol` parent kind does not
-  exist in the party artefact schema, so composition never has occasion to pass one.
+- **No wall clock anywhere in this module.** Since ticket 84 the feeds module's `eol` subcommand
+  is called with `--as-of`, and the date it gets is the composition's own as-of (below) or the
+  CLI's `--as-of` -- a date the caller hands in, never one this module reads.
 - The document gains `prices[]`.
+
+## What eco-system ticket 84 changes: being behind costs something
+
+- **`cve` and `eol` price.** `FEED_CONVERTERS` gained the two rows; both go through platform's
+  `feeds/to_fair_scenario.py`, which prices the feed's HEADLINE entry (largest expected annual
+  loss, mode lef x mode lm; `eol` as ramped at the composition's as-of) and names on the line which
+  entry that is and which it did not price. One entry, not a sum: PERT triples do not add. The
+  currency is read off the payload's `currency`, or -- for the versions the adopters' checkouts
+  already carry -- off the publisher's own magnitude key (`severity_lm_gbp`, `base_lm_gbp`): a
+  declaration in the publisher's signed schema, not a default.
+- **The composition's as-of is the newest SIGNED date among its inputs**: every pinned envelope's
+  `published_at` (ticket 38) and every edge's own `since`. A fresh subscription is therefore a
+  zero-month window and never ticket 45's backwards-window refusal, which was this contradiction
+  surfacing on the ordinary case. `compose --as-of YYYY-MM-DD` overrides it; the scheduled proposer
+  passes the day it runs on and commits nothing (ADR-0024); the composition an adopter signs passes
+  none.
+- **A pin behind a newer major the publisher has SIGNED gets a `supersede` line** (ticket 13 D5,
+  ADR-0010's banner): `amount = base x (eol_ramp(since, as_of) - 1)`, `base` the feed line's own
+  amount, `since` the day the newer major's tag was cut, `as_of` the composition's. Zero on that day
+  and before it, printed with both dates; +1x per year behind, capped at +4x; under the adopter's own
+  perspective and currency; `proposed_tier: null` so it never moves the party fold; NOT an exposure
+  kind, because the line it surcharges is already summed there. "Published" is a signed tag read off
+  the publisher's checkout, exactly as `pin_signature` is: an untagged directory publishes nothing,
+  and no `supersedes:` field was added because the tag namespace already declares it and a second
+  declaration could drift from the first. The feed entry carries a `superseded` observation either
+  way (`behind`, `current`, or `unobserved` for a checkout that cannot show the tags). The live
+  case: tuppence and ludlow pin `threat-register@v1` while `threat-register/v2.0.0` was cut on
+  2026-09-01.
+- **Every feed line carries `pin_signature` and `hole`** (ticket 69's rule reaching past the
+  premium): an untagged feed pin is a hole of the whole line, naming the tag that does not exist.
+- The proposer reads the `supersede` line: `wargamer.wargame_retirement()` and `tier_pr.py`'s
+  retirement landing move the one `inherits[]` edge forward in `party.yaml`, forward-only.
 
 ## What eco-system ticket 38 changes: a hole is priced, not counted
 

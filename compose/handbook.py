@@ -53,9 +53,10 @@ HEADER_PATH = "composed/HEADER.yaml"
 EVIDENCE_PATH = "composed/evidence.json"
 HANDBOOK_PATH = "composed/HANDBOOK.md"
 # Kinds of prices[] entry that propose no tier by construction: a premium is a committed cost
-# (ADR-0020's ticket 69 note) and a switching entry is a measured counterfactual (ticket 45).
+# (ADR-0020's ticket 69 note), a switching entry is a measured counterfactual (ticket 45), and a
+# supersede entry is the surcharge on a line that already proposed its tier (ticket 84).
 # Only these render `—` in the tier column; any other kind with no proposed_tier is named absent.
-NO_TIER_KINDS = ("premium", "switching")
+NO_TIER_KINDS = ("premium", "switching", "supersede")
 # The one recorded limit this page does not state. composition.py writes it on every run:
 # `closed` when every priced feed was read from its publisher's own pinned tree, `open` naming
 # the publisher when the adopter's vendored copy stood in. That is a fact about which clones the
@@ -296,7 +297,8 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
       "rounded to two decimals from the field named in each row; every one carries the "
       "perspective it is booked under and the currency it is booked in. An entry the composition "
       "could not price carries its reason instead of a number, and is named in section 6. "
-      "In the *proposed tier* column, `—` means the entry's kind (`premium`, `switching`) "
+      "In the *proposed tier* column, `—` means the entry's kind (`premium`, `switching`, "
+      "`supersede`) "
       "proposes no tier by construction; a feed entry with no `proposed_tier` is named absent.")
     a("")
     prices = _listed(absences, evidence, "prices", EVIDENCE_PATH,
