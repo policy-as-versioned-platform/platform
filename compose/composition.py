@@ -5041,10 +5041,16 @@ def selfcheck() -> None:
         # namespaces and refuses on none") ---
         base = Path(td) / "run1"
         _write_fixture_adopter(base, "SMALL")
-        _write_namespace(base, "acme", institution=True, governed=False)
+        # The fixture namespace's name (ticket 106). It was `acme` until 2026-09-08, and the
+        # leak check below read the served cage bodies' own label domain `posture.acme.io/`
+        # and WAF image `ghcr.io/acme/coraza-waf` (stamped since tickets 26, 89 and 91) as
+        # the name leaking. A name no served body carries, so a hit can only be this leg's
+        # own bookkeeping -- and that absence is measured, not assumed, before the check runs.
+        fixture_ns = "fixture-outside-the-cage"
+        _write_namespace(base, fixture_ns, institution=True, governed=False)
         doc1, rendered1 = compose(base, fixture_trees)
         assert doc1["outcome"] == "composed", doc1
-        assert [(e["namespace"], e["status"]) for e in doc1["ungoverned"]] == [("acme", "recorded")], doc1["ungoverned"]
+        assert [(e["namespace"], e["status"]) for e in doc1["ungoverned"]] == [(fixture_ns, "recorded")], doc1["ungoverned"]
         assert "price" in doc1["ungoverned"][0], doc1["ungoverned"]
         assert doc1["deltas"] == [], doc1["deltas"]   # recorded on a first composition: no move
         _commit_header(base, rendered1)
@@ -5056,17 +5062,17 @@ def selfcheck() -> None:
         shutil.copytree(base, again)
         doc2, _ = compose(again, fixture_trees)
         assert doc2["outcome"] == "composed", doc2
-        assert [(e["namespace"], e["status"]) for e in doc2["ungoverned"]] == [("acme", "recorded")], doc2["ungoverned"]
+        assert [(e["namespace"], e["status"]) for e in doc2["ungoverned"]] == [(fixture_ns, "recorded")], doc2["ungoverned"]
         assert doc2["deltas"] == [], doc2["deltas"]
         print("OK compute_ungoverned: a recorded ungoverned namespace records and does not refuse")
 
         # --- it gains the label since the last signed artefact: closed ---
         labelled = Path(td) / "run1-labelled"
         shutil.copytree(base, labelled)
-        _write_namespace(labelled, "acme", institution=True, governed=True)
+        _write_namespace(labelled, fixture_ns, institution=True, governed=True)
         doc3, _ = compose(labelled, fixture_trees)
         assert doc3["outcome"] == "composed", doc3
-        assert doc3["ungoverned"] == [{"namespace": "acme", "status": "closed"}], doc3["ungoverned"]
+        assert doc3["ungoverned"] == [{"namespace": fixture_ns, "status": "closed"}], doc3["ungoverned"]
         assert [d["kind"] for d in doc3["deltas"]] == ["closed-ungoverned-namespace"], doc3["deltas"]
         print("OK compute_ungoverned: a namespace that gains the label prints as closed, and as "
               "a closed-ungoverned-namespace delta")
@@ -5082,29 +5088,29 @@ def selfcheck() -> None:
 
         new_ns = Path(td) / "run2-new"
         shutil.copytree(clean_base, new_ns)
-        _write_namespace(new_ns, "acme", institution=True, governed=False)
+        _write_namespace(new_ns, fixture_ns, institution=True, governed=False)
         _write_namespace(new_ns, "home", institution=True, governed=True)
-        _write_workload(new_ns, "acme", "reset-a")
+        _write_workload(new_ns, fixture_ns, "reset-a")
         for i in range(3):
             _write_workload(new_ns, "home", f"app-{i}")
         _write_workload(new_ns, "flux-system", "infra")  # no institution label: not counted
         doc5, _ = compose(new_ns, fixture_trees)
         assert doc5["outcome"] == "composed", doc5
         assert not [r for r in doc5["refusals"] if r["kind"] == "new-ungoverned-namespace"], doc5["refusals"]
-        acme = next(e for e in doc5["ungoverned"] if e["namespace"] == "acme")
-        assert acme["status"] == "new", acme
-        price = acme["price"]
+        outside = next(e for e in doc5["ungoverned"] if e["namespace"] == fixture_ns)
+        assert outside["status"] == "new", outside
+        price = outside["price"]
         assert price["perspective"] == "fixture-adopter14" and price["currency"] == "GBP", price
         assert price["workloads"] == 1 and price["workloads_total"] == 4, price
         assert price["share"] == 0.25, price
-        # No signed composed artefact names acme (a fixture is not a signed
+        # No signed composed artefact names the namespace (a fixture is not a signed
         # repo), and this fixture pins no feed that prices its residual: both
         # are named limits, the ramp stays at 1.0 and the amount is absent.
         assert price["since"] is None and price["ramp"] == 1.0, price
         assert price["as_of"] is None and price["base"] is None and price["amount"] is None, price
         assert len(price["limits"]) == 2, price["limits"]
         new_deltas = [d for d in doc5["deltas"] if d["kind"] == "new-ungoverned-namespace"]
-        assert len(new_deltas) == 1 and new_deltas[0]["namespace"] == "acme", doc5["deltas"]
+        assert len(new_deltas) == 1 and new_deltas[0]["namespace"] == fixture_ns, doc5["deltas"]
         assert new_deltas[0]["amount"] is None, new_deltas
         print("OK compute_ungoverned: a new ungoverned namespace (absent from the last signed "
               "artefact) composes and is priced as its workload share (1 of 4 institution "
@@ -5114,7 +5120,50 @@ def selfcheck() -> None:
         # it leaves every other rendered file unchanged; nothing in the
         # per-member files ever reads either namespace set ---
         header1 = yaml.safe_load(rendered1["composed/HEADER.yaml"])
-        assert header1["ungoverned-namespaces"] == ["acme"], header1["ungoverned-namespaces"]
+        assert header1["ungoverned-namespaces"] == [fixture_ns], header1["ungoverned-namespaces"]
+        # The namespace NAME is matched as a whole token, bounded by anything that is not a
+        # name character: `namespace: <ns>`, `'<ns>'` inside a CEL expression and
+        # `<ns>.svc.cluster.local` are all the name reaching an applied object; a longer name
+        # that merely contains it is another namespace. `.` is a boundary on purpose -- the
+        # DNS form is the commonest way a namespace name gets into a policy body.
+        name_token = re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(fixture_ns) + r"(?![A-Za-z0-9_-])")
+        served_src = [q for sub in ("distribution", "graded")
+                      for q in (parent_trees["platform"] / sub).rglob("*") if q.is_file()]
+        assert served_src and not [q for q in served_src if fixture_ns in q.read_text(errors="ignore")], \
+            f"a served body already carries {fixture_ns!r}; the leak check below could not tell it from a leak"
+
+        def _governed_label_leaks(path: str, text: str) -> list[str]:
+            """Every place GOVERNED_LABEL appears in a rendered file OUTSIDE the two positions
+            that are its structurally correct use, named by path. Ticket 106: the served guard,
+            holds and report bodies all carry the label in `namespaceSelector.matchLabels`
+            (ADR-0014: the namespace's own label is what scopes the machinery) and the report
+            quotes it in a `message`. Listing those three files would exempt the FILES, not the
+            uses -- the label leaking into the guard's own matchConditions or objectSelector
+            would then pass -- so the file is parsed and walked instead: a key under a
+            `namespaceSelector`, or a string at a `message`, is allowed; anywhere else is red."""
+            if GOVERNED_LABEL not in text:
+                return []
+            leaks: list[str] = []
+
+            def walk(node: object, at: tuple) -> None:
+                where = "/".join(str(a) for a in at) or "<root>"
+                if isinstance(node, dict):
+                    for k, v in node.items():
+                        if GOVERNED_LABEL in str(k) and "namespaceSelector" not in at:
+                            leaks.append(f"{path}: {GOVERNED_LABEL} is a key at {where}, "
+                                         f"outside any namespaceSelector")
+                        walk(v, at + (k,))
+                elif isinstance(node, list):
+                    for i, v in enumerate(node):
+                        walk(v, at + (i,))
+                elif isinstance(node, str) and GOVERNED_LABEL in node and (not at or at[-1] != "message"):
+                    leaks.append(f"{path}: {GOVERNED_LABEL} is in the value at {where}, "
+                                 f"which is not a message")
+
+            for doc in yaml.safe_load_all(text):
+                walk(doc, ())
+            return leaks
+
         for path, text in rendered1.items():
             # HANDBOOK.md is excluded, and asserted the other way below (ticket 34): what this
             # leg protects is that no file the ENGINE reads carries composition's own namespace
@@ -5123,16 +5172,39 @@ def selfcheck() -> None:
             if path in ("composed/HEADER.yaml", "composed/HANDBOOK.md"):
                 continue
             assert "ungoverned" not in text, path
-            assert "acme" not in text, path
-            # composed/governed-namespace-guard.yaml legitimately carries
-            # GOVERNED_LABEL in its own namespaceSelector (ADR-0014) -- a
-            # structurally different, correct use of the same string, not
-            # a leak of composition's own ungoverned-namespace bookkeeping.
-            if path != "composed/governed-namespace-guard.yaml":
-                assert GOVERNED_LABEL not in text, path
+            assert not name_token.search(text), f"{path}: carries the ungoverned namespace's name {fixture_ns!r}"
+            assert not _governed_label_leaks(path, text), _governed_label_leaks(path, text)
         hb1 = rendered1["composed/HANDBOOK.md"]
-        assert "Ungoverned namespaces (1): `acme`" in hb1, \
+        assert f"Ungoverned namespaces (1): `{fixture_ns}`" in hb1, \
             "the handbook does not name the namespaces outside the cage"
+
+        # No masking (ticket 106): plant BOTH leaks in a copy of the fixture platform's own
+        # member -- the namespace's name in a matchConditions expression, the governed label
+        # as an objectSelector key -- and show the two checks above go red, each by name.
+        planted_platform = Path(td) / "fixture-platform-planted"
+        shutil.copytree(platform_root, planted_platform)
+        member_src = planted_platform / "distribution" / "policies" / "v1.0.0" / "member-a.yaml"
+        member_doc = yaml.safe_load(member_src.read_text())
+        member_doc["spec"]["matchConstraints"] = {"objectSelector": {"matchLabels": {GOVERNED_LABEL: "true"}}}
+        member_doc["spec"]["matchConditions"] = [
+            {"name": "the-name-leaked", "expression": f"object.metadata.namespace == '{fixture_ns}'"}]
+        member_src.write_text(yaml.safe_dump(member_doc, sort_keys=False))
+        planted = Path(td) / "run1-planted"
+        shutil.copytree(base, planted)
+        doc_p, rendered_p = compose(planted, {"fixture-nist": nist_root, "fixture-platform": planted_platform})
+        assert doc_p["outcome"] == "composed", doc_p
+        member_out = "composed/policies/v1.0.0/member-a.yaml"
+        assert name_token.search(rendered_p[member_out]), \
+            "the planted namespace name did not reach the rendered member, so the name check was not exercised"
+        planted_leaks = _governed_label_leaks(member_out, rendered_p[member_out])
+        assert planted_leaks == [f"{member_out}: {GOVERNED_LABEL} is a key at "
+                                 f"spec/matchConstraints/objectSelector/matchLabels, outside any namespaceSelector"], planted_leaks
+        # ...and the un-planted render of the same member is clean under both, so the plant
+        # is what turned them red.
+        assert not name_token.search(rendered1[member_out]) and not _governed_label_leaks(member_out, rendered1[member_out])
+        print(f"OK leak check: the ungoverned namespace's name planted in a member's matchConditions, "
+              f"and {GOVERNED_LABEL} planted as its objectSelector key, are each red by name -- "
+              f"{planted_leaks[0].split(': ', 1)[1]}")
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
