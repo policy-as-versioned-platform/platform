@@ -14,7 +14,8 @@
 # exactly the failure this exists to catch.
 #
 # TWO MODES.
-#   verify-fresh.sh <adopter-dir> <ref>   grade that adopter at that ref
+#   verify-fresh.sh <adopter-dir> [ref]   grade that adopter at that ref (HEAD when none is
+#                                         named -- the ref is what is graded, so name it)
 #   verify-fresh.sh                       no adopter named: run the tool's own proofs
 #
 # The no-argument mode is what the truth surface discovers and runs. It deliberately reads NO

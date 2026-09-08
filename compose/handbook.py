@@ -45,9 +45,6 @@ Code skill whose output lands by its own pull request, outside `composed/`
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
@@ -202,8 +199,9 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     a("")
     a(f"Source: `{HEADER_PATH}` → `parents[]`. Each row is a publisher this artefact records as "
       "a parent, at the commit the file records for it. Whether that commit is the tree the "
-      "composition actually read is what `composition.py verify` proves (run by compose-check "
-      "and by `cut-release.yml` before a tag is cut); this page only restates the record.")
+      "composition actually read is what `composition.py verify` proves (`cut-release.yml` runs "
+      "it before a tag is cut; `shift-left.yml` recomposes and diffs); this page only restates "
+      "the record.")
     a("")
     parents = header.get("parents") or []
     if not parents:
@@ -610,7 +608,9 @@ def _fixture() -> tuple[dict[str, str], dict[str, Any]]:
 def selfcheck() -> int:
     import copy
     import os
+    import sys
     import time
+    from pathlib import Path
 
     files, evidence = _fixture()
     ok = 0
@@ -856,10 +856,12 @@ def selfcheck() -> int:
 # --------------------------------------------------------------------------
 
 
-def read_artefact(adopter_dir: Path, ref: str | None = None) -> tuple[dict[str, str], dict]:
+def read_artefact(adopter_dir: str, ref: str | None = None) -> tuple[dict[str, str], dict]:
     """The artefact as SERVED: every file under `composed/` at `ref` (or in the working tree),
     read through git plumbing so a tag's tree is read, never a working copy that happens to sit
     beside it."""
+    import subprocess
+    from pathlib import Path
     files: dict[str, str] = {}
     if ref is None:
         root = Path(adopter_dir) / "composed"
@@ -887,12 +889,13 @@ def read_artefact(adopter_dir: Path, ref: str | None = None) -> tuple[dict[str, 
 
 
 def main(argv: list[str]) -> int:
+    import sys
     if "--selfcheck" in argv:
         return selfcheck()
     if len(argv) < 3 or argv[1] != "render":
         print(__doc__)
         return 2
-    adopter_dir = Path(argv[2])
+    adopter_dir = argv[2]
     ref = argv[argv.index("--ref") + 1] if "--ref" in argv else None
     try:
         files, evidence = read_artefact(adopter_dir, ref)
@@ -904,4 +907,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    import sys
     sys.exit(main(sys.argv))
