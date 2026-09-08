@@ -202,9 +202,17 @@ the same parent trees and diffs byte-for-byte against whatever is already commit
 
 `handbook.py` renders one page of Markdown, `composed/HANDBOOK.md`, from an adopter's composed
 artefact and from nothing else. `compose()` calls it after it has built the evidence document and
-puts the result in the same `rendered` mapping as `HEADER.yaml`, so the page lands in the same pull
-request as the artefact, is byte-compared by the same `verify`, is failed by the same drift check
-in each adopter's `compose-check` job, and is carried under the same gitsign tag.
+puts the result in the same `rendered` mapping as `HEADER.yaml`, so — **from the platform tag that
+carries this file on** — the page lands in the same pull request as the artefact, is byte-compared
+by the same `verify`, is failed by the same drift check in each adopter's `cut-release.yml`, and is
+carried under the same gitsign tag.
+
+Until an adopter's pin moves onto such a tag, none of that holds for it: the `composition.py` at
+its pin neither writes nor verifies the page (`verify()` compares only what it rendered plus
+`composed/**/*.yaml`), so a hand-edited `HANDBOOK.md` passes `composition.py verify` at that pin
+and `cut-release.yml` there would sign it. What catches that is the byte comparison in
+`verify-fresh.sh` and the hub's `verify/handbook/`, which prints how many adopters pin a tag
+carrying this renderer. Measured 2026-09-08: all three pin `v2.0.1`, which does not.
 
 The property that makes the page worth reading is that it is a **pure function of the artefact**:
 it reads no clock, no environment, no network and no file outside the mapping it is handed. So it
@@ -239,7 +247,8 @@ tool over planted git repositories instead. The estate-wide read of the real ado
 **Retired with it**: the original `handbook-generator`'s `verify.sh` — an end-to-end script that
 generated a handbook against a real signed tag and then graded its own output. Nothing replaces it
 because nothing needs to: the chain that used to justify it is now three checks the estate already
-runs on every change — each adopter's `compose-check` fails on drift in the page, `cut-release.yml`
-runs `composition.py verify` before a tag is cut, and `verify-fresh.sh` re-renders from a served
-ref. `verify.sh` was never lifted into this estate, so there is no file here to delete; this
+runs on every change — `cut-release.yml` runs `composition.py verify` before a tag is cut (which
+grades the page only once the adopter's pin carries this renderer, see above), and
+`verify-fresh.sh` and the hub's `verify/handbook/` re-render from a served ref regardless of the
+pin. `verify.sh` was never lifted into this estate, so there is no file here to delete; this
 paragraph is the retirement.

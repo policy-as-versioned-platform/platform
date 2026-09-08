@@ -5,10 +5,19 @@ Eco-system ticket 34; ADR-0007's last-mile section, confirmed 2026-09-06 by tick
 
 WHAT THIS IS. `composition.py` renders an adopter's composed policy set from its signed,
 pinned parents. That artefact is machine-readable and no human reads it. This module turns
-the artefact -- and nothing else -- into one Markdown page, `composed/HANDBOOK.md`, which
-`composition.py` puts in the same `rendered` mapping as `HEADER.yaml` and the policy objects.
-So the page lands in the same pull request as the artefact, is compared byte-for-byte by the
-same compose-check that grades the artefact, and is carried under the same gitsign tag.
+the artefact -- and nothing else -- into one Markdown page, `composed/HANDBOOK.md`. From the
+platform version that carries this file on, `composition.py`'s `compose()` puts the page in
+the same `rendered` mapping as `HEADER.yaml` and the policy objects, so it rides the same
+pull request, the same `verify()` byte comparison and the same tag as the artefact.
+
+WHAT THAT DOES NOT SAY. An adopter pinning an EARLIER platform tag runs a `composition.py`
+that neither writes nor verifies this page. Its committed page is one a human rendered with
+this tool, `composition.py verify` at that pin passes a hand-edited page unchallenged, and
+`cut-release.yml` at that pin would sign it. Only the byte comparison below catches that,
+and only where it is run: `verify-fresh.sh` beside this file, and the hub's
+`verify/handbook/`, which prints how many adopters pin a tag that carries this renderer.
+The page therefore says of itself only what a re-render can prove: which tool derives it
+and from which files -- never which pull request it landed in or which tag carries it.
 
 WHAT MAKES IT NOT A LIE. Every sentence here is derived from a field of the artefact. The
 module reads no clock, no environment, no network and no file outside the mapping it is
@@ -46,6 +55,18 @@ import yaml
 HEADER_PATH = "composed/HEADER.yaml"
 EVIDENCE_PATH = "composed/evidence.json"
 HANDBOOK_PATH = "composed/HANDBOOK.md"
+# Kinds of prices[] entry that propose no tier by construction: a premium is a committed cost
+# (ADR-0020's ticket 69 note) and a switching entry is a measured counterfactual (ticket 45).
+# Only these render `—` in the tier column; any other kind with no proposed_tier is named absent.
+NO_TIER_KINDS = ("premium", "switching")
+# The one recorded limit this page does not state. composition.py writes it on every run:
+# `closed` when every priced feed was read from its publisher's own pinned tree, `open` naming
+# the publisher when the adopter's vendored copy stood in. That is a fact about which clones the
+# RE-DERIVING RUN could read, not about the artefact -- and ticket 45's whole point is that the
+# artefact re-renders byte-identically with the publisher absent, which composition.py verify()
+# holds the page to. A page that stated this row could never do that. The exclusion is printed
+# on the page by name (delegated, ADR-0025, 2026-09-08); the evidence document still records it.
+RUN_ENVIRONMENT_LIMITS = ("publisher-clone-absent",)
 
 
 class CannotRender(Exception):
@@ -67,6 +88,29 @@ def _money(amount: Any, currency: str) -> str:
 
 def _absent(absences: list[str], field: str, where: str, consequence: str) -> None:
     absences.append(f"`{field}` (in `{where}`) — {consequence}")
+
+
+def _listed(absences: list[str], container: Mapping[str, Any], field: str, where: str,
+            consequence: str) -> list | None:
+    """A list field of the artefact, or None with the absence NAMED. An empty list is a real
+    zero and is rendered as one; a missing key is not a zero and is never rendered as one
+    (ADR-0020; review F-07 found eight list fields defaulting to 0 through `or []`)."""
+    got = container.get(field)
+    if got is None:
+        _absent(absences, field, where, consequence)
+        return None
+    if not isinstance(got, list):
+        raise CannotRender(f"`{field}` in {where} is not a list: {got!r}")
+    return got
+
+
+def _hole_identity(whole: Mapping[str, Any]) -> str | None:
+    """The identity a whole-entry hole carries: composition.py writes `source`, `name` and
+    `version`; an older shape carried a single `id`. Neither is invented."""
+    if whole.get("source") and whole.get("name"):
+        return f"{whole['source']}/{whole['name']}@{whole.get('version')}"
+    ident = whole.get("id")
+    return str(ident) if ident else None
 
 
 def _policy_objects(files: Mapping[str, str]) -> list[dict]:
@@ -145,11 +189,10 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     a("")
     a(f"This page is a **compose-time render**. Every sentence below is derived from a field of "
       f"{party}'s own composed artefact — the files under `composed/` in this repository — and "
-      f"from nothing else. It is produced by `platform/compose/handbook.py` during the same "
-      f"composition that renders the artefact, lands in the same pull request, and is carried "
-      f"under the same signed tag. `platform/compose/verify-fresh.sh` re-renders it from the "
-      f"artefact as served at a tag and compares bytes, so this page cannot say something the "
-      f"artefact does not.")
+      f"from nothing else. It is rendered by `platform/compose/handbook.py` from those files and "
+      f"nothing else. `platform/compose/verify-fresh.sh` and the hub's `verify/handbook/` "
+      f"re-render it from the artefact as served at a ref and compare bytes; a page that said "
+      f"something the artefact does not would not survive that comparison.")
     a("")
     a("It is **not** a summary of anybody's reasoning, and nothing here was written by hand.")
     a("")
@@ -157,8 +200,10 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     # ---------------------------------------------------------------- 1. parents
     a("## 1. Whose rules these are")
     a("")
-    a(f"Source: `{HEADER_PATH}` → `parents[]`. Each row is a signed, pinned publisher; the "
-      "commit is the tree the composition actually read.")
+    a(f"Source: `{HEADER_PATH}` → `parents[]`. Each row is a publisher this artefact records as "
+      "a parent, at the commit the file records for it. Whether that commit is the tree the "
+      "composition actually read is what `composition.py verify` proves (run by compose-check "
+      "and by `cut-release.yml` before a tag is cut); this page only restates the record.")
     a("")
     parents = header.get("parents") or []
     if not parents:
@@ -198,9 +243,14 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
           f"{ann.get('policy-as-versioned.dev/inherited-from') or '—'} | "
           f"`{ann.get('policy-as-versioned.dev/source-path') or o['path']}` |")
     a("")
-    members = evidence.get("members") or []
-    a(f"{len(objects)} object(s) in the artefact; `members[]` records {len(members)}: "
-      + ", ".join(f"`{m.get('name')}`" for m in members) + ".")
+    members = _listed(absences, evidence, "members", EVIDENCE_PATH,
+                      "this artefact records no member list, so this page counts none")
+    if members is None:
+        a(f"{len(objects)} object(s) in the artefact; `members[]` is absent from the evidence "
+          "(named in section 6).")
+    else:
+        a(f"{len(objects)} object(s) in the artefact; `members[]` records {len(members)}: "
+          + ", ".join(f"`{m.get('name')}`" for m in members) + ".")
     a("")
 
     # ---------------------------------------------------------------- 3. the cage
@@ -234,9 +284,11 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     if tiers:
         a(f"- Tier(s) the pricing proposes ({len(tiers)}): "
           + ", ".join(f"`{t}`" for t in tiers))
-    cages = evidence.get("cages") or []
-    a(f"- `cages[]` entries: {len(cages)}"
-      + ("" if not cages else " — " + ", ".join(str(c.get("name") or c) for c in cages)))
+    cages = _listed(absences, evidence, "cages", EVIDENCE_PATH,
+                    "this artefact records no cage list, so this page counts none")
+    if cages is not None:
+        a(f"- `cages[]` entries: {len(cages)}"
+          + ("" if not cages else " — " + ", ".join(str(c.get("name") or c) for c in cages)))
     a("")
 
     # ---------------------------------------------------------------- 4. money
@@ -244,11 +296,18 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     a("")
     a(f"Source: `{EVIDENCE_PATH}` → `prices[]`, and `{HEADER_PATH}` → `exposure`. Amounts are "
       "rounded to two decimals from the field named in each row; every one carries the "
-      "perspective it is booked under and the currency it is booked in.")
+      "perspective it is booked under and the currency it is booked in. An entry the composition "
+      "could not price carries its reason instead of a number, and is named in section 6. "
+      "In the *proposed tier* column, `—` means the entry's kind (`premium`, `switching`) "
+      "proposes no tier by construction; a feed entry with no `proposed_tier` is named absent.")
     a("")
-    prices = evidence.get("prices") or []
-    if not prices:
-        _absent(absences, "prices", EVIDENCE_PATH, "nothing was priced, so this page states no cost")
+    prices = _listed(absences, evidence, "prices", EVIDENCE_PATH,
+                     "nothing was priced, so this page states no cost")
+    if prices is None:
+        pass
+    elif not prices:
+        a("`prices[]` is present and empty: nothing was priced.")
+        a("")
     else:
         a("| priced by | kind | name | perspective | currency | amount | moved | proposed tier |")
         a("| --- | --- | --- | --- | --- | --- | --- | --- |")
@@ -258,17 +317,46 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                     raise CannotRender(
                         f"prices[{i}] ({p.get('source')}/{p.get('name')}) carries no "
                         f"`{required}`; a price without one is not a price this page will state")
+            # A could-not-look is a NAMED absence of a number, never a zero and never a refusal
+            # of the whole page (ADR-0020): ticket 45's `switching` entries carry `amount: null`
+            # with the publisher's own refusal in `could_not_look`. An entry with no amount and
+            # no reason is not a price this page will state.
+            if p.get("amount") is None:
+                reason = p.get("could_not_look")
+                if not reason:
+                    raise CannotRender(
+                        f"prices[{i}] ({p.get('source')}/{p.get('name')}) carries no `amount` "
+                        "and no `could_not_look` reason; a price with neither is not a price")
+                _absent(absences, f"prices[{i}].amount", EVIDENCE_PATH,
+                        f"{p.get('source')}/{p.get('name')} could not be priced: {reason}")
+                amount_cell = "could not look (section 6)"
+            else:
+                amount_cell = _money(p.get("amount"), p["currency"])
+            if p.get("proposed_tier"):
+                tier_cell = str(p["proposed_tier"])
+            elif p.get("kind") in NO_TIER_KINDS:
+                tier_cell = "—"
+            else:
+                _absent(absences, f"prices[{i}].proposed_tier", EVIDENCE_PATH,
+                        f"{p.get('source')}/{p.get('name')} is a `{p.get('kind')}` entry that "
+                        "proposes no tier")
+                tier_cell = "absent"
             a(f"| {p.get('source')} | {p.get('kind')} | {p.get('name') or '—'} | "
-              f"{p['perspective']} | {p['currency']} | {_money(p.get('amount'), p['currency'])} | "
-              f"{'yes' if p.get('changed') else 'no'} | {p.get('proposed_tier') or '—'} |")
+              f"{p['perspective']} | {p['currency']} | {amount_cell} | "
+              f"{'yes' if p.get('changed') else 'no'} | {tier_cell} |")
         a("")
         for i, p in enumerate(prices):
-            if not p.get("lef_basis"):
+            if p.get("lef_basis"):
+                a(f"- **{p.get('source')}/{p.get('name')}** — basis: {p['lef_basis']}")
+            elif p.get("basis"):
+                # a switching entry (ticket 45) is a measured difference, not an annualised
+                # loss, and carries its own basis sentence
+                a(f"- **{p.get('source')}/{p.get('name')}** ({p.get('kind')}) — basis: "
+                  f"{p['basis']}")
+            else:
                 _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
                         f"the loss frequencies behind {p.get('source')}/{p.get('name')}'s amount "
                         "are not sourced in this artefact")
-            else:
-                a(f"- **{p.get('source')}/{p.get('name')}** — basis: {p['lef_basis']}")
         a("")
         # A hole is a priced absence, never a refusal (ADR-0020, ADR-0026). `holes[]` on a price
         # partitions that price; a singular `hole` is the whole of it. Both are money a reader can
@@ -282,8 +370,13 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                               f"{_money(h.get('amount'), p['currency'])}" for h in parts))
             whole = p.get("hole")
             if isinstance(whole, dict):
+                ident = _hole_identity(whole)
+                if ident is None:
+                    _absent(absences, f"prices[{prices.index(p)}].hole identity", EVIDENCE_PATH,
+                            "the hole names neither `source`/`name` nor `id`, so this page "
+                            "cannot say which pin it is")
                 a(f"- **{p.get('source')}/{p.get('name')}** is itself a priced hole: "
-                  f"{whole.get('kind') or 'hole'} `{whole.get('id')}` — {whole.get('detail')}, "
+                  f"{whole.get('kind') or 'hole'} `{ident or 'absent'}` — {whole.get('detail')}, "
                   f"priced at the whole entry ({_money(p.get('amount'), p['currency'])}).")
         a("")
     if not isinstance(exposure, dict):
@@ -327,20 +420,28 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
         _absent(absences, "baseline", HEADER_PATH, "this page cannot name the control baseline")
     else:
         a(f"- Baseline: **{baseline}**")
-    selected = header.get("selected-controls") or []
-    holes = evidence.get("holes") or []
-    by_status: dict[str, int] = {}
-    for h in holes:
-        by_status[str(h.get("status"))] = by_status.get(str(h.get("status")), 0) + 1
-    a(f"- Controls selected: {len(selected)}")
-    a(f"- Controls with no implementation behind them (`holes[]`): {len(holes)}"
-      + (" — " + ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items())) if by_status else ""))
-    if selected:
+    selected = _listed(absences, header, "selected-controls", HEADER_PATH,
+                       "this artefact records no selected control set, so this page counts none")
+    holes = _listed(absences, evidence, "holes", EVIDENCE_PATH,
+                    "this artefact records no hole list, so this page counts none")
+    if selected is not None:
+        a(f"- Controls selected: {len(selected)}")
+    if holes is not None:
+        by_status: dict[str, int] = {}
+        for h in holes:
+            by_status[str(h.get("status"))] = by_status.get(str(h.get("status")), 0) + 1
+        a(f"- Controls with no implementation behind them (`holes[]`): {len(holes)}"
+          + (" — " + ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items()))
+             if by_status else ""))
+    if selected and holes is not None:
         covered = len(selected) - len(holes)
         a(f"- So {covered} of {len(selected)} selected controls have an implementation in this "
           f"artefact. A hole is priced, never refused (ADR-0020).")
     for field in ("refusals", "restatements", "deltas", "ungoverned"):
-        a(f"- `{field}[]`: {len(evidence.get(field) or [])}")
+        got = _listed(absences, evidence, field, EVIDENCE_PATH,
+                      f"this artefact records no `{field}` list, so this page counts none")
+        if got is not None:
+            a(f"- `{field}[]`: {len(got)}")
     a("")
 
     # ---------------------------------------------------------------- 6. limits
@@ -350,10 +451,19 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
       "artefact and did not find. A limit here is a number this page prints, not a sentence "
       "somebody wrote once and stopped checking.")
     a("")
-    limits = evidence.get("limits") or []
-    a(f"**{len(limits)} recorded limit(s) on the composition itself:**")
+    limits = _listed(absences, evidence, "limits", EVIDENCE_PATH,
+                     "this artefact records no limit list, so this page counts none")
+    if limits is not None:
+        limits = [lim for lim in limits if lim.get("name") not in RUN_ENVIRONMENT_LIMITS]
+    if limits is None:
+        a("**`limits[]` is absent from the evidence** (named below); this page counts no limits.")
+    else:
+        a(f"**{len(limits)} recorded limit(s) on the composition itself** (not counting "
+          f"{', '.join(f'`{n}`' for n in RUN_ENVIRONMENT_LIMITS)}, see below):")
     a("")
-    if limits:
+    if limits is None:
+        pass
+    elif limits:
         a("| limit | status | count | detail |")
         a("| --- | --- | --- | --- |")
         for lim in limits:
@@ -361,6 +471,13 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{lim.get('detail')} |")
     else:
         a("(none)")
+    a("")
+    a(f"One recorded limit is deliberately not stated above: "
+      f"{', '.join(f'`{n}`' for n in RUN_ENVIRONMENT_LIMITS)} records which publisher clones "
+      "the run that re-derived this artefact could read, which is a fact about that run and not "
+      "about the artefact; a page that stated it could not re-render byte-identically with a "
+      "publisher absent, and re-rendering with a publisher absent is what `composition.py verify` "
+      "holds this page to (ticket 45). `composed/evidence.json` records it in full.")
     a("")
     a(f"**{len(absences)} field(s) this render looked for in the artefact and did not find.** "
       "Where a field is absent this page states nothing in its place — no default prose, no "
@@ -382,9 +499,11 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
     # ---------------------------------------------------------------- footer
     a("---")
     a("")
+    def _n(got: list | None) -> str:
+        return "absent" if got is None else str(len(got))
     a(f"Counted from the artefact: {len(parents)} publisher(s), {len(objects)} installed "
-      f"object(s), {len(members)} recorded member(s), {len(prices)} price(s), "
-      f"{len(selected)} selected control(s), {len(holes)} hole(s), {len(limits)} recorded "
+      f"object(s), {_n(members)} recorded member(s), {_n(prices)} price(s), "
+      f"{_n(selected)} selected control(s), {_n(holes)} hole(s), {_n(limits)} recorded "
       f"limit(s), {len(absences)} named absence(s).")
     a("")
     return "\n".join(L)
@@ -465,12 +584,25 @@ def _fixture() -> tuple[dict[str, str], dict[str, Any]]:
              "holes": [{"source": "nist", "id": "pl-2", "weight": 0.3, "amount": 370.35}]},
             {"source": "insurer", "kind": "premium", "perspective": "fixture", "currency": "GBP",
              "amount": 500.0, "name": "quote-fixture", "changed": False,
-             "hole": {"kind": "untagged-pin", "id": "insurer/quote-fixture@v1",
+             "hole": {"kind": "untagged-pin", "source": "insurer", "name": "quote-fixture",
+                      "version": "v1", "status": "new", "amount": 500.0,
+                      "perspective": "fixture", "currency": "GBP",
+                      "priced_by": "insurer quote-fixture@v1: the premium the pin books",
                       "detail": "no signed tag on the publisher's remote carries this pin"}},
+            {"source": "ico", "kind": "switching", "perspective": "fixture", "currency": "GBP",
+             "amount": 1234.5, "name": "penalty-schema", "basis": "fixture switching basis",
+             "could_not_look": None, "alternates": [], "sized": True},
+            {"source": "feeds", "kind": "switching", "perspective": "fixture", "currency": "GBP",
+             "amount": None, "name": "threat-register", "basis": "fixture switching basis",
+             "could_not_look": "missing instrument: twin/forward-intel/v1/feed.json has no lef",
+             "alternates": [], "sized": True},
         ],
         "deltas": [],
         "limits": [{"name": "two-publisher-conflict", "detail": "only one publisher is pinned",
-                    "count": 1, "status": "open"}],
+                    "count": 1, "status": "open"},
+                   {"name": "publisher-clone-absent", "count": 0, "checked": 2,
+                    "status": "closed",
+                    "detail": "every priced feed was read from its publisher's own pinned tree"}],
     }
     return files, evidence
 
@@ -510,6 +642,28 @@ def selfcheck() -> int:
         os.environ.update(saved)
     check("render() is a pure function of its inputs (same bytes from another cwd, another "
           "environment, a moment later)", again == page)
+    # 2b. ...and from a SEPARATE PROCESS with the environment emptied, a random hash seed and a
+    #     fresh cwd: an in-process re-render shares HOME, the hostname, every module-level cache
+    #     and the interpreter's own hash seed with the first, so it cannot see a renderer that
+    #     reads any of them (review F-06). The subprocess is `handbook.py render <dir>` over the
+    #     fixture written to disk, which is also the CLI path verify-fresh.sh runs.
+    import random
+    import subprocess as _sp
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as td:
+        root = Path(td) / "adopter"
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text)
+        (root / EVIDENCE_PATH).write_text(json.dumps(evidence))
+        cwd = Path(td) / "elsewhere"
+        cwd.mkdir()
+        run = _sp.run([sys.executable, os.path.abspath(__file__), "render", str(root)],
+                      env={"PYTHONHASHSEED": str(random.randint(1, 2**31)), "LC_ALL": "C"},
+                      cwd=str(cwd), capture_output=True, text=True)
+    check("render() gives the same bytes from a separate process under an emptied environment, "
+          "a random PYTHONHASHSEED and a fresh cwd",
+          run.returncode == 0 and run.stdout == page)
 
     # 3. no clock reaches the page: today's date is not in it unless an input carried it
     today = time.strftime("%Y-%m-%d")
@@ -555,8 +709,40 @@ def selfcheck() -> int:
     # 5b. a priced hole is named as money, both shapes (ADR-0020, ADR-0026)
     check("a hole that partitions a price is named with its control id and amount",
           "nist/pl-2" in page and "370.35" in page)
-    check("a hole that IS the whole price entry is named as such",
-          "untagged-pin" in page and "insurer/quote-fixture@v1" in page)
+    check("a hole that IS the whole price entry is named by its own source/name@version",
+          "untagged-pin `insurer/quote-fixture@v1`" in page)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    for k in ("source", "name", "version"):
+        del e2["prices"][1]["hole"][k]
+    nameless = render(f2, e2)
+    check("a whole-entry hole with neither source/name nor id is named as an absence, never "
+          "printed as `None`", "`None`" not in nameless and "hole identity" in nameless
+          and "`absent`" in nameless)
+
+    # 5c. a price the composition could not compute is NAMED, never a number and never a
+    #     refusal of the page; one with no amount and no reason is refused (ticket 45 shape)
+    check("a could-not-look price renders its reason in section 6 and no amount",
+          "could not look (section 6)" in page
+          and "`prices[3].amount` (in `composed/evidence.json`) — feeds/threat-register could "
+              "not be priced: missing instrument" in page)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"][3]["could_not_look"] = None
+    try:
+        render(f2, e2)
+        raised = False
+    except CannotRender:
+        raised = True
+    check("a price with no amount and no could_not_look reason is refused", raised)
+    check("a premium or switching entry renders `—` for the tier it never proposes, and a feed "
+          "entry with none is named absent",
+          "| insurer | premium | quote-fixture | fixture | GBP | GBP 500.00 | no | — |" in page
+          and "prices[1].proposed_tier" not in page)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    del e2["prices"][0]["proposed_tier"]
+    tierless = render(f2, e2)
+    check("...a feed entry with no proposed_tier is named absent, not dashed",
+          "`prices[0].proposed_tier` (in `composed/evidence.json`)" in tierless
+          and "| GBP 1,234.50 | no | absent |" in tierless)
 
     # 6. every price carries a perspective and a currency, on the page and in the rule
     check("the price's perspective and currency are both on the page",
@@ -593,10 +779,58 @@ def selfcheck() -> int:
     import re as _re
     declared = _re.search(r"\*\*(\d+) field\(s\) this render looked for", thin)
     listed = [ln for ln in thin.splitlines() if ln.startswith("- `") and "` (in `" in ln]
+    standing = len([ln for ln in page.splitlines() if ln.startswith("- `") and "` (in `" in ln])
     check("the absences are counted, and the count is the number listed",
-          declared is not None and int(declared.group(1)) == len(listed) == 3)
+          declared is not None and int(declared.group(1)) == len(listed) == standing + 2)
     check("the footer repeats the same count",
           f"{len(listed)} named absence(s)" in thin)
+
+    # 7a. the one limit the page does not state is a fact about the re-deriving run, so the page
+    #     is byte-identical whether that run had the publisher's clone or not (ticket 45)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["limits"][1] = {"name": "publisher-clone-absent", "count": 1, "checked": 2,
+                       "status": "open", "detail": "priced from the adopter's own vendored copy "
+                       "because the publisher's clone was not there to read: ico"}
+    check("the publisher-clone-absent limit moving from closed to open leaves the page "
+          "byte-identical, and the page names the exclusion",
+          render(f2, e2) == page and "publisher-clone-absent" in page
+          and "| `publisher-clone-absent` |" not in page
+          and "**1 recorded limit(s) on the composition itself**" in page)
+    check("the limit named `two-publisher-conflict` is still stated",
+          "| `two-publisher-conflict` | open | 1 |" in page)
+
+    # 7b. review F-07: an absent LIST field is named, never rendered as 0. An EMPTY list is a
+    #     real zero and stays one -- the fixture's own empty `refusals` prints `refusals[]`: 0.
+    check("an empty list present in the artefact renders as a real zero",
+          "- `refusals[]`: 0" in page and "- `cages[]` entries: 0" in page)
+    zero_forms = {
+        "members": "records 0", "holes": "(`holes[]`): 0", "limits": "**0 recorded limit(s)",
+        "cages": "`cages[]` entries: 0", "refusals": "- `refusals[]`: 0",
+        "restatements": "- `restatements[]`: 0", "deltas": "- `deltas[]`: 0",
+        "ungoverned": "- `ungoverned[]`: 0",
+    }
+    for field, zero in zero_forms.items():
+        f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+        del e2[field]
+        gone = render(f2, e2)
+        check(f"evidence with no `{field}` names it absent and prints no `{zero}`",
+              f"`{field}` (in `{EVIDENCE_PATH}`)" in gone and zero not in gone)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    head = yaml.safe_load(f2[HEADER_PATH])
+    del head["selected-controls"]
+    f2[HEADER_PATH] = yaml.safe_dump(head, sort_keys=False)
+    gone = render(f2, e2)
+    check("a header with no `selected-controls` names it absent and prints no `Controls "
+          "selected: 0`", f"`selected-controls` (in `{HEADER_PATH}`)" in gone
+          and "Controls selected: 0" not in gone and "absent selected control(s)" in gone)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["members"] = "seven"
+    try:
+        render(f2, e2)
+        raised = False
+    except CannotRender:
+        raised = True
+    check("a list field that is not a list is refused, not counted", raised)
 
     # 8. an artefact that is not one is refused, not papered over
     for what, f2, e2 in (
@@ -610,8 +844,10 @@ def selfcheck() -> int:
             raised = True
         check(f"an artefact with {what} is refused", raised)
 
-    print(f"PASS: handbook render seam: {ok} checks -- pure, clock-free, biting, complete, "
-          f"perspective-and-currency bearing, naming its absences, refusing a non-artefact")
+    print(f"PASS: handbook render seam: {ok} checks -- pure in-process and in a separate "
+          f"emptied-environment process, clock-free, biting, complete, perspective-and-currency "
+          f"bearing, naming every absent field (lists included) rather than printing a zero, "
+          f"refusing a non-artefact")
     return 0
 
 

@@ -5420,9 +5420,11 @@ def selfcheck() -> None:
         # ...and the handbook, which nothing applies, states the moved amount (ticket 34). The
         # string asserted is the one the page derives with _money() from THIS entry, so a page
         # with no price rows cannot pass by moving for some other reason (review F-03).
+        moved_row = _handbook_price_row(price)
+        assert moved_row in files1["composed/HANDBOOK.md"] \
+            and moved_row not in rendered0["composed/HANDBOOK.md"], \
+            f"the handbook does not state the moved ico price as its own row {moved_row}"
         moved_money = handbook._money(price["amount"], price["currency"])
-        assert moved_money in files1["composed/HANDBOOK.md"] and moved_money not in rendered0["composed/HANDBOOK.md"], \
-            f"the handbook does not state the moved ico amount {moved_money}"
     print("OK prices[]: an ico penalty-schema bump (v1 -> v2) moves the uncaged uk-gdpr/lower-"
           "tier exposure through ico's own converter; on driftwood's real band both versions "
           "land on isolated, the bottom rung, so the document prints no tier change and it "
@@ -5448,9 +5450,11 @@ def selfcheck() -> None:
         assert price["old_tier"] == price["proposed_tier"] == "isolated", price
         assert price["changed"] is False, price
         _assert_only_the_moved_feed_changed(rendered0, files1)
+        moved_row = _handbook_price_row(price)
+        assert moved_row in files1["composed/HANDBOOK.md"] \
+            and moved_row not in rendered0["composed/HANDBOOK.md"], \
+            f"the handbook does not state the moved threat-register price as its own row {moved_row}"
         moved_money = handbook._money(price["amount"], price["currency"])
-        assert moved_money in files1["composed/HANDBOOK.md"] and moved_money not in rendered0["composed/HANDBOOK.md"], \
-            f"the handbook does not state the moved threat-register amount {moved_money}"
     print("OK prices[]: a threat-register bump (v1 -> v2) moves tuppence's exposure through the "
           "feeds module; on the real band both versions land on isolated, no tier change; no "
           "rendered POLICY file changes, and the handbook states the new amount %s" % moved_money)
@@ -5851,6 +5855,17 @@ def selfcheck() -> None:
         "digest."
     )
 
+
+
+def _handbook_price_row(price: dict) -> str:
+    """The prefix of the table row the handbook derives for one prices[] entry, up to and
+    including the amount. Asserting the ROW rather than the amount string matters: the
+    exposure section derives the same regime amount from HEADER.yaml, so a page whose price
+    table dropped the amount still carried the number somewhere (found by the omission plant
+    that was meant to go red, 2026-09-08)."""
+    return (f"| {price['source']} | {price['kind']} | {price.get('name') or '—'} | "
+            f"{price['perspective']} | {price['currency']} | "
+            f"{handbook._money(price['amount'], price['currency'])} |")
 
 
 def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str, str]) -> None:
