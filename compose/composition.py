@@ -5121,12 +5121,17 @@ def selfcheck() -> None:
         # per-member files ever reads either namespace set ---
         header1 = yaml.safe_load(rendered1["composed/HEADER.yaml"])
         assert header1["ungoverned-namespaces"] == [fixture_ns], header1["ungoverned-namespaces"]
-        # The namespace NAME is matched as a whole token, bounded by anything that is not a
-        # name character: `namespace: <ns>`, `'<ns>'` inside a CEL expression and
-        # `<ns>.svc.cluster.local` are all the name reaching an applied object; a longer name
-        # that merely contains it is another namespace. `.` is a boundary on purpose -- the
-        # DNS form is the commonest way a namespace name gets into a policy body.
-        name_token = re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(fixture_ns) + r"(?![A-Za-z0-9_-])")
+        # The namespace NAME is matched as a whole token bounded by anything outside
+        # [A-Za-z0-9_]: `namespace: <ns>`, `'<ns>'` inside a CEL expression,
+        # `<ns>.svc.cluster.local` and the hyphen-joined `exception-for-<ns>` or `skip-<ns>` are
+        # all the name reaching an applied object. `.` and `-` are boundaries on purpose: the DNS
+        # form and the DNS-1123 hyphen join are the two commonest ways a namespace name gets into
+        # a policy body or a resource NAME (review F-01 of platform PR 20: with `-` inside the
+        # class, `note: exception-for-<ns>` in a member's annotation passed at 82 OK). What the
+        # boundary still refuses to read as the name is a longer WORD it is embedded in
+        # (`<ns>2`); the label-domain collision that motivated a token at all is carried by the
+        # pre-loop assertion above, not by the boundary.
+        name_token = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(fixture_ns) + r"(?![A-Za-z0-9_])")
         served_src = [q for sub in ("distribution", "graded")
                       for q in (parent_trees["platform"] / sub).rglob("*") if q.is_file()]
         assert served_src and not [q for q in served_src if fixture_ns in q.read_text(errors="ignore")], \
@@ -5139,8 +5144,18 @@ def selfcheck() -> None:
             (ADR-0014: the namespace's own label is what scopes the machinery) and the report
             quotes it in a `message`. Listing those three files would exempt the FILES, not the
             uses -- the label leaking into the guard's own matchConditions or objectSelector
-            would then pass -- so the file is parsed and walked instead: a key under a
-            `namespaceSelector`, or a string at a `message`, is allowed; anywhere else is red."""
+            would then pass -- so the file is parsed and walked instead. Three positions are
+            allowed, each by its exact path (review F-02/F-03 of platform PR 20 narrowed the
+            first two from "any key under a namespaceSelector" and "any key named message"):
+              * a KEY at a path ending `namespaceSelector/matchLabels`;
+              * a STRING equal to the label at a path ending
+                `namespaceSelector/matchExpressions/<i>/key` -- the same structural use in the
+                set-based selector form (no served body uses it today; allowed rather than left
+                red because refusing a correct use would only ever be fixed by widening this);
+              * a STRING at a path ending `validations/<i>/message`, the one place the served
+                report quotes the label to a human.
+            Anywhere else -- a matchConditions name, expression or message, a mutation, an
+            annotation, an objectSelector, a resource name -- is red, named by path."""
             if GOVERNED_LABEL not in text:
                 return []
             leaks: list[str] = []
@@ -5149,16 +5164,23 @@ def selfcheck() -> None:
                 where = "/".join(str(a) for a in at) or "<root>"
                 if isinstance(node, dict):
                     for k, v in node.items():
-                        if GOVERNED_LABEL in str(k) and "namespaceSelector" not in at:
+                        if GOVERNED_LABEL in str(k) and at[-2:] != ("namespaceSelector", "matchLabels"):
                             leaks.append(f"{path}: {GOVERNED_LABEL} is a key at {where}, "
-                                         f"outside any namespaceSelector")
+                                         f"not under namespaceSelector/matchLabels")
                         walk(v, at + (k,))
                 elif isinstance(node, list):
                     for i, v in enumerate(node):
                         walk(v, at + (i,))
-                elif isinstance(node, str) and GOVERNED_LABEL in node and (not at or at[-1] != "message"):
-                    leaks.append(f"{path}: {GOVERNED_LABEL} is in the value at {where}, "
-                                 f"which is not a message")
+                elif isinstance(node, str) and GOVERNED_LABEL in node:
+                    a_message = (len(at) >= 3 and at[-3] == "validations"
+                                 and isinstance(at[-2], int) and at[-1] == "message")
+                    a_selector_key = (node == GOVERNED_LABEL and len(at) >= 4
+                                      and at[-4:-1] == ("namespaceSelector", "matchExpressions", at[-2])
+                                      and isinstance(at[-2], int) and at[-1] == "key")
+                    if not (a_message or a_selector_key):
+                        leaks.append(f"{path}: {GOVERNED_LABEL} is in the value at {where}, "
+                                     f"which is neither a validations message nor a "
+                                     f"namespaceSelector matchExpressions key")
 
             for doc in yaml.safe_load_all(text):
                 walk(doc, ())
@@ -5178,33 +5200,43 @@ def selfcheck() -> None:
         assert f"Ungoverned namespaces (1): `{fixture_ns}`" in hb1, \
             "the handbook does not name the namespaces outside the cage"
 
-        # No masking (ticket 106): plant BOTH leaks in a copy of the fixture platform's own
-        # member -- the namespace's name in a matchConditions expression, the governed label
-        # as an objectSelector key -- and show the two checks above go red, each by name.
+        # No masking (ticket 106): plant the leaks in a copy of the fixture platform's own
+        # member -- the namespace's name in a matchConditions expression, hyphen-joined into
+        # that condition's NAME and into an annotation (review F-01), and the governed label as
+        # an objectSelector key and inside a matchConditions message (review F-02) -- and show
+        # the two checks above go red, each by name.
         planted_platform = Path(td) / "fixture-platform-planted"
         shutil.copytree(platform_root, planted_platform)
         member_src = planted_platform / "distribution" / "policies" / "v1.0.0" / "member-a.yaml"
         member_doc = yaml.safe_load(member_src.read_text())
+        member_doc["metadata"]["annotations"] = {"note": f"exception-for-{fixture_ns}"}
         member_doc["spec"]["matchConstraints"] = {"objectSelector": {"matchLabels": {GOVERNED_LABEL: "true"}}}
         member_doc["spec"]["matchConditions"] = [
-            {"name": "the-name-leaked", "expression": f"object.metadata.namespace == '{fixture_ns}'"}]
+            {"name": f"skip-{fixture_ns}", "expression": f"object.metadata.namespace == '{fixture_ns}'",
+             "message": f"not governed ({GOVERNED_LABEL})"}]
         member_src.write_text(yaml.safe_dump(member_doc, sort_keys=False))
         planted = Path(td) / "run1-planted"
         shutil.copytree(base, planted)
         doc_p, rendered_p = compose(planted, {"fixture-nist": nist_root, "fixture-platform": planted_platform})
         assert doc_p["outcome"] == "composed", doc_p
         member_out = "composed/policies/v1.0.0/member-a.yaml"
-        assert name_token.search(rendered_p[member_out]), \
-            "the planted namespace name did not reach the rendered member, so the name check was not exercised"
+        # three hits, one per planted shape: the annotation, the condition name, the expression
+        assert len(name_token.findall(rendered_p[member_out])) == 3, \
+            "the planted namespace name did not reach the rendered member in all three shapes"
+        assert not name_token.search(f"{fixture_ns}2 x{fixture_ns}")  # a longer word is not the name
         planted_leaks = _governed_label_leaks(member_out, rendered_p[member_out])
-        assert planted_leaks == [f"{member_out}: {GOVERNED_LABEL} is a key at "
-                                 f"spec/matchConstraints/objectSelector/matchLabels, outside any namespaceSelector"], planted_leaks
+        assert planted_leaks == [
+            f"{member_out}: {GOVERNED_LABEL} is a key at spec/matchConstraints/objectSelector/matchLabels, "
+            f"not under namespaceSelector/matchLabels",
+            f"{member_out}: {GOVERNED_LABEL} is in the value at spec/matchConditions/0/message, which is "
+            f"neither a validations message nor a namespaceSelector matchExpressions key"], planted_leaks
         # ...and the un-planted render of the same member is clean under both, so the plant
         # is what turned them red.
         assert not name_token.search(rendered1[member_out]) and not _governed_label_leaks(member_out, rendered1[member_out])
-        print(f"OK leak check: the ungoverned namespace's name planted in a member's matchConditions, "
-              f"and {GOVERNED_LABEL} planted as its objectSelector key, are each red by name -- "
-              f"{planted_leaks[0].split(': ', 1)[1]}")
+        print(f"OK leak check: the ungoverned namespace's name planted in a member's matchConditions "
+              f"expression, hyphen-joined into that condition's name and into an annotation, and "
+              f"{GOVERNED_LABEL} planted as its objectSelector key and in a matchConditions message, "
+              f"are each red by name -- {'; '.join(l.split(': ', 1)[1] for l in planted_leaks)}")
         print("OK HEADER.yaml: carries the recorded ungoverned namespaces, and stripping it "
               "leaves every other rendered file unchanged -- nothing composition renders reads "
               "either namespace set")
