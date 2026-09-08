@@ -83,3 +83,16 @@ The signed PR is rendered as a diff and stops before `git commit`/push/open/merg
 same propose-never-merge rail as `driftwood/scripts/bump-nist-pin.sh`. Actually opening the
 PR needs a live GitHub org push (and the org's Actions-create-PRs setting), and the gitsign
 commit needs OIDC/Rekor network — both a human/CI step, not this offline agent.
+
+## Retirement proposals (eco-system ticket 84)
+
+A `supersede` entry in `composed/evidence.json` -- a feed pin behind a newer major the publisher
+has signed, priced by composition -- is a `retirement` drift row (`wargame_retirement()`), keyed
+`<org>/retirement/<publisher>-<name>-to-<newer>` in the derived ledger (ADR-0024 D5 reserved the
+kind). `tier_pr.py` lands it as a pull request that moves that ONE `inherits[]` edge forward in the
+adopter's `party.yaml`, comments and layout intact, and touches nothing else. Its clamp is
+FORWARD-ONLY, re-judged against `origin/<base>` at the moment of the write: never backwards, never
+onto a version composition observed no signed tag for, held by name otherwise. Ticket 78's
+tighten-only clamp binds the Namespace tier and does not hold a retirement; they are different
+questions. The PR does not re-compose: `compose-check` refuses drift as on a Renovate bump, and
+whoever merges re-composes. Merged by a human, never by this proposer.

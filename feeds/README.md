@@ -69,6 +69,13 @@ So a policy version going unmaintained is priced like any other EOL risk — the
 same `--as-of` clock the war-gamer (ticket 22) runs against, not a bespoke
 sunset branch.
 
+Since eco-system ticket 84 the same ramp prices a PIN that is behind: a feed
+edge pinned at a major older than the newest one its publisher has signed gets a
+`supersede` line in `prices[]`, `base x (eol_ramp(tag date, as_of) - 1)`, and the
+`cve` and `eol` subcommands price a whole feed when the entry is omitted — the
+headline entry, named on the scenario with what it did not price. Composition
+passes its own as-of date to `eol` (`compose --as-of` overrides it).
+
 ## Consumed by
 
 `platform/fair/fair.py` (loss-event-frequency + loss-magnitude inputs, same

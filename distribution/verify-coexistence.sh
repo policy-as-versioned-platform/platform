@@ -30,9 +30,19 @@
 #     only at CUT versions, needs two of them to have anything to prove, and
 #     could-not-looks by name for the tail.
 #
-# The threshold stays TWO declared lines here. Ticket 84 supplies the third and
-# raises it to three (ticket 75 Q3: at least three coexisting versions, forward
-# and back by one, in the owner's own 2022 words).
+# 2026-09-08 (ticket 84). The threshold is THREE DECLARED lines (ticket 75 Q3,
+# owner-reasoned: retirement runs forward and back by one version, so the
+# runtime supports at least three significant versions -- the owner's own 2022
+# words -- scoped as three declared lines and a priced supersede). DECLARED is
+# the array: 5.0.0 counts although it is uncut, because Q3's scope is declared
+# lines; whether a declared line is CUT is the separate axis the live tail
+# already grades (two RELEASED versions to show side by side). Until the array
+# declares three, this script reads could-not-look naming what it has and what
+# is missing, never green on two: the offline matrix over two declared lines
+# still runs and still proves what it proves, and the verdict says the beat's
+# subject is not yet there. The third line is the next bump the release gate
+# computes on a real change (ticket 63 cut the second's declaration; its tag
+# and the third are cut-release.yml dispatches, the owner's).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -62,6 +72,21 @@ def cut(els):
     cut-release.yml when it cuts the signed tag, so an element without one is an
     uncut tail: no tag, nothing for Flux to deliver, nothing on any cluster."""
     return [e["version"] for e in els if e.get("commit")]
+
+
+COEXISTENCE_LINES = 3
+
+
+def threshold(declared):
+    """(ok, reason). The rule ticket 75 Q3 scoped: at least COEXISTENCE_LINES
+    DECLARED lines. A declared-but-uncut element counts here (declared is the
+    array); the cut axis is the live tail's."""
+    have = sorted(declared)
+    if len(have) >= COEXISTENCE_LINES:
+        return True, f"declares {len(have)} lines [{' '.join(have)}], at least the {COEXISTENCE_LINES} the owner's rule needs"
+    return False, (f"distribution/versions.yaml declares {len(have)} of the {COEXISTENCE_LINES} coexisting "
+                   f"lines the owner's 2022 rule needs (ticket 75 Q3, ticket 84): [{' '.join(have)}]; the "
+                   f"third is the next bump the release gate computes on a real change")
 
 
 def fixture_versions(text):
@@ -94,12 +119,22 @@ if mode == "--selfcheck":
         "a fixture on retired trees must not compare equal to the declared array"
     assert fixture_versions("policies:\n  - ../../policies/vselfcheck/cage-tier.yaml\n") == [], \
         "a non-version path contributes no version"
-    print("ok   selfcheck: cut/uncut partition, and the fixture's loaded versions read off "
-          "its own policies list so drift onto retired trees is visible")
+    # Ticket 84: two declared lines are not the beat's subject; three are.
+    ok2, why2 = threshold(["4.0.0", "5.0.0"])
+    assert not ok2 and "2 of the 3" in why2 and "third" in why2, why2
+    ok3, why3 = threshold(["4.0.0", "5.0.0", "6.0.0"])
+    assert ok3 and "3 lines" in why3, why3
+    assert threshold(["4.0.0", "5.0.0", "6.0.0", "7.0.0"])[0], "more than three is still at least three"
+    assert not threshold(["4.0.0"])[0]
+    print("ok   selfcheck: cut/uncut partition, the fixture's loaded versions read off "
+          "its own policies list so drift onto retired trees is visible, and the threshold "
+          "is three DECLARED lines -- two is could-not-look naming three, three is the subject")
     sys.exit(0)
 
 els = rog.elements(here / "versions.yaml")
 print("DECLARED: " + " ".join(sorted(e["version"] for e in els)))
+ok, why = threshold([e["version"] for e in els])
+print("THRESHOLD: " + ("ok " if ok else "short ") + why)
 print("CUT: " + " ".join(cut(els)))
 print("FIXTURE: " + " ".join(
     fixture_versions((here / "tests" / "require-nonroot" / "kyverno-test.yaml").read_text())))
@@ -120,6 +155,7 @@ STATE="$(array_state)"
 DECLARED="$(sed -n 's/^DECLARED: //p' <<<"$STATE")"
 CUT="$(sed -n 's/^CUT: //p' <<<"$STATE")"
 FIXTURE="$(sed -n 's/^FIXTURE: //p' <<<"$STATE")"
+THRESHOLD="$(sed -n 's/^THRESHOLD: //p' <<<"$STATE")"
 
 say "1. offline: both versions self-scope + admit side by side (kyverno test)"
 kyverno test "$HERE/tests/require-nonroot" >/dev/null \
@@ -145,7 +181,13 @@ CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
 versions="$CUT"
 n_versions=$(wc -w <<<"$versions")
 uncut="$(tr ' ' '\n' <<<"$DECLARED" | grep -vxF -f <(tr ' ' '\n' <<<"$CUT") | tr '\n' ' ' | sed 's/ *$//')" || true
-if [ "$n_versions" -lt 2 ]; then
+if [ "${THRESHOLD%% *}" = "short" ]; then
+  # Ticket 84: fewer than three DECLARED lines. The offline matrix above ran over
+  # what is declared and holds; the beat -- retirement forward and back by one
+  # over at least three significant versions -- has no third subject yet, and
+  # that is the estate's own state, named, never green on two.
+  live_tail_skip "${THRESHOLD#short }"
+elif [ "$n_versions" -lt 2 ]; then
   # Two reasons this can happen, and the message names which. Either the
   # retirement verify-retirement.sh already describes -- 2.0.0, 2.0.1 and 3.0.0
   # retired 2026-08-29 (none could admit a pod) -- left the array with one
@@ -170,4 +212,4 @@ else
   done
 fi
 
-pass_line "two signed versions coexist; each judges only what claims it"
+pass_line "at least three declared versions coexist, two or more of them cut and installed side by side; each judges only what claims it"

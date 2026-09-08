@@ -401,6 +401,12 @@ FEED_SCHEMA_PATH = PLATFORM_DIR / "feeds" / "schema.json"
 FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "threat-register": ("feeds", "to_fair_scenario.py"),
     "penalty-schema": ("schema", "to_fair_scenario.py"),
+    # Eco-system ticket 84: the two feeds the publisher already carries and this
+    # table refused as "no converter". The same module as the register's; each
+    # prices the feed's HEADLINE entry (_feed_scenario below), and `eol` takes
+    # the composition's own as-of date.
+    "cve": ("feeds", "to_fair_scenario.py"),
+    "eol": ("feeds", "to_fair_scenario.py"),
 }
 FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version"}
 
@@ -421,7 +427,18 @@ FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema
 #               schema support only. Producer: ticket 32.
 # Two of the four items in the spec's one schema pass are therefore reserved,
 # not observed: nothing in this estate constructs an entry of those kinds yet.
-PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability")
+#   supersede   eco-system ticket 84: the surcharge on a feed line whose pin sits
+#               BEHIND a newer major the publisher has SIGNED, priced by the
+#               feeds module's own EOL ramp from the day that tag was cut
+#               (ticket 13 D5). Carried beside the line, never summed into the
+#               exposure the line is already in. Producer: price_supersede().
+PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability", "supersede")
+SUPERSEDE_KIND = "supersede"
+SUPERSEDE_BASIS = ("the pinned line's own amount x (eol_ramp(since, as_of) - 1): the surcharge "
+                   "the feeds module's EOL ramp puts on a version its publisher has superseded, "
+                   "+1x per year behind and capped at +4x, where `since` is the day the newer "
+                   "major's signing tag was cut; zero on that day, printed with both dates, and "
+                   "never summed into the exposure the line itself is already in")
 
 # ---- eco-system ticket 45: the switching cost, and the tree that pays it ----
 #
@@ -1271,7 +1288,7 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
         if since_limit:
             limits.append(f"{since_limit}: ramp held at 1.0 until a signed tag records it")
         if as_of is None and since is not None:
-            limits.append("no pinned feed carries a published_at, so there is no as_of to ramp to")
+            limits.append("no pinned feed carries a published_at and no edge carries a since, so there is no as_of to ramp to")
         ramp = _ramp(since, as_of)
         share = inside / total if total else 0.0
         amount: float | None = None
@@ -2229,13 +2246,32 @@ def _feed_as_of(path: Path) -> str | None:
     return published[:10] if isinstance(published, str) else None
 
 
-def _composition_as_of(edges: list[dict], parent_trees: dict[str, Path]) -> str | None:
-    """The date THIS composition prices as of: the newest `published_at`
-    among the pinned feed envelopes (ticket 38). A signed fact, so the
-    ungoverned ramp reads it rather than a clock (D1), and a re-composition
-    from the same parents lands on the same date. None where no pinned feed
-    carries one -- a named limit on the entry, never today's date."""
-    dates: list[str] = []
+def _composition_as_of(edges: list[dict], parent_trees: dict[str, Path],
+                       override: str | None = None) -> str | None:
+    """The date THIS composition prices as of: the newest SIGNED date among
+    its own inputs -- the `published_at` of every pinned feed envelope (ticket
+    38) and, since ticket 84, the `since` the adopter signed on each of its own
+    edges. Signed facts both, so the ungoverned ramp, the eol converter and the
+    supersede ramp read this rather than a clock (D1), and a re-composition
+    from the same parents lands on the same date. None where nothing carries
+    one -- a named limit on the entry, never today's date.
+
+    Why the edges' `since` joined (ticket 84, delegated): a fresh subscription
+    is signed AFTER every envelope it pins, and pricing it "as of" the newest
+    envelope priced it as of a day before the adopter's own declaration
+    existed -- ticket 45's backwards-window refusal was that contradiction
+    surfacing, on the ordinary case of subscribing to something. The newest
+    signed input is the honest as-of; a fresh edge's life is then 0 months,
+    and a pin behind a signed newer major is measured up to the day the
+    adopter last signed anything.
+
+    `override` is the CLI's `--as-of` (ticket 84): a date the CALLER hands in,
+    never one this module reads. The scheduled proposer passes the day it runs
+    on and commits nothing (ADR-0024); the composition an adopter signs passes
+    none, so a signed artefact still re-derives from signed facts alone."""
+    if override:
+        return override
+    dates: list[str] = [str(e["since"])[:10] for e in edges if e.get("since")]
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
@@ -2260,7 +2296,28 @@ def _feed_currency(name: str, payload: dict) -> str | None:
     ADR-0020 was written against (GAPS 3.18)."""
     if name == "penalty-schema":
         return (payload.get("regimes", {}).get(ICO_REGIME, {}) or {}).get("currency")
-    return payload.get("currency")
+    return payload.get("currency") or _currency_in_key(payload)
+
+
+def _currency_in_key(payload: dict) -> str | None:
+    """Ticket 84. The cve and eol payloads name the unit of their magnitudes in
+    the key itself -- `severity_lm_gbp`, `base_lm_gbp` -- which is the
+    publisher's own declaration, written into its own signed schema. Read, not
+    minted: exactly one code across the payload is returned, anything else is
+    None and price_parent refuses as it always did. The feeds publisher also
+    declares `currency` explicitly from ticket 84 on; this reads the versions
+    the adopters' checkouts already carry."""
+    codes: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                found = re.search(r"_lm_([a-z]{3})$", str(k))
+                if found:
+                    codes.add(found.group(1).upper())
+                walk(v)
+    walk(payload)
+    return codes.pop() if len(codes) == 1 else None
 
 
 def _converted(amount: float, frm: str, to: str, as_of: str | None,
@@ -2357,7 +2414,9 @@ def _months_apart(a: str, b: str) -> int:
 def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | None,
                   prev_version: str | None, *, perspective_doc: dict,
                   reporting_currency: str, band_currency: str | None,
-                  floor: str | None, parent_trees: dict[str, Path] | None = None) -> dict:
+                  floor: str | None, parent_trees: dict[str, Path] | None = None,
+                  composition_as_of: str | None = None,
+                  prev_prices: list[dict] | None = None) -> dict:
     """One prices[] entry for one feed edge, in the one schema every price in
     this estate shares: perspective, currency, source, kind, amount and a
     per-customer restatement (ticket 25). Priced at the OLD version (the last
@@ -2398,8 +2457,10 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         old_sc = _ico_scenario(tree, old_version, turnover)
         new_sc = _ico_scenario(tree, new_version, turnover)
     else:
-        old_sc = _threat_scenario(old_version, adopter_party, tree)
-        new_sc = _threat_scenario(new_version, adopter_party, tree)
+        # `as_of` above is the FEED's own date, the one an FX rate is looked up
+        # for; the eol converter ramps to the COMPOSITION's date (ticket 84).
+        old_sc = _feed_scenario(name, old_version, adopter_party, tree, composition_as_of)
+        new_sc = _feed_scenario(name, new_version, adopter_party, tree, composition_as_of)
 
     # The band and the residual must be one currency before either is compared:
     # the selection happens in the publisher's currency, so the band converts
@@ -2443,7 +2504,138 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     )
     entry["holes"] = holes
     entry["total"] = total
+    # Ticket 84: ticket 69's rule reaches every feed line, not the premium alone.
+    # The pin's signature state is read off the publisher's checkout the same
+    # way, and an untagged feed pin is a hole of the exposure this line prices
+    # -- money priced from bytes no signature carries -- never a refusal.
+    signature = pin_signature_state(tree, party, name, new_version)
+    entry["pin_signature"] = signature
+    entry["hole"] = untagged_pin_hole(
+        signature, _previous_pin_hole(prev_prices, party, name), party=party, name=name,
+        version=new_version, perspective=adopter_party, currency=reporting_currency,
+        amount=amount, kind="feed")
     return entry
+
+
+def _feed_scenario(name: str, version: str, party: str, tree_path: Path,
+                   as_of: str | None) -> dict:
+    """Ticket 84: the converter call for a feed name. The register prices one
+    institution; `cve` and `eol` price the feed's HEADLINE entry (the converter
+    names which, and what it did not price); `eol` is time-varying and takes the
+    composition's own as-of -- the newest published_at among the pinned feeds,
+    or the caller's `--as-of` -- so no clock is read here either."""
+    if name == "cve":
+        return _run_converter("cve", version, tree_path, ["cve"])
+    if name == "eol":
+        if not as_of:
+            raise Refused("missing instrument: the eol feed prices as of a date, and this "
+                          "composition has none -- no pinned feed carries a published_at, no "
+                          "edge carries a since, and no --as-of was given")
+        return _run_converter("eol", version, tree_path, ["eol", "--as-of", as_of])
+    return _threat_scenario(version, party, tree_path)
+
+
+# --------------------------------------------------------------------------
+# 8a'. being behind (eco-system ticket 84; ticket 13 D5)
+# --------------------------------------------------------------------------
+
+
+def newest_published_major(tree: Path | None, party: str, name: str,
+                           version: str) -> tuple[dict | None, dict]:
+    """The newest SIGNED major of `name` on the publisher's checkout that is
+    ahead of the pinned major, with what was observed on the way. "Published"
+    is a signed tag: an untagged directory publishes nothing (ADR-0019), and a
+    `supersedes:` field was deliberately not added -- the tag namespace is
+    already the publisher's declaration, and a second one could drift from it.
+
+    Returns (newer, observation). `newer` is {version, tag, tagged, published_at}
+    or None; `observation` is {"state": behind | current | unobserved, "detail"}.
+    The same could-not-look rules as pin_signature_state: a checkout that
+    cannot show the publisher's tags observes nothing, and a tag ahead that is
+    not an annotated object here, or carries no signature block, is not counted
+    as published -- a missed supersede line is recoverable on the next
+    composition, a fabricated one is a false number in a signed artefact."""
+    pinned = int(_major_dir(version)[1:])
+    if tree is None or not (Path(tree) / ".git").exists():
+        return None, {"state": "unobserved",
+                      "detail": f"the {party} parent tree carries no git metadata, so no tag could "
+                                f"be read to say whether a {name} major newer than v{pinned} is "
+                                f"published"}
+    listed = subprocess.run(
+        ["git", "-C", str(tree), "for-each-ref",
+         "--format=%(refname:short) %(objecttype) %(creatordate:short)", "refs/tags"],
+        capture_output=True, text=True)
+    refs = [r for r in (line.split() for line in listed.stdout.splitlines()) if len(r) == 3]
+    if listed.returncode != 0 or not refs:
+        return None, {"state": "unobserved",
+                      "detail": f"the {party} parent's checkout carries no tag at all, so whether "
+                                f"a {name} major newer than v{pinned} is published is unobserved, "
+                                f"not absent"}
+    form = re.compile(rf"^(?:{re.escape(name)}/)?v(\d+)\.\d+\.\d+$")
+    ahead: list[tuple[str, str, int]] = []
+    not_counted: list[str] = []
+    for tag, kind, date in refs:
+        found = form.match(tag)
+        if not found or int(found.group(1)) <= pinned:
+            continue
+        body = (subprocess.run(["git", "-C", str(tree), "cat-file", "-p", tag],
+                               capture_output=True, text=True).stdout if kind == "tag" else "")
+        if "-----BEGIN" not in body:
+            not_counted.append(tag)
+            continue
+        ahead.append((tag, date, int(found.group(1))))
+    if not ahead:
+        detail = (f"no signed tag of the form {name}/vN.x.y with N > {pinned} on the {party} "
+                  f"checkout, so the pinned v{pinned} is the newest published major")
+        if not_counted:
+            detail += (f"; {', '.join(sorted(not_counted))} sit(s) ahead but is not an annotated "
+                       f"tag object here or carries no signature block, and an unsigned tag "
+                       f"publishes nothing")
+        return None, {"state": "current", "detail": detail}
+    tag, date, major = max(ahead, key=lambda a: _tag_version_key(a[0]))
+    path = feed_file(party, name, f"v{major}", Path(tree))
+    if not path.exists():
+        return None, {"state": "unobserved",
+                      "detail": f"tag {tag} signs {name} v{major} ahead of the pinned v{pinned}, "
+                                f"but this checkout carries no {path.relative_to(Path(tree))} "
+                                f"to read it from"}
+    return ({"version": f"v{major}", "tag": tag, "tagged": date,
+             "published_at": _feed_as_of(path)},
+            {"state": "behind",
+             "detail": f"tag {tag}, signed {date}, publishes {name} v{major} ahead of the "
+                       f"pinned v{pinned}"})
+
+
+def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | None, *,
+                    adopter_party: str, reporting_currency: str,
+                    perspective_doc: dict) -> dict | None:
+    """One `supersede` prices[] entry for a feed line whose pin is behind a
+    newer SIGNED major (ticket 84; ticket 13 D5): the line's own amount times
+    (eol_ramp(since, as_of) - 1), `since` being the day the newer major's tag
+    was cut and `as_of` the composition's own date. The feed entry gains a
+    `superseded` observation either way, so a reader can tell "current" from
+    "could not look". None where nothing signed is ahead. Zero, with both
+    dates printed, on the signing day itself and before it -- never omitted,
+    never today's date. Not an exposure kind: the line it surcharges is in
+    the exposure already, and adding the surcharge to it would need a rule for
+    counting one line twice that nobody has asked for."""
+    party, name, version = edge["party"], _feed_name(edge) or "", str(edge["version"])
+    newer, observed = newest_published_major(tree, party, name, version)
+    entry["superseded"] = observed
+    if newer is None:
+        return None
+    since = newer["tagged"]
+    limits: list[str] = []
+    if not as_of:
+        limits.append("no pinned feed carries a published_at, no edge carries a since and no "
+                      "--as-of was given, so there is no as_of to ramp to: the ramp is held at 1.0")
+    ramp = _ramp(since, as_of)
+    base = float(entry["amount"])
+    return _price_entry(
+        party, SUPERSEDE_KIND, adopter_party, reporting_currency, base * (ramp - 1.0),
+        perspective_doc, name=name, version=version, newer=newer, since=since, as_of=as_of,
+        ramp=ramp, base=base, proposed_tier=None, changed=False, basis=SUPERSEDE_BASIS,
+        limits=limits, detail=observed["detail"])
 
 
 # --------------------------------------------------------------------------
@@ -2707,8 +2899,10 @@ def pin_signature_state(tree: Path | None, party: str, name: str, version: str) 
     pattern = _pin_tag_pattern(name, version)
     hits = sorted((tag, kind) for tag, kind in refs if pattern.match(tag))
     if not hits:
+        v = version.lstrip("v")
+        form = v if "." in v else f"{v}.x.y"
         return {"state": "untagged", "tag": None,
-                "detail": f"no tag of the form {name}/v* or v* signs @{version} on the {party} "
+                "detail": f"no signed tag {name}/v{form} (or v{form}) exists on the {party} "
                           f"parent's checkout, which carries {len(refs)} tag(s) of its own"}
     tag, kind = max(hits, key=lambda h: _tag_version_key(h[0]))
     if kind != "tag":
@@ -2730,7 +2924,7 @@ def _previous_pin_hole(prev_prices: list[dict], party: str, name: str) -> dict |
     """The open (new or recorded) untagged-pin hole the last signed composed
     artefact carried on this premium edge, or None."""
     for e in prev_prices or []:
-        if e.get("kind") == "premium" and e.get("source") == party and e.get("name") == name:
+        if e.get("kind") in ("premium", "feed") and e.get("source") == party and e.get("name") == name:
             hole = e.get("hole")
             if isinstance(hole, dict) and hole.get("status") in ("new", "recorded"):
                 return hole
@@ -2739,7 +2933,8 @@ def _previous_pin_hole(prev_prices: list[dict], party: str, name: str) -> dict |
 
 
 def untagged_pin_hole(signature: dict, prev_hole: dict | None, *, party: str, name: str,
-                      version: str, perspective: str, currency: str, amount: float) -> dict | None:
+                      version: str, perspective: str, currency: str, amount: float,
+                      kind: str = "premium") -> dict | None:
     """The hole an untagged premium pin opens on its own entry (ticket 69):
     the premium, booked as paid against a quote no tag signs, under the
     adopter's own perspective and currency. `new` on first sight, `recorded`
@@ -2748,8 +2943,13 @@ def untagged_pin_hole(signature: dict, prev_hole: dict | None, *, party: str, na
     state keeps a recorded hole open and opens none: a could-not-look is
     never a signature and never a closure."""
     state = signature["state"]
+    # Ticket 84: a feed line's hole is the exposure it prices, read off bytes no
+    # signature carries -- the same "money committed against an unsigned
+    # instrument" the premium's hole is, on the other side of the balance sheet.
     priced_by = (f"{party} {name}@{version}: the premium the pin books, paid against a quote "
-                 f"no signed tag carries")
+                 f"no signed tag carries" if kind == "premium" else
+                 f"{party} {name}@{version}: the exposure the pin prices, read off a feed no "
+                 f"signed tag carries")
     base = {"kind": UNTAGGED_PIN_HOLE_KIND, "source": party, "name": name, "version": version,
             "perspective": perspective, "currency": currency}
     if state == "untagged":
@@ -2770,20 +2970,22 @@ def untagged_pin_deltas(prices: list[dict], perspective: str, currency: str) -> 
     shape compute_deltas prints a control hole's move."""
     deltas: list[dict] = []
     for e in prices:
-        hole = e.get("hole") if e.get("kind") == "premium" else None
+        hole = e.get("hole") if e.get("kind") in ("premium", "feed") else None
         if not isinstance(hole, dict) or hole.get("status") not in ("new", "closed"):
             continue
+        money = "premium" if e.get("kind") == "premium" else "exposure"
+        against = "quote" if e.get("kind") == "premium" else "feed"
         deltas.append({
             "kind": f"{hole['status']}-untagged-pin", "source": hole["source"],
             "name": hole["name"], "version": hole["version"],
             "perspective": perspective, "currency": currency,
             "amount": hole["amount"], "priced_by": hole["priced_by"],
             "detail": (f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']} and "
-                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is booked "
-                       f"as paid against an unsigned quote" if hole["status"] == "new" else
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of {money} is booked "
+                       f"against an unsigned {against}" if hole["status"] == "new" else
                        f"{perspective} pins {hole['source']}/{hole['name']}@{hole['version']}; "
-                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of premium is again "
-                       f"paid against a signed quote"),
+                       f"{hole['detail']}; {hole['amount']:.2f} {currency} of {money} is again "
+                       f"against a signed {against}"),
         })
     return deltas
 
@@ -2956,7 +3158,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        parent_trees: dict[str, Path], prev_header: dict | None,
                        *, adopter_dir: Path, perspective_doc: dict,
                        band_currency: str | None, floor: str | None,
-                       prev_prices: list[dict] | None, full_prices: list[dict]) -> list[dict]:
+                       prev_prices: list[dict] | None, full_prices: list[dict],
+                       as_of: str | None = None) -> list[dict]:
     """One `switching` entry per substitutable parent edge, under the adopter's
     own perspective and in the adopter's own reporting currency.
 
@@ -2971,7 +3174,7 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
     no signed `since`, or a composition whose pinned feeds carry no published_at
     to be as-of. A pin's life is a window between two signed dates (ADR-0020)."""
     reporting = _reporting_currency(perspective_doc)
-    as_of = _composition_as_of(edges, parent_trees)
+    as_of_override, as_of = as_of, _composition_as_of(edges, parent_trees, as_of)
     exposure_of = (lambda entries: _sum_prices(
         [e for e in entries if e.get("kind") in EXPOSURE_KINDS], adopter_party, reporting))
     full_exposure = exposure_of(full_prices)
@@ -3025,7 +3228,7 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 [e for e in edges if e not in dropped], adopter_party, tolerance, parent_trees,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-                include_switching=False)
+                include_switching=False, as_of=as_of_override)
         except Refused as e:
             could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
@@ -3075,7 +3278,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                     *, adopter_dir: Path, perspective_doc: dict,
                     band_currency: str | None = None, floor: str | None = None,
                     prev_prices: list[dict] | None = None,
-                    include_switching: bool = True) -> list[dict]:
+                    include_switching: bool = True, as_of: str | None = None) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -3089,6 +3292,9 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
     reporting = _reporting_currency(perspective_doc)
     prices: list[dict] = []
     lef_by_feed: dict[str, dict] = {}
+    # Ticket 84: the one date this composition prices as of, computed once --
+    # the eol converter takes it as --as-of and the supersede ramp runs to it.
+    comp_as_of = _composition_as_of(edges, parent_trees, as_of)
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
@@ -3102,10 +3308,20 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                 prev_version=prev_version, parent_trees=parent_trees,
                 prev_prices=prev_prices))
             continue
-        prices.append(price_parent(
+        entry = price_parent(
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
             perspective_doc=perspective_doc, reporting_currency=reporting,
-            band_currency=band_currency, floor=floor, parent_trees=parent_trees))
+            band_currency=band_currency, floor=floor, parent_trees=parent_trees,
+            composition_as_of=comp_as_of, prev_prices=prev_prices)
+        prices.append(entry)
+        # Ticket 84: is this pin behind a newer major its publisher has signed?
+        # A quote (above) is a cost, not an exposure, and is not surcharged.
+        supersede = price_supersede(
+            edge, entry, parent_trees.get(edge["party"]), comp_as_of,
+            adopter_party=adopter_party, reporting_currency=reporting,
+            perspective_doc=perspective_doc)
+        if supersede is not None:
+            prices.append(supersede)
         if _feed_name(edge) == "threat-register":
             tree = Path(parent_trees.get(edge["party"], PLATFORM_DIR))
             scenario = _threat_scenario(edge["version"], adopter_party, tree)
@@ -3127,7 +3343,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             edges, adopter_party, tolerance, parent_trees, prev_header,
             adopter_dir=adopter_dir, perspective_doc=perspective_doc,
             band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-            full_prices=prices)
+            full_prices=prices, as_of=as_of)
     return prices
 
 
@@ -3154,7 +3370,8 @@ def _refused(errors: list[str]) -> dict:
     }
 
 
-def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dict[str, str]]:
+def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
+            as_of: str | None = None) -> tuple[dict, dict[str, str]]:
     """The one entry point. Takes the adopter repo state (a directory) and
     the pinned parent trees (party name -> that party's directory). Returns
     the evidence document as a dict and the rendered composed artefact as a
@@ -3427,7 +3644,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
             adopter_dir=adopter_dir, perspective_doc=party_doc,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
-            prev_prices=_previous_prices(adopter_dir))
+            prev_prices=_previous_prices(adopter_dir), as_of=as_of)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -3447,7 +3664,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
     exposure = exposure_section(prices, adopter_party, band, reporting)
     price_ungoverned(ungoverned_entries, adopter_dir, adopter_party, reporting,
                      exposure["total"] if exposure else None,
-                     _composition_as_of(edges, parent_trees))
+                     _composition_as_of(edges, parent_trees, as_of))
     hole_prices = _regime_hole_prices(prices)
     _price_holes(hole_entries, hole_prices, adopter_party, reporting)
     refusals += _price_bespoke_holes(hole_entries, adopter_party, adopter_dir,
@@ -3459,7 +3676,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[dict, dic
         baseline_widening_delta(baseline_ids, prev_baseline_ids, prev_baseline_name, baseline_name,
                                 baseline_source, hole_prices, adopter_party, reporting),
         adopter_party, reporting)
-    # Ticket 69: a premium pin that opened or closed as an untagged-pin hole.
+    # Ticket 69 (and 84, for every feed line): a pin that opened or closed as
+    # an untagged-pin hole.
     deltas += untagged_pin_deltas(prices, adopter_party, reporting)
 
     members_evidence: list[dict] = []
@@ -3633,11 +3851,12 @@ def _default_parent_trees(party_doc: dict, estate_clone: Path) -> dict[str, Path
     return {name: estate_clone / name for name in names}
 
 
-def cmd_compose(adopter_dir: Path, estate_clone: Path, out_dir: Path | None) -> int:
+def cmd_compose(adopter_dir: Path, estate_clone: Path, out_dir: Path | None,
+                as_of: str | None = None) -> int:
     party_yaml = adopter_dir / "party.yaml"
     party_doc = yaml.safe_load(party_yaml.read_text()) if party_yaml.exists() else {}
     parent_trees = _default_parent_trees(party_doc, estate_clone)
-    document, rendered = compose(adopter_dir, parent_trees)
+    document, rendered = compose(adopter_dir, parent_trees, as_of=as_of)
     print(json.dumps(document, indent=2))
     if document["outcome"] == "composed":
         out_dir = out_dir or adopter_dir
@@ -3688,10 +3907,19 @@ def main(argv: list[str]) -> int:
         c.add_argument("--estate-clone", type=Path, default=DEFAULT_ESTATE_CLONE)
         if name == "compose":
             c.add_argument("--out", type=Path, default=None)
+            c.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
+                           help="the date to price as of (ticket 84): the eol converter's "
+                                "--as-of and the supersede ramp's end. Omitted, the newest "
+                                "published_at among the pinned feeds is used, so a signed "
+                                "composition never depends on a clock; the scheduled "
+                                "proposer passes the day it runs on and commits nothing")
     args = p.parse_args(argv[1:])
 
     if args.cmd == "compose":
-        return cmd_compose(args.adopter_dir, args.estate_clone, args.out)
+        if args.as_of and not re.match(r"^\d{4}-\d{2}-\d{2}$", args.as_of):
+            print(f"REFUSED: --as-of {args.as_of!r} is not a YYYY-MM-DD date", file=sys.stderr)
+            return 2
+        return cmd_compose(args.adopter_dir, args.estate_clone, args.out, as_of=args.as_of)
     if args.cmd == "verify":
         return cmd_verify(args.adopter_dir, args.estate_clone)
     return 2
@@ -3754,6 +3982,24 @@ def _insurer_clone(dest: Path) -> Path:
     subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "insurer"), str(dest)],
                    check=True, capture_output=True)
     return dest
+
+
+def _feeds_clone(dest: Path) -> Path:
+    """Ticket 84's fixture: a real `git clone` of the feeds publisher, so its
+    OWN signed tags travel -- threat-register/v1.x.y and v2.x.y, cut by its
+    release workflow -- and nothing invented. Against it a pin at v1 is really
+    behind a really published v2, and a cve or eol pin is really untagged."""
+    subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "feeds"), str(dest)],
+                   check=True, capture_output=True)
+    return dest
+
+
+def _add_feed_pin(work: Path, party: str, name: str, version: str, since: str) -> None:
+    """Add ONE feed edge to an adopter copy -- the edit a subscription is."""
+    doc = yaml.safe_load((work / "party.yaml").read_text())
+    doc["inherits"].append({"party": party, "kind": "feed", "name": name,
+                            "version": version, "since": since})
+    (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
 def _quote_at_untagged_major(tree: Path, adopter: str, major: str) -> None:
@@ -5813,7 +6059,12 @@ def selfcheck() -> None:
           "the twin's own refusal travels into the signed artefact naming "
           "`twin/forward-intel/v1/feed.json`, which reads the same on every runner")
 
-    # --- review F3: a window that runs backwards is refused, not abs()'d ---
+    # --- review F3 (ticket 45), re-derived by ticket 84: a window is never
+    # abs()'d, and an edge signed AFTER every pinned envelope no longer refuses
+    # the whole composition -- the as-of moves to the newest signed input, the
+    # adopter's own `since`, so that edge's life is 0 months and every other
+    # edge's is measured up to that day. The refusal is kept for the one case
+    # left, a caller's --as-of earlier than a signed since, and names both dates. ---
     with tempfile.TemporaryDirectory() as tmp:
         work = _adopter_copy("driftwood", Path(tmp) / "driftwood")
         doc_party = yaml.safe_load((work / "party.yaml").read_text())
@@ -5821,11 +6072,19 @@ def selfcheck() -> None:
             if e.get("name") == "penalty-schema":
                 e["since"] = "2026-12-01"       # after every pinned feed's published_at
         (work / "party.yaml").write_text(yaml.safe_dump(doc_party, **YAML_KWARGS))
-        doc_backwards, _ = compose(work, _real_parent_trees())
+        doc_fresh, _ = compose(work, _real_parent_trees())
+        assert doc_fresh["outcome"] == "composed", doc_fresh["refusals"]
+        fresh = {e["name"]: e for e in doc_fresh["prices"] if e["kind"] == "switching"}
+        assert fresh["penalty-schema"]["as_of"] == "2026-12-01", fresh["penalty-schema"]
+        assert fresh["penalty-schema"]["pin_life_months"] == 0, fresh["penalty-schema"]
+        assert fresh["penalty-schema"]["over_pin_life"] == 0.0, fresh["penalty-schema"]
+        assert fresh["threat-register"]["pin_life_months"] == _months_apart("2026-08-28", "2026-12-01") == 4, \
+            fresh["threat-register"]
+        doc_backwards, _ = compose(work, _real_parent_trees(), as_of="2026-05-15")
         assert doc_backwards["prices"] == [], doc_backwards["prices"]
         assert any(r["kind"] == "missing-instrument" and "runs backwards" in r["detail"]
-                   and "2026-12-01" in r["detail"] for r in doc_backwards["refusals"]), \
-            doc_backwards["refusals"]
+                   and "2026-12-01" in r["detail"] and "2026-05-15" in r["detail"]
+                   for r in doc_backwards["refusals"]), doc_backwards["refusals"]
     assert _months_apart("2026-08-28", "2026-05-15") < 0, "months must be signed"
     # Today every edge was signed on the same day as the newest feed publication,
     # so the window is zero months and `over_pin_life` is 0.0 on every entry. It
@@ -5833,10 +6092,12 @@ def selfcheck() -> None:
     # stays 0.0 until a pinned feed publishes after the pin date. Asserted so
     # that the day it stops being true, somebody is told.
     assert {e["pin_life_months"] for e in doc45["prices"] if e["kind"] == "switching"} == {0}
-    print("OK switching: an as-of EARLIER than the edge's signed `since` refuses naming both "
-          "dates rather than reporting the window's absolute size; and on today's estate every "
-          "pin was signed the day of the newest feed publication, so the window is 0 months and "
-          "over_pin_life is 0.0 -- arithmetic over two signed dates, not a placeholder")
+    print("OK switching: an edge signed AFTER every pinned envelope moves the composition's "
+          "as-of to that day (its own life 0 months, its siblings' measured up to it), a "
+          "--as-of EARLIER than a signed since refuses naming both dates rather than reporting "
+          "the window's absolute size; and on today's estate every pin was signed the day of "
+          "the newest feed publication, so the window is 0 months and over_pin_life is 0.0 -- "
+          "arithmetic over two signed dates, not a placeholder")
 
     # --- a feed edge with no `since` cannot be annualised over a pin's life,
     # and that is a missing instrument, not a defaulted window (ADR-0020) ---
@@ -5855,12 +6116,147 @@ def selfcheck() -> None:
     print("OK switching: a feed edge carrying no `since` refuses as a missing instrument naming "
           "the edge -- a pin's life is a window between two signed dates, never a default")
 
+    # ======================================================================
+    # eco-system ticket 84: being behind costs something
+    # ======================================================================
+    import datetime as _dt  # selfcheck only: the load-bearing code above reads no clock
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        feeds_clone = _feeds_clone(root / "feeds")
+        trees = {**parent_trees, "feeds": feeds_clone}
+
+        def _tag_date(tag: str) -> str:
+            return subprocess.run(["git", "-C", str(feeds_clone), "for-each-ref",
+                                   "--format=%(creatordate:short)", f"refs/tags/{tag}"],
+                                  capture_output=True, text=True).stdout.strip()
+
+        def _edges(work: Path) -> list[dict]:
+            return yaml.safe_load((work / "party.yaml").read_text())["inherits"]
+
+        # (a) tuppence pins threat-register@v1 while the feeds publisher's real
+        # checkout carries its signed threat-register/v2.x.y: BEHIND.
+        work = _adopter_copy("tuppence", root)
+        doc, rendered = compose(work, trees)
+        assert doc["outcome"] == "composed", doc["refusals"]
+        line = next(e for e in doc["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
+        assert line["superseded"]["state"] == "behind", line["superseded"]
+        sups = [e for e in doc["prices"] if e["kind"] == SUPERSEDE_KIND]
+        assert len(sups) == 1, sups
+        s = sups[0]
+        assert s["source"] == "feeds" and s["name"] == "threat-register" and s["version"] == "v1", s
+        assert re.match(r"^threat-register/v2\.\d+\.\d+$", s["newer"]["tag"]), s["newer"]
+        assert s["newer"]["version"] == "v2" and s["newer"]["published_at"], s["newer"]
+        tagged = _tag_date(s["newer"]["tag"])
+        assert tagged and s["since"] == s["newer"]["tagged"] == tagged, (s["since"], tagged)
+        assert s["as_of"] == _composition_as_of(_edges(work), trees), s["as_of"]
+        assert s["perspective"] == "tuppence" and s["currency"] == "GBP", s
+        assert s["base"] == line["amount"] and s["ramp"] == _ramp(s["since"], s["as_of"]), s
+        assert abs(s["amount"] - s["base"] * (s["ramp"] - 1.0)) < 1e-6, s
+        assert s["proposed_tier"] is None and s["changed"] is False and s["basis"] == SUPERSEDE_BASIS, s
+        assert SUPERSEDE_KIND not in EXPOSURE_KINDS
+        header = yaml.safe_load(rendered["composed/HEADER.yaml"])
+        assert abs(header["exposure"]["total"] - _sum_prices(
+            [e for e in doc["prices"] if e["kind"] in EXPOSURE_KINDS], "tuppence", "GBP")) < 1e-6, \
+            "the supersede line leaked into the exposure total"
+        # --as-of respected: a year past the signing day the ramp is 2.0 and the
+        # surcharge is the whole line; the day before it, zero with both dates.
+        later = (_dt.date.fromisoformat(tagged) + _dt.timedelta(days=365)).isoformat()
+        before = (_dt.date.fromisoformat(tagged) - _dt.timedelta(days=1)).isoformat()
+        s2 = next(e for e in compose(work, trees, as_of=later)[0]["prices"] if e["kind"] == SUPERSEDE_KIND)
+        assert s2["as_of"] == later and s2["since"] == tagged, s2
+        assert abs(s2["ramp"] - 2.0) < 1e-9 and abs(s2["amount"] - s2["base"]) < 1e-6, s2
+        s0 = next(e for e in compose(work, trees, as_of=before)[0]["prices"] if e["kind"] == SUPERSEDE_KIND)
+        assert s0["as_of"] == before and s0["since"] == tagged and s0["ramp"] == 1.0 and s0["amount"] == 0.0, s0
+        print("OK supersede: tuppence's threat-register@v1 sits behind the feeds publisher's real "
+              "signed %s (cut %s); the line prices %.2f %s at the composition's own as-of %s "
+              "(ramp %.4f on a %.2f base), %.2f a year past the tag under --as-of, and 0.00 "
+              "with both dates the day before it; never summed into the exposure"
+              % (s["newer"]["tag"], tagged, s["amount"], s["currency"], s["as_of"], s["ramp"],
+                 s["base"], s2["amount"]))
+
+        # the same pin moved to the newest published major: no line, said so
+        _bump_feed_pin(work, "feeds", "threat-register", "v2")
+        doc_cur, _ = compose(work, trees)
+        assert doc_cur["outcome"] == "composed", doc_cur["refusals"]
+        assert not [e for e in doc_cur["prices"] if e["kind"] == SUPERSEDE_KIND], doc_cur["prices"]
+        cur = next(e for e in doc_cur["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
+        assert cur["superseded"]["state"] == "current", cur["superseded"]
+        # and a checkout that cannot show the tags, or shows only an unsigned tag
+        # ahead, observes no supersede -- the shapes ticket 69 fixed, at this seam
+        with tempfile.TemporaryDirectory() as shapes:
+            none = _tag_shape_repo(Path(shapes) / "none", tag=None, annotated=False)
+            assert newest_published_major(none, "fixture-publisher", "fixture-feed", "v1")[1]["state"] == "unobserved"
+            unsigned = _tag_shape_repo(Path(shapes) / "unsigned", tag="v2.0.0", annotated=True)
+            got = newest_published_major(unsigned, "fixture-publisher", "fixture-feed", "v1")
+            assert got[0] is None and got[1]["state"] == "current" and "v2.0.0" in got[1]["detail"], got
+            lightweight = _tag_shape_repo(Path(shapes) / "light", tag="v2.0.0", annotated=False)
+            assert newest_published_major(lightweight, "fixture-publisher", "fixture-feed", "v1")[0] is None
+        print("OK supersede: the same pin at v2 prints no line and the feed entry says `current`; "
+              "no tag at all is `unobserved`; an unsigned or lightweight tag ahead publishes "
+              "nothing and is named rather than counted")
+
+        # (b) an untagged cve pin is a PRICED HOLE naming the tag that does not
+        # exist, never a refusal -- and it prices through the cve converter.
+        work_b = _adopter_copy("tuppence", root / "b")
+        _add_feed_pin(work_b, "feeds", "cve", "v2", "2026-09-08")
+        doc_b, _ = compose(work_b, trees)
+        assert doc_b["outcome"] == "composed", doc_b["refusals"]
+        cve = next(e for e in doc_b["prices"] if e["kind"] == "feed" and e.get("name") == "cve")
+        assert cve["source"] == "feeds" and cve["currency"] == "GBP" and cve["amount"] > 0, cve
+        assert "headline entry" in (cve["lef_basis"] or ""), cve["lef_basis"]
+        assert cve["pin_signature"]["state"] == "untagged", cve["pin_signature"]
+        assert "cve/v2.x.y" in cve["pin_signature"]["detail"], cve["pin_signature"]
+        hole = cve["hole"]
+        assert hole and hole["kind"] == UNTAGGED_PIN_HOLE_KIND and hole["status"] == "new", hole
+        assert hole["amount"] == cve["amount"] and hole["perspective"] == "tuppence" and hole["currency"] == "GBP", hole
+        assert "cve/v2.x.y" in hole["detail"] and "no signed tag" in hole["priced_by"], hole
+        d_b = [d for d in doc_b["deltas"] if d["kind"] == "new-untagged-pin" and d["name"] == "cve"]
+        assert len(d_b) == 1 and d_b[0]["amount"] == cve["amount"], doc_b["deltas"]
+        assert cve["superseded"]["state"] == "current", cve["superseded"]
+        assert not [e for e in doc_b["prices"] if e["kind"] == SUPERSEDE_KIND and e["name"] == "cve"]
+        rec = next(r for r in doc_b["vendored"] if r["name"] == "cve")
+        assert rec["invocation"] == ["cve"] and rec["converter_from"] == "platform", rec
+        assert next(e for e in doc_b["prices"] if e.get("name") == "threat-register")["pin_signature"]["state"] == "signed"
+        print("OK untagged cve pin: tuppence pinned at feeds/cve@v2 composes (no refusal) with a "
+              "hole of the whole line, %.2f %s, naming the tag that does not exist (%s); the "
+              "converter's headline entry is on the line, and the vendored record names the "
+              "real invocation %s" % (hole["amount"], hole["currency"],
+                                      cve["pin_signature"]["detail"].split(" exists")[0], rec["invocation"]))
+
+        # (c) eol: the composition date reaches the converter as --as-of, the
+        # override reaches it too, and the CLI passes it through.
+        work_c = _adopter_copy("ludlow", root / "c")
+        _add_feed_pin(work_c, "feeds", "eol", "v2", "2026-09-08")
+        doc_c, _ = compose(work_c, trees)
+        assert doc_c["outcome"] == "composed", doc_c["refusals"]
+        eol = next(e for e in doc_c["prices"] if e["kind"] == "feed" and e.get("name") == "eol")
+        as_of_c = _composition_as_of(_edges(work_c), trees)
+        assert as_of_c and f"as_of={as_of_c}" in (eol["lef_basis"] or ""), (as_of_c, eol["lef_basis"])
+        assert eol["pin_signature"]["state"] == "untagged" and eol["hole"]["status"] == "new", eol
+        rec_c = next(r for r in doc_c["vendored"] if r["name"] == "eol")
+        assert rec_c["invocation"] == ["eol", "--as-of", as_of_c], rec_c
+        eol2 = next(e for e in compose(work_c, trees, as_of=later)[0]["prices"]
+                    if e["kind"] == "feed" and e.get("name") == "eol")
+        assert f"as_of={later}" in (eol2["lef_basis"] or "") and eol2["amount"] > eol["amount"], (eol2, eol)
+        estate = root / "estate"
+        estate.mkdir()
+        for name in ("driftwood", "nist", "ico", "platform", "insurer"):
+            (estate / name).symlink_to(DEFAULT_ESTATE_CLONE / name)
+        (estate / "feeds").symlink_to(feeds_clone)
+        out_c = root / "out-c"
+        assert cmd_compose(work_c, estate, out_c, as_of=later) == 0
+        ev = json.loads((out_c / "composed" / "evidence.json").read_text())
+        assert f"as_of={later}" in next(e for e in ev["prices"] if e.get("name") == "eol")["lef_basis"]
+        assert next(r for r in ev["vendored"] if r["name"] == "eol")["invocation"] == ["eol", "--as-of", later]
+        print("OK eol: ludlow pinned at feeds/eol@v2 prices its headline component as of the "
+              "composition's own %s (the invocation the vendored record carries), ramps higher "
+              "under --as-of %s, and the CLI passes --as-of through" % (as_of_c, later))
+
     # --- no scheduler, no wall-clock read anywhere in composition.py
-    # itself, except through an explicit --as-of passed to the feeds
-    # module (spec.md's own acceptance wording) -- neither converter this
-    # section calls even takes one: ico's build and the feeds module's
-    # threat subcommand are both timeless, and an "eol" parent kind does
-    # not exist in the party artefact schema at all ---
+    # itself, except through an explicit --as-of the CALLER hands in (ticket
+    # 84: the eol converter's --as-of and the supersede ramp both take the
+    # composition's own date, the newest published_at among the pinned feeds
+    # or the CLI's --as-of, never a clock this module reads) ---
     # Import statements in the real, load-bearing code above selfcheck(),
     # not prose or this very check's own forbidden-token list (both would
     # otherwise match themselves) -- composition.py never gained the
