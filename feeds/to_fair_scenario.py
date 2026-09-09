@@ -317,14 +317,32 @@ def selfcheck():
             for inst in payload["institutions"]:
                 mine = threat_scenario(payload, inst)
                 theirs = pub.threat_scenario(payload, inst)
-                assert mine == theirs, (path, inst, mine, theirs)
+                if mine != theirs:
+                    # Review F7: a named refusal, not a tuple dump. A reader has
+                    # to be able to see WHICH field drifted without re-running it.
+                    fields = sorted(k for k in set(mine) | set(theirs)
+                                    if mine.get(k) != theirs.get(k))
+                    detail = "; ".join(
+                        f"{k}: this copy says {mine.get(k)!r}, the publisher's says "
+                        f"{theirs.get(k)!r}" for k in fields)
+                    raise AssertionError(
+                        f"{os.path.relpath(path, root)} institutions.{inst}: this FALLBACK copy "
+                        f"and the publisher's own threat-register converter no longer agree, so "
+                        f"a composition against a pre-move feeds checkout would price something "
+                        f"the publisher does not publish. Fields that differ -- {detail}")
                 agreed += 1
         assert agreed >= 9, f"only compared {agreed} scenarios against the publisher's converter"
         print(f"ok  this fallback copy and the publisher's own threat-register converter agree "
-              f"byte-for-byte on all {agreed} published (version, institution) scenarios")
+              f"byte-for-byte on all {agreed} published (version, institution) scenarios. WHAT "
+              f"THIS RESTS ON (review F7): this selfcheck, run by hand or by "
+              f"compose/verify-composition.sh in a checkout that has a feeds tree beside it. No "
+              f"workflow in this repository runs it and no CI job clones feeds beside platform, "
+              f"so nothing automated asserts the agreement today")
     else:
-        print(f"ok  no feeds checkout beside this one, so the fallback copy could not be compared "
-              f"with the publisher's own converter (a named absence, not a pass about it)")
+        print(f"ok  no feeds checkout at {os.path.relpath(feeds_converter, root)}, so the "
+              f"fallback copy could NOT be compared with the publisher's own converter. A named "
+              f"absence and not a pass about it: on this run nothing checked that the two agree "
+              f"(review F7)")
 
     assert checked >= 9, f"expected to check every feed-version x entry, only checked {checked}"
     print(f"ok  {checked} feed entries valid (lo<=mode<=hi); headline pick deterministic and "

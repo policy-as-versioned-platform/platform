@@ -3143,7 +3143,8 @@ ORDINAL_BASIS = (
 
 
 def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
-                       reporting_currency: str) -> dict | None:
+                       reporting_currency: str, as_of: str | None = None,
+                       parent_trees: dict[str, Path] | None = None) -> dict | None:
     """THE AGGREGATE BESIDE THE BAND (eco-system ticket 79 item 9).
 
     `appetite.tolerance` is ONE quantity: an annual aggregate under the adopter's
@@ -3178,17 +3179,51 @@ def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
         residuals.append({"perspective": e["perspective"], "currency": e["currency"],
                            "amount": cage.caged_residual(e["amount"], tier),
                            "name": name, "tier": tier})
-    if not residuals:
-        return None
-    total = _sum_prices(residuals, adopter_party, reporting_currency)
+    # Review F8: a book in which EVERY line is untiered used to return None here,
+    # which threw the names away in the one case where naming them matters most --
+    # there is then no total at all to read the band against, and composition's
+    # own red fired on the wrong ground. The section is returned with a zero
+    # total and `not_tiered` populated.
+    total = _sum_prices(residuals, adopter_party, reporting_currency) if residuals else 0.0
     tolerance = band.get("amount") if band else None
+    band_currency = (band.get("currency") or reporting_currency) if band else None
+
+    # REVIEW F3: THE BAND IS NOT SILENTLY RELABELLED. `exposure_section`'s own
+    # attachment carries the band amount WITH its currency for exactly this
+    # reason, and ADR-0020 names an unconverted cross-currency comparison as the
+    # missing-instrument case. `total > float(tolerance)` compared a GBP total
+    # against a USD tolerance and returned a verdict, and the handbook then
+    # printed "70,000.00 GBP against a tolerance of 40,000.00 USD -- BREACHES".
+    # It is reachable on this ticket's own next step: the ludlow candidate's
+    # public record is in USD. So the tolerance is CONVERTED through the signed
+    # FX feed, the same way every other crossing amount in this module is, and
+    # where no rate can be read the verdict is None with a named could-not-look --
+    # never a comparison of two currencies.
+    breaches, converted, could_not_look = None, None, None
+    if tolerance is not None:
+        if band_currency == reporting_currency:
+            breaches = total > float(tolerance)
+        else:
+            try:
+                converted, _fx = _converted(float(tolerance), band_currency,
+                                             reporting_currency, as_of, parent_trees)
+                breaches = total > converted
+            except Refused as exc:
+                could_not_look = (
+                    f"the appetite is declared in {band_currency} and this exposure is in "
+                    f"{reporting_currency}, and no signed FX rate could be read to compare them "
+                    f"({exc}). An unconverted cross-currency comparison is a missing instrument "
+                    f"(ADR-0020), so no verdict is given: both amounts are printed with their "
+                    f"own currencies and neither is relabelled")
     return {
         "perspective": adopter_party,
         "currency": reporting_currency,
         "selected_tier_residual_total": total,
         "tolerance": tolerance,
-        "tolerance_currency": (band.get("currency") or reporting_currency) if band else None,
-        "breaches_band": (None if tolerance is None else total > float(tolerance)),
+        "tolerance_currency": band_currency,
+        "tolerance_in_reporting_currency": converted,
+        "breaches_band": breaches,
+        "could_not_look": could_not_look,
         "lines": [{"name": r["name"], "tier": r["tier"], "residual": r["amount"]}
                    for r in residuals],
         "not_tiered": untiered,
@@ -3200,12 +3235,18 @@ def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
             "refusal: there is no gate (ADR-0020), a breach is priced and shown."
             + (" Lines carrying no selected tier and therefore not in this total: "
                + ", ".join(untiered) + "." if untiered else
-               " Every priced line carries a selected tier.")),
+               " Every priced line carries a selected tier.")
+            + (f" The appetite is declared in {band_currency} and converted to "
+               f"{reporting_currency} through the signed FX feed before the comparison: "
+               f"{tolerance:,.2f} {band_currency} = {converted:,.2f} {reporting_currency}."
+               if converted is not None else "")
+            + (f" NO VERDICT: {could_not_look}." if could_not_look else "")),
     }
 
 
 def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
-                      reporting_currency: str) -> dict | None:
+                      reporting_currency: str, as_of: str | None = None,
+                      parent_trees: dict[str, Path] | None = None) -> dict | None:
     """The adopter's own signed exposure: what it is on the hook for, under its
     own perspective and currency, its appetite as the attachment, and the
     breakdown by regime name and control id -- enough for an insurer to price a
@@ -3258,7 +3299,8 @@ def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
         "ordinal": ORDINAL_STATEMENT,
         "ordinal_basis": ORDINAL_BASIS,
         # The aggregate beside the band (eco-system ticket 79 item 9).
-        "aggregate": aggregate_section(prices, adopter_party, band, reporting_currency),
+        "aggregate": aggregate_section(prices, adopter_party, band, reporting_currency,
+                                        as_of, parent_trees),
         "regimes": lines,
     }
 
@@ -3803,7 +3845,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # What this party is on the hook for, signed under its own tag beside the
     # cage it bought (ticket 36; ticket 14 answer 2). Computed here because
     # its total is also the base an ungoverned namespace takes its share of.
-    exposure = exposure_section(prices, adopter_party, band, reporting)
+    exposure = exposure_section(prices, adopter_party, band, reporting, as_of, parent_trees)
     price_ungoverned(ungoverned_entries, adopter_dir, adopter_party, reporting,
                      exposure["total"] if exposure else None,
                      _composition_as_of(edges, parent_trees, as_of))
@@ -4616,8 +4658,44 @@ def selfcheck() -> None:
         for r in _t79_reds:
             print("FAIL (e) " + r)
         raise AssertionError("%d ticket-79 exposure case(s) red" % len(_t79_reds))
-    print("OK (e) driftwood's exposure section carries the ordinal statement on its total and "
-          "the aggregate of its selected-tier residuals beside the band")
+    # REVIEW F3 and F8, planted: a tolerance in ANOTHER currency must not be
+    # compared with this total, and a book where every line is untiered must
+    # still name them.
+    _t79_prices = [dict(e) for e in document["prices"] if e["kind"] in EXPOSURE_KINDS]
+    _t79_usd = aggregate_section(_t79_prices, "driftwood",
+                                  {"amount": 40000.0, "currency": "USD"}, "GBP",
+                                  as_of=None, parent_trees=parent_trees)
+    assert _t79_usd["breaches_band"] is None, (
+        "an appetite of 40,000.00 USD was compared with a %.2f GBP total and returned "
+        "breaches_band=%r -- two currencies, no rate, a verdict (review F3)"
+        % (_t79_usd["selected_tier_residual_total"], _t79_usd["breaches_band"]))
+    assert _t79_usd["could_not_look"] and "USD" in _t79_usd["could_not_look"], _t79_usd
+    assert _t79_usd["tolerance_currency"] == "USD" and _t79_usd["tolerance"] == 40000.0, _t79_usd
+    # ...and WITH a signed rate for the date, it converts and does compare.
+    _t79_dated = aggregate_section(_t79_prices, "driftwood",
+                                   {"amount": 40000.0, "currency": "USD"}, "GBP",
+                                   as_of="2026-08-15", parent_trees=parent_trees)
+    assert _t79_dated["tolerance_in_reporting_currency"] is not None, _t79_dated
+    assert _t79_dated["breaches_band"] is True, _t79_dated
+    _t79_bare = aggregate_section([{**e, "proposed_tier": None} for e in _t79_prices],
+                                   "driftwood", {"amount": 40000.0, "currency": "GBP"}, "GBP")
+    assert _t79_bare is not None and _t79_bare["selected_tier_residual_total"] == 0.0, _t79_bare
+    assert len(_t79_bare["not_tiered"]) == len(_t79_prices), _t79_bare
+    print("OK (F3) an appetite declared in USD against a GBP exposure is CONVERTED through the "
+          "signed FX feed (40,000.00 USD = %.2f GBP at 2026-08-15, breaches_band=True), and with "
+          "no rate for the date there is no verdict at all: breaches_band=None and a named "
+          "could-not-look, never a comparison of two currencies. (F8) a book whose every line is "
+          "untiered still returns a section, naming all %d of them."
+          % (_t79_dated["tolerance_in_reporting_currency"], len(_t79_bare["not_tiered"])))
+    _agg = exposure["aggregate"]
+    print("OK (e) driftwood's exposure.total of %.2f %s says what it is (%r), and the aggregate "
+          "of its %d selected-tier residuals is %.2f %s against a tolerance of %.2f %s: "
+          "breaches_band=%r%s"
+          % (exposure["total"], exposure["currency"], exposure["ordinal"],
+             len(_agg["lines"]), _agg["selected_tier_residual_total"], _agg["currency"],
+             _agg["tolerance"], _agg["tolerance_currency"], _agg["breaches_band"],
+             "" if not _agg["not_tiered"] else
+             " (not tiered, so not in the total: %s)" % ", ".join(_agg["not_tiered"])))
 
     # ======================================================================
     # eco-system ticket 69: an untagged pin is a priced hole

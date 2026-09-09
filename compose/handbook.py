@@ -413,14 +413,23 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
         agg = exposure.get("aggregate")
         if isinstance(agg, dict) and agg.get("selected_tier_residual_total") is not None:
             breach = agg.get("breaches_band")
+            cnl = agg.get("could_not_look")
+            # Review F3: no verdict where the two amounts are in two currencies
+            # and no signed rate could be read. This page renders what the
+            # artefact says; where the artefact declines to compare, so does it.
             verdict = ("BREACHES the declared aggregate" if breach
                        else "within the declared aggregate" if breach is False
+                       else f"NO VERDICT -- {cnl}" if cnl
                        else "no aggregate tolerance is declared to compare it with")
+            converted = agg.get("tolerance_in_reporting_currency")
+            shown = _money(agg.get("tolerance"),
+                            agg.get("tolerance_currency") or exposure["currency"])
+            if converted is not None:
+                shown += (f" (= {_money(converted, agg.get('currency', exposure['currency']))} "
+                          f"through the signed FX feed)")
             a(f"- Aggregate of the selected-tier residuals: "
               f"{_money(agg['selected_tier_residual_total'], agg.get('currency', exposure['currency']))} "
-              f"against a tolerance of "
-              f"{_money(agg.get('tolerance'), agg.get('tolerance_currency') or exposure['currency'])} "
-              f"-- {verdict}.")
+              f"against a tolerance of {shown} -- {verdict}.")
             for ln in agg.get("lines") or []:
                 a(f"  - `{ln.get('name')}` at tier `{ln.get('tier')}`: "
                   f"{_money(ln.get('residual'), agg.get('currency', exposure['currency']))}")
