@@ -3200,7 +3200,23 @@ def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
     # where no rate can be read the verdict is None with a named could-not-look --
     # never a comparison of two currencies.
     breaches, converted, could_not_look = None, None, None
-    if tolerance is not None:
+    # REVIEW N3: A PARTIAL SUM GIVES NO VERDICT. When a line carries no selected
+    # tier its residual is deliberately not in this total, so the boolean would be
+    # computed from a number that excludes it and would read False -- "within the
+    # declared aggregate" -- however large the excluded line is. Measured: a
+    # 10,000 tiered line and a 50,000,000 UNTIERED line against a 40,000 band gave
+    # total 7,000.00, not_tiered ['huge'], breaches_band False, and the handbook
+    # rendered "within the declared aggregate". This function's own docstring
+    # already said "while any line is unnamed the aggregate says so rather than
+    # under-reporting"; the boolean now matches the prose, the same way F3's
+    # cross-currency case does eight lines below.
+    if untiered:
+        could_not_look = (
+            f"{len(untiered)} of {len(lines)} priced line(s) carry no selected tier and are "
+            f"therefore not in this total ({', '.join(untiered)}), so the total is a PARTIAL sum "
+            f"and no verdict can be given against the declared aggregate: a partial sum reads "
+            f"'within the band' however large the excluded lines are")
+    elif tolerance is not None:
         if band_currency == reporting_currency:
             breaches = total > float(tolerance)
         else:
@@ -4681,6 +4697,24 @@ def selfcheck() -> None:
                                    "driftwood", {"amount": 40000.0, "currency": "GBP"}, "GBP")
     assert _t79_bare is not None and _t79_bare["selected_tier_residual_total"] == 0.0, _t79_bare
     assert len(_t79_bare["not_tiered"]) == len(_t79_prices), _t79_bare
+    # REVIEW N3: a PARTIAL sum gives no verdict. One small tiered line and one
+    # enormous untiered one used to read `breaches_band: False`.
+    _t79_partial = aggregate_section(
+        [{"source": "p", "kind": "feed", "name": "small", "perspective": "driftwood",
+          "currency": "GBP", "amount": 10_000.0, "proposed_tier": "baseline"},
+         {"source": "p", "kind": "feed", "name": "huge", "perspective": "driftwood",
+          "currency": "GBP", "amount": 50_000_000.0}],
+        "driftwood", {"amount": 40000.0, "currency": "GBP"}, "GBP")
+    assert _t79_partial["breaches_band"] is None, (
+        "a total of %.2f that EXCLUDES an untiered line of 50,000,000.00 was compared with a "
+        "40,000.00 band and returned breaches_band=%r -- a partial sum reads 'within the "
+        "declared aggregate' however large the excluded line is (review N3)"
+        % (_t79_partial["selected_tier_residual_total"], _t79_partial["breaches_band"]))
+    assert _t79_partial["could_not_look"] and "huge" in _t79_partial["could_not_look"], _t79_partial
+    print("OK (N3) a total that excludes an untiered line gives NO VERDICT against the aggregate: "
+          "10,000.00 tiered + 50,000,000.00 untiered against a 40,000.00 band returns "
+          "%.2f with breaches_band=None and a could-not-look naming `huge`, not the False it "
+          "used to return" % _t79_partial["selected_tier_residual_total"])
     print("OK (F3) an appetite declared in USD against a GBP exposure is CONVERTED through the "
           "signed FX feed (40,000.00 USD = %.2f GBP at 2026-08-15, breaches_band=True), and with "
           "no rate for the date there is no verdict at all: breaches_band=None and a named "

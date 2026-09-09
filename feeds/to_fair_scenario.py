@@ -334,10 +334,13 @@ def selfcheck():
         assert agreed >= 9, f"only compared {agreed} scenarios against the publisher's converter"
         print(f"ok  this fallback copy and the publisher's own threat-register converter agree "
               f"byte-for-byte on all {agreed} published (version, institution) scenarios. WHAT "
-              f"THIS RESTS ON (review F7): this selfcheck, run by hand or by "
-              f"compose/verify-composition.sh in a checkout that has a feeds tree beside it. No "
-              f"workflow in this repository runs it and no CI job clones feeds beside platform, "
-              f"so nothing automated asserts the agreement today")
+              f"THIS RESTS ON (review F7, corrected by review N5): the runner is the FEEDS "
+              f"repository's own `verify-feeds.sh`, which invokes this selfcheck; the hub's gate "
+              f"manifest carries `.estate-clone/platform/feeds/verify-feeds.sh`, and "
+              f".estate-clone always holds a feeds tree beside platform, so the agreement IS "
+              f"asserted on every full-estate gate run. What still does not assert it is "
+              f"PLATFORM's own CI: no workflow in this repository runs this selfcheck and none "
+              f"clones feeds beside it")
     else:
         print(f"ok  no feeds checkout at {os.path.relpath(feeds_converter, root)}, so the "
               f"fallback copy could NOT be compared with the publisher's own converter. A named "
