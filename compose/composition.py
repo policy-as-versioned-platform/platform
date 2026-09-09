@@ -4495,6 +4495,43 @@ def selfcheck() -> None:
           % (exposure["total"], exposure["currency"], len(exposure["regimes"])))
 
     # ======================================================================
+    # eco-system ticket 79 items 9 and 10 -- planted, before the logic changed
+    # ======================================================================
+    # 10. THE ORDINAL STATEMENT ON EVERY TOTAL. Ticket 75 Q4 (a): the GBP is an
+    #     ordinal, auditable comparison instrument under one perspective, and
+    #     every artefact that shows a total says so. It goes in the COMPOSER, so
+    #     it lands on every adopter the next signed tag composes -- not into any
+    #     adopter's already-rendered tree.
+    _t79_reds = []
+    if not (exposure.get("ordinal") or "").strip():
+        _t79_reds.append(
+            "exposure.total of %.2f %s carries no `ordinal` statement: nothing on the artefact "
+            "says the number is an ordinal, auditable comparison under one perspective and not "
+            "an expected annual loss (eco-system ticket 79 item 10, ticket 75 Q4)"
+            % (exposure["total"], exposure["currency"]))
+    # 9.  THE AGGREGATE BESIDE THE BAND. `appetite.tolerance` is ONE annual
+    #     aggregate quantity (ticket 75 Q4, folded). The ladder picks a tier per
+    #     LINE against that one number, so N lines each inside the band can
+    #     breach it together and nothing on the artefact shows it.
+    _t79_agg = exposure.get("aggregate")
+    if not isinstance(_t79_agg, dict):
+        _cage_t79 = _cage_engine()
+        _want = sum(_cage_t79.caged_residual(e["amount"], e.get("proposed_tier"))
+                     for e in priced if e.get("proposed_tier"))
+        _t79_reds.append(
+            "the exposure section records no `aggregate`: driftwood's %d priced lines each "
+            "picked a tier against a band of %.2f %s, and the sum of the residuals those tiers "
+            "leave is %.2f %s -- a breach of the one annual aggregate the appetite declares is "
+            "not visible anywhere on the artefact (eco-system ticket 79 item 9)"
+            % (len(priced), band["amount"], band["currency"], _want, exposure["currency"]))
+    if _t79_reds:
+        for r in _t79_reds:
+            print("FAIL (e) " + r)
+        raise AssertionError("%d ticket-79 exposure case(s) red" % len(_t79_reds))
+    print("OK (e) driftwood's exposure section carries the ordinal statement on its total and "
+          "the aggregate of its selected-tier residuals beside the band")
+
+    # ======================================================================
     # eco-system ticket 69: an untagged pin is a priced hole
     # ======================================================================
     # The real insurer clone carries its signed v1.x.y tag, so the real

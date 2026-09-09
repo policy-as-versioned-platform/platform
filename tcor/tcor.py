@@ -14,9 +14,21 @@ is cheapest — the crossover is *computed*, not asserted as "best practice":
                 ALE, ~0); pay an engineering spend C_fix. TCoR = residual_fixed + C_fix.
   * cage      — retain-with-mitigation (../graded/cage.py): the £ picks the loosest tier
                 whose caged residual fits the band; residual R'>0 + cage run-cost C_cage.
-  * transfer  — cede the exposure to a carrier. Premium priced off the residual the same
-                way a cyber underwriter prices it (expected loss + insurer load); you keep
-                the deductible. TCoR = premium + deductible.
+  * transfer  — cede the exposure ABOVE the deductible to a carrier. The deductible
+                partitions ONE loss distribution: the carrier is paid for the part above it
+                and the insured carries the part below it.
+                    premium  = (1 + load) x E[max(L - D, 0)]
+                    residual = E[min(L, D)]
+                    TCoR     = residual + premium
+                Eco-system ticket 79 item 8 corrected this. It used to read
+                `premium = (1 + load) x E[L]` with `residual = D`, so the loss below the
+                deductible was charged into the premium AND booked again as the residual,
+                and TCoR rose by exactly D for every pound of retention bought. On the
+                planted case in the selfcheck that was GBP 263,536.46 against the
+                GBP 193,625.82 the partition gives, and a deductible raised from GBP 1,000
+                to GBP 80,000 left the premium unmoved at GBP 213,536.46. A deductible that
+                cannot make cover cheaper is not a deductible, and the four-move crossover
+                this module exists to compute was rigged against transfer.
   * deny      — the bottom rung. Close the loss path at admission; residual -> deny-ALE,
                 pay the lost-business friction C_deny. TCoR = residual_deny + C_deny.
 
@@ -63,8 +75,26 @@ INF = float("inf")
 
 
 # --- one risk's four moves ----------------------------------------------------
+def _losses(triples):
+    """The annual loss list itself. `_ale` is its mean; a transfer needs the
+    list, because a deductible partitions each YEAR's loss and not the mean."""
+    return fair.simulate(triples["lef"], triples["lm"])
+
+
 def _ale(triples):
-    return fair.summarize(fair.simulate(triples["lef"], triples["lm"]))["ale"]
+    return fair.summarize(_losses(triples))["ale"]
+
+
+def split_at_deductible(losses, deductible):
+    """One loss distribution, partitioned by the deductible (eco-system ticket 79
+    item 8). Returns (E[min(L, D)], E[max(L - D, 0)]) -- what the insured carries
+    and what the carrier is paid to carry. They sum to E[L] by construction, so
+    nothing is charged twice and nothing falls between them."""
+    d = float(deductible)
+    n = len(losses) or 1
+    below = sum(min(float(x), d) for x in losses) / n
+    above = sum(max(float(x) - d, 0.0) for x in losses) / n
+    return below, above
 
 
 def moves(risk, tolerance):
@@ -81,7 +111,8 @@ def moves(risk, tolerance):
                       ONE risk a cheaper control makes cheaper, not to every caged workload in the
                       estate. Defaults to 1.0 (no discount) for every risk that does not set it.
     """
-    ale_warn = _ale(fair.state(risk, "warn"))
+    warn_losses = _losses(fair.state(risk, "warn"))
+    ale_warn = fair.summarize(warn_losses)["ale"]
     ale_deny = _ale(fair.state(risk, "deny"))
     behind = risk["behind"] if "behind" in risk else risk["warn"]
     ale_behind = _ale(behind)
@@ -113,9 +144,20 @@ def moves(risk, tolerance):
     else:
         ct = cage.tcor(ale_behind, tier)
         out["cage"] = {**line(ct["residual"], ct["cost_of_controls"] * cage_discount, 0.0), "tier": tier}
-    # transfer — premium priced off the residual (expected loss + insurer load); keep the deductible.
-    premium = ale_warn * (1.0 + load)
-    out["transfer"] = line(deductible, 0.0, premium)
+    # transfer — the deductible partitions ONE loss distribution (eco-system
+    # ticket 79 item 8). The carrier is paid the loaded expected loss ABOVE it;
+    # the insured carries the expected loss BELOW it. E[below] + E[above] = E[L],
+    # so no pound is counted twice and none is dropped. `deductible` is a CONTRACT
+    # TERM, not a residual: the residual is what that term actually costs.
+    retained, ceded = split_at_deductible(warn_losses, deductible)
+    premium = ceded * (1.0 + load)
+    out["transfer"] = line(retained, 0.0, premium)
+    out["transfer"]["deductible"] = float(deductible)
+    out["transfer"]["ceded_expected_loss"] = ceded
+    out["transfer"]["basis"] = (
+        "premium = (1 + load %.2f) x E[max(L - D, 0)] over %d simulated years, D = %.2f; "
+        "residual = E[min(L, D)]. The two partition E[L] = %.2f exactly."
+        % (load, len(warn_losses), float(deductible), ale_warn))
     # deny — bottom rung: close the path, pay the lost-business friction.
     out["deny"] = line(ale_deny, c_deny, 0.0)
     return out
@@ -340,14 +382,13 @@ def ticket79_cases(tolerance):
         want_premium = (1.0 + load) * e_above
         want_tcor = e_below + want_premium
         told.append(
-            "    transfer, deductible GBP %,.2f: E[loss] GBP %,.2f = E[below] GBP %,.2f + "
-            "E[above] GBP %,.2f".replace(",", "") % (d, e_total, e_below, e_above))
+            "    transfer, deductible GBP %.2f: E[loss] GBP %.2f = E[below] GBP %.2f + "
+            "E[above] GBP %.2f" % (d, e_total, e_below, e_above))
         told.append(
-            "    OLD rule: premium GBP %.2f = (1 + %.2f) x E[loss], residual GBP %.2f = the "
-            "deductible itself, TCoR GBP %.2f" % (m["transfer_premium"], load, m["residual"],
-                                                   m["tcor"]))
+            "    observed:       premium GBP %.2f, residual GBP %.2f, TCoR GBP %.2f"
+            % (m["transfer_premium"], m["residual"], m["tcor"]))
         told.append(
-            "    NEW rule: premium GBP %.2f = (1 + %.2f) x E[above], residual GBP %.2f = "
+            "    partition rule: premium GBP %.2f = (1 + %.2f) x E[above], residual GBP %.2f = "
             "E[below], TCoR GBP %.2f" % (want_premium, load, e_below, want_tcor))
         assert abs(m["transfer_premium"] - want_premium) < 0.01, (
             "the transfer premium is GBP %.2f, which is (1 + %.2f) x E[TOTAL loss] GBP %.2f. "
