@@ -3122,6 +3122,87 @@ EXPOSURE_REGIMES = {"penalty-schema": ICO_REGIME}
 # emitted yet.
 EXPOSURE_KINDS = ("feed", "twin")
 
+# WHAT THE NUMBER IS (eco-system ticket 79 item 10; ticket 75 Q4, answered (a) on
+# 2026-09-02). The GBP this estate prints is an ordinal, auditable comparison
+# instrument under ONE perspective. It is not an expected annual loss, it is not
+# a reserve, and it is not a forecast. It goes on every total the composer
+# renders, in the COMPOSER, so it lands on every adopter the next signed tag
+# composes and no adopter's tree has to be hand-edited to carry it.
+ORDINAL_STATEMENT = ("an ordinal, auditable comparison under one perspective; not an expected "
+                      "annual loss")
+ORDINAL_BASIS = (
+    "Every figure under this section is derived from published feeds through published "
+    "converters, and is reproducible from the signed inputs named beside it -- that is what "
+    "AUDITABLE means here. What it is NOT: the loss-event frequencies and several loss "
+    "magnitudes it rests on are editorial bands carrying a named could-not-look rather than "
+    "counted rates (ico penalty-schema major 4, feeds threat-register major 3), so the total is "
+    "usable for COMPARING one version, one pin or one control set against another under this "
+    "one perspective, and not as a number to reserve against. Totals under two different "
+    "perspectives are two balance sheets and are never added (ADR-0021). Ticket 75 Q4 (a), "
+    "eco-system ticket 79 item 10.")
+
+
+def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
+                       reporting_currency: str) -> dict | None:
+    """THE AGGREGATE BESIDE THE BAND (eco-system ticket 79 item 9).
+
+    `appetite.tolerance` is ONE quantity: an annual aggregate under the adopter's
+    own perspective (ticket 75 Q4, folded). But the cage ladder selects a tier
+    PER LINE against that one number, so N lines each comfortably inside the band
+    can breach it together and nothing on the artefact shows it. Measured on
+    driftwood the day this was written: three priced lines, a band of GBP 40,000,
+    and the residuals their selected tiers leave summing to GBP 87,387.45 -- a
+    2.2x breach of the declared aggregate that no signed artefact stated.
+
+    So: the sum of the SELECTED-TIER residuals, through the estate's one summing
+    helper so it refuses rather than sums if a perspective or a currency ever
+    crosses, printed beside the band with the arithmetic that produced it and a
+    plain `breaches_band` boolean.
+
+    It is NOT a refusal. There is no gate (ADR-0020, ticket 75 Q5): a breach of
+    the aggregate is priced and shown, never denied. A line with no selected tier
+    is named, not silently dropped, and while any line is unnamed the aggregate
+    says so rather than under-reporting.
+    """
+    lines = [e for e in prices if e.get("kind") in EXPOSURE_KINDS]
+    if not lines:
+        return None
+    cage = _cage_engine()
+    residuals, untiered = [], []
+    for e in lines:
+        tier = e.get("proposed_tier")
+        name = e.get("name") or e["kind"]
+        if not tier:
+            untiered.append(name)
+            continue
+        residuals.append({"perspective": e["perspective"], "currency": e["currency"],
+                           "amount": cage.caged_residual(e["amount"], tier),
+                           "name": name, "tier": tier})
+    if not residuals:
+        return None
+    total = _sum_prices(residuals, adopter_party, reporting_currency)
+    tolerance = band.get("amount") if band else None
+    return {
+        "perspective": adopter_party,
+        "currency": reporting_currency,
+        "selected_tier_residual_total": total,
+        "tolerance": tolerance,
+        "tolerance_currency": (band.get("currency") or reporting_currency) if band else None,
+        "breaches_band": (None if tolerance is None else total > float(tolerance)),
+        "lines": [{"name": r["name"], "tier": r["tier"], "residual": r["amount"]}
+                   for r in residuals],
+        "not_tiered": untiered,
+        "basis": (
+            "The sum of what each priced line's OWN selected tier leaves, through "
+            "fair.sum_prices, against the ONE annual-aggregate quantity appetite.tolerance "
+            "declares (ticket 75 Q4). The ladder picks a tier per line against that number, so "
+            "lines that each fit can breach it together; this is where that shows. Not a "
+            "refusal: there is no gate (ADR-0020), a breach is priced and shown."
+            + (" Lines carrying no selected tier and therefore not in this total: "
+               + ", ".join(untiered) + "." if untiered else
+               " Every priced line carries a selected tier.")),
+    }
+
 
 def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
                       reporting_currency: str) -> dict | None:
@@ -3171,6 +3252,13 @@ def exposure_section(prices: list[dict], adopter_party: str, band: dict | None,
                         if band else None),
         "total": _sum_prices([e for e in prices if e.get("kind") in EXPOSURE_KINDS],
                               adopter_party, reporting_currency),
+        # WHAT THE NUMBER IS. On the section that carries the totals, so no
+        # reader of `total` or of `aggregate` can reach one without the other
+        # (eco-system ticket 79 item 10).
+        "ordinal": ORDINAL_STATEMENT,
+        "ordinal_basis": ORDINAL_BASIS,
+        # The aggregate beside the band (eco-system ticket 79 item 9).
+        "aggregate": aggregate_section(prices, adopter_party, band, reporting_currency),
         "regimes": lines,
     }
 
@@ -6073,8 +6161,19 @@ def selfcheck() -> None:
                       _real_parent_trees()[edge["party"]]).read_text(), record
     # The threat register's publisher ships no converter of its own: composition
     # falls back to platform's copy, and the record says whose copy priced it.
-    assert json.loads(vendored["composed/feeds/feeds/v2/PROVENANCE.json"])["converter_from"] \
-        == "platform", vendored["composed/feeds/feeds/v2/PROVENANCE.json"]
+    # WHOSE converter priced it. Eco-system ticket 79 item 4 moved the threat
+    # register's converter to its publisher, so this is now derived from what is
+    # on the feeds checkout rather than asserted as a constant: a feeds tree that
+    # ships `threat-register/to_fair_scenario.py` prices with the PUBLISHER's copy
+    # and the record must say `feeds`; one from before the move falls back to
+    # platform's and the record must say `platform`. Either way the record and the
+    # disk agree, which is the property that matters.
+    _tr_record = json.loads(vendored["composed/feeds/feeds/v2/PROVENANCE.json"])
+    _tr_publisher_ships = (Path(parent_trees["feeds"]) / "threat-register"
+                            / "to_fair_scenario.py").exists()
+    assert _tr_record["converter_from"] == ("feeds" if _tr_publisher_ships else "platform"), (
+        _tr_record["converter_from"], _tr_publisher_ships,
+        vendored["composed/feeds/feeds/v2/PROVENANCE.json"])
     # A quote feed is priced without a converter at all, so none is vendored --
     # a named absence, never an empty file that pretends to be one.
     assert json.loads(vendored["composed/feeds/insurer/v1/PROVENANCE.json"])["converter"] is None
