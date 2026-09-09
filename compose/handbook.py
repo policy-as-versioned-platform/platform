@@ -826,10 +826,39 @@ def selfcheck() -> int:
           "selection-policy" in thin)
     import re as _re
     declared = _re.search(r"\*\*(\d+) field\(s\) this render looked for", thin)
-    listed = [ln for ln in thin.splitlines() if ln.startswith("- `") and "` (in `" in ln]
-    standing = len([ln for ln in page.splitlines() if ln.startswith("- `") and "` (in `" in ln])
+
+    def _absences(text):
+        """The field names an absence list actually carries, in the order it carries them."""
+        return [ln.split("`")[1] for ln in text.splitlines()
+                if ln.startswith("- `") and "` (in `" in ln]
+
+    listed = _absences(thin)
+    standing = _absences(page)
+    # Deleting `exposure` and `selection-policy` from the header does two things, and the
+    # expectation is derived from both rather than from a constant. It NAMES those two. And it
+    # withdraws every absence that was a field UNDER exposure -- `exposure.ordinal` and
+    # `exposure.aggregate` are not fields this render looked for once their parent is gone, and
+    # naming a child of an absent parent would state the artefact is missing something it was
+    # never asked for. A hard-coded `standing + 2` said the first half and assumed the second
+    # was empty; ticket 79 added two absences under `exposure` and the arithmetic went red for a
+    # render that was behaving correctly. Compare the names, not the count.
+    expected = sorted(set(n for n in standing if not n.startswith("exposure."))
+                      | {"exposure", "selection-policy"})
     check("the absences are counted, and the count is the number listed",
-          declared is not None and int(declared.group(1)) == len(listed) == standing + 2)
+          declared is not None and int(declared.group(1)) == len(listed)
+          and sorted(listed) == expected)
+    # Both lists above come out of the same render, so a field NAMED WRONG IN BOTH is invisible
+    # to that comparison -- measured: renaming `prices[1].lef_basis` to `prices[8].lef_basis`
+    # moved both lists together and the check stayed green. The fixture's own absences are
+    # therefore stated here by name. Adding one to the render is then a deliberate two-place
+    # edit, which is what ticket 79's two new `exposure.*` absences were not.
+    check("the fixture page names exactly the absences this file states it names",
+          sorted(standing) == sorted([
+              "exposure.aggregate",
+              "exposure.ordinal",
+              "prices[1].lef_basis",
+              "prices[3].amount",
+          ]))
     check("the footer repeats the same count",
           f"{len(listed)} named absence(s)" in thin)
 
