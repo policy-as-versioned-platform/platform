@@ -7,8 +7,13 @@ consumes -- bumping a feed version is the whole diff needed to move the £; no
 change to fair.py itself.
 
 Three feeds:
-  threat  institution threat register -> lef straight from the feed, lm editorial
-          per-institution (matches driftwood-cart-pii.json's lm band).
+  threat  institution threat register -> lef AND lm straight from the publisher's
+          own payload from major 3 (eco-system ticket 79 item 4). Before major 3
+          the magnitude comes from FROZEN_LM_GBP here and every scenario says so
+          by name. The publisher now ships its own copy of this subcommand at
+          `threat-register/to_fair_scenario.py` in the feeds repository, which is
+          what composition uses; this one is the fallback for a feeds checkout
+          from before the move, and the selfcheck asserts the two agree.
   cve     trivy/GHSA-style feed -> lm from severity_lm_gbp, lef from epss
           (exploit-probability proxy) scaled onto an editorial annual event count.
   eol     endoflife.date-style feed -> lm/lef straight from the component's base
@@ -39,25 +44,102 @@ import sys
 
 DENY_LEF = (0, 0, 1)
 
-# Institution-editorial lm bands (impact per loss event), consistent with the
-# driftwood-cart-pii.json scenario already in the estate. ponytail: flat per
-# institution -- tune per-threat if a scenario ever needs it.
-THREAT_LM_GBP = {
+# THE MAGNITUDES MOVED (eco-system ticket 79 item 4, ticket 24).
+#
+# This table was an ADOPTER-KEYED map of impact per loss event, held HERE, in the
+# subscriber's own repository. So the platform carried a signed-looking number
+# about each institution that no publisher had published, that no subscriber
+# could re-derive from anything signed, and that a fourth adopter could not have
+# obtained at all. From `threat-register` payload major 3 the number is in the
+# PUBLISHER's payload (`institutions.<name>.lm_gbp`, with `lm_basis`) and the
+# converter that reads it is in the publisher's repository, at
+# `threat-register/to_fair_scenario.py` in the feeds repo -- which is the FIRST
+# place composition's `_converter()` looks, so a composition against any feeds
+# checkout that carries it uses the publisher's copy and not this one.
+#
+# This copy stays for one reason: a composition against a feeds checkout pinned
+# to a commit from BEFORE the move finds no converter in the publisher's tree and
+# falls back here. It must then price exactly what the publisher's copy prices,
+# and the selfcheck below asserts that against the real feeds checkout when there
+# is one. The table is FROZEN -- it gains no entry ever, because an entry added
+# here would be a number about an institution invented in the subscriber's code,
+# which is the whole defect.
+FROZEN_LM_GBP = {
     "driftwood": (1_000, 4_000, 9_000),
     "tuppence": (5_000, 25_000, 90_000),
     "ludlow": (20_000, 100_000, 400_000),
 }
+THREAT_LM_GBP = FROZEN_LM_GBP      # the name the estate's older callers know it by
+FROZEN_NOTE = (
+    "MAGNITUDE UNSOURCED: the impact per event {lm} {currency} is not in payload version "
+    "{version}, which predates the publisher's `lm_gbp` field; it is this converter's frozen "
+    "copy of the adopter-keyed table that used to live in the SUBSCRIBER's own code "
+    "(platform/feeds/to_fair_scenario.py THREAT_LM_GBP). From major 3 the number and its basis "
+    "are in the payload. A named could-not-look (eco-system ticket 79 item 4), never a bare "
+    "number.")
+
+
+def _triple(value, what: str, where: str) -> tuple:
+    if not (isinstance(value, (list, tuple)) and len(value) == 3):
+        sys.exit(f"{where}: {what} is {value!r}, not a (min, mode, max) triple")
+    lo, mode, hi = (float(x) for x in value)
+    if not lo <= mode <= hi:
+        sys.exit(f"{where}: {what} is {value!r}, which is not lo<=mode<=hi")
+    return (lo, mode, hi)
+
+
+def _basis_note(basis, what: str, where: str) -> str:
+    """A published number must say what it rests on. One the publisher signs and
+    cannot say the source of is a missing instrument (ADR-0020), never a cheaper
+    one -- so this refuses rather than annotating it away."""
+    if not isinstance(basis, dict) or not basis.get("statement") or not basis.get("as_of"):
+        sys.exit(f"{where}: publishes {what} with no basis carrying a `statement` and an "
+                 f"`as_of` date. Its basis belongs beside it in the payload "
+                 f"(eco-system ticket 79 item 4)")
+    note = (f"{what} basis ({basis.get('kind', 'unlabelled')}, read {basis['as_of']}): "
+            f"{basis['statement']}")
+    if basis.get("could_not_look"):
+        note += f" COULD NOT LOOK: {basis['could_not_look']}"
+    return note
 
 
 # --- threat register -----------------------------------------------------------
 def threat_scenario(feed: dict, institution: str) -> dict:
-    entry = feed["institutions"][institution]
-    lm = THREAT_LM_GBP.get(institution, (1_000, 5_000, 20_000))
-    lef = tuple(entry["lef"])
+    """Byte-for-byte the publisher's own `threat-register/to_fair_scenario.py`.
+    The selfcheck asserts the two agree on every published payload version, so
+    the fallback path cannot drift away from what the publisher ships."""
+    version = feed.get("feed_version", "unversioned")
+    currency = feed.get("currency") or "GBP"
+    institutions = feed.get("institutions") or {}
+    if institution not in institutions:
+        sys.exit(f"threat-register {version}: no institution {institution!r} in this payload "
+                 f"(it carries {sorted(institutions)})")
+    entry = institutions[institution]
+    where = f"threat-register {version}: institutions.{institution}"
+
+    lef = _triple(entry["lef"], "lef", where)
+    notes = [f"{entry['threat']} ({entry['flavour']})."]
+    if "lef_basis" in entry:
+        notes.append(_basis_note(entry["lef_basis"], "Frequency", where))
+    else:
+        notes.append(f"lef sourced from {entry['source']}.")
+
+    if "lm_gbp" in entry:
+        lm = _triple(entry["lm_gbp"], "lm_gbp", where)
+        notes.append(_basis_note(entry.get("lm_basis"), "Magnitude", where))
+    else:
+        if institution not in FROZEN_LM_GBP:
+            sys.exit(f"{where}: payload version {version} publishes no `lm_gbp`, and this "
+                     f"converter holds no frozen magnitude for {institution!r}. The magnitude "
+                     f"belongs in the publisher's payload from major 3 (eco-system ticket 79 "
+                     f"item 4); there is nothing here to price from (ADR-0020)")
+        lm = tuple(float(x) for x in FROZEN_LM_GBP[institution])
+        notes.append(FROZEN_NOTE.format(lm=lm, currency=currency, version=version))
+
     return {
-        "version": feed["feed_version"],
-        "name": f"threat-register:{feed['feed_version']} {institution}",
-        "note": f"{entry['threat']} ({entry['flavour']}). lef sourced from {entry['source']}.",
+        "version": version,
+        "name": f"threat-register:{version} {institution}",
+        "note": " ".join(notes),
         "warn": {"lef": list(lef), "lm": list(lm)},
         "deny": {"lef": list(DENY_LEF), "lm": list(lm)},
     }
@@ -216,6 +298,33 @@ def selfcheck():
     # four years on, old ramps 5.0 (capped): 5000 > big's 2000 -> the headline moved with --as-of
     assert "old@" in eol_scenario(eol_feed, None, "2024-01-01")["name"]
     checked += 4
+
+    # Eco-system ticket 79 item 4: this copy is the FALLBACK for a feeds checkout
+    # from before the move. It must price exactly what the publisher's own copy
+    # prices, so where a feeds checkout is present the two are run over the same
+    # payloads and compared. A checkout that is not there is a named absence.
+    feeds_converter = os.path.join(root, "..", "..", "feeds",
+                                    "threat-register", "to_fair_scenario.py")
+    if os.path.isfile(feeds_converter):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("feeds_threat_converter", feeds_converter)
+        pub = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pub)
+        agreed = 0
+        for path in sorted(glob.glob(os.path.join(
+                os.path.dirname(feeds_converter), "v*/feed.json"))):
+            payload = json.load(open(path))["payload"]
+            for inst in payload["institutions"]:
+                mine = threat_scenario(payload, inst)
+                theirs = pub.threat_scenario(payload, inst)
+                assert mine == theirs, (path, inst, mine, theirs)
+                agreed += 1
+        assert agreed >= 9, f"only compared {agreed} scenarios against the publisher's converter"
+        print(f"ok  this fallback copy and the publisher's own threat-register converter agree "
+              f"byte-for-byte on all {agreed} published (version, institution) scenarios")
+    else:
+        print(f"ok  no feeds checkout beside this one, so the fallback copy could not be compared "
+              f"with the publisher's own converter (a named absence, not a pass about it)")
 
     assert checked >= 9, f"expected to check every feed-version x entry, only checked {checked}"
     print(f"ok  {checked} feed entries valid (lo<=mode<=hi); headline pick deterministic and "

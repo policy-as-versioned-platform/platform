@@ -294,6 +294,102 @@ def cmd_selfcheck(_args):
         % (bs["tcor"], bs["residual"], bs["cost_of_controls"], bs["transfer_premium"],
            up, dn, jump, cheap["chosen"], crossed["chosen"])
     )
+    rc = ticket79_selfcheck(tol)
+    if rc:
+        sys.exit(rc)
+
+
+
+# --------------------------------------------------------------------------
+# eco-system ticket 79 item 8 -- planted cases, written before the logic
+# changed. The ticket's requirement: a transfer is priced as
+# `(1 + load) x E[loss ABOVE the deductible]`, with the retained part BELOW the
+# deductible as the residual. Every case is reported, not the first to fail.
+# --------------------------------------------------------------------------
+
+def _t79_risk(deductible, load=0.40):
+    return {"warn": {"lef": [1, 3, 6], "lm": [10_000, 40_000, 120_000]},
+            "deny": {"lef": [0, 0, 1], "lm": [10_000, 40_000, 120_000]},
+            "costs": {"fix": 200_000, "deny": 300_000,
+                      "transfer": {"load": load, "deductible": deductible}}}
+
+
+def ticket79_cases(tolerance):
+    reds, greens, told = [], [], []
+
+    def case(n, title, fn):
+        try:
+            fn()
+        except AssertionError as e:
+            reds.append((n, title, str(e)))
+        except Exception as e:
+            reds.append((n, title, "raised %s: %s" % (type(e).__name__, e)))
+        else:
+            greens.append((n, title))
+
+    def d1():
+        """The retained part below the deductible is charged twice."""
+        d = 50_000.0
+        risk = _t79_risk(d)
+        losses = fair.simulate(fair.state(risk, "warn")["lef"], fair.state(risk, "warn")["lm"])
+        e_total = sum(losses) / len(losses)
+        e_above = sum(max(x - d, 0.0) for x in losses) / len(losses)
+        e_below = sum(min(x, d) for x in losses) / len(losses)
+        load = 0.40
+        m = moves(risk, tolerance)["transfer"]
+        want_premium = (1.0 + load) * e_above
+        want_tcor = e_below + want_premium
+        told.append(
+            "    transfer, deductible GBP %,.2f: E[loss] GBP %,.2f = E[below] GBP %,.2f + "
+            "E[above] GBP %,.2f".replace(",", "") % (d, e_total, e_below, e_above))
+        told.append(
+            "    OLD rule: premium GBP %.2f = (1 + %.2f) x E[loss], residual GBP %.2f = the "
+            "deductible itself, TCoR GBP %.2f" % (m["transfer_premium"], load, m["residual"],
+                                                   m["tcor"]))
+        told.append(
+            "    NEW rule: premium GBP %.2f = (1 + %.2f) x E[above], residual GBP %.2f = "
+            "E[below], TCoR GBP %.2f" % (want_premium, load, e_below, want_tcor))
+        assert abs(m["transfer_premium"] - want_premium) < 0.01, (
+            "the transfer premium is GBP %.2f, which is (1 + %.2f) x E[TOTAL loss] GBP %.2f. "
+            "The ticket's rule is (1 + load) x E[loss ABOVE the deductible] = GBP %.2f, so the "
+            "GBP %.2f of loss below the deductible is charged into the premium AND booked "
+            "again as the residual" % (m["transfer_premium"], load, e_total, want_premium,
+                                        e_below))
+        assert abs(m["residual"] - e_below) < 0.01, (
+            "the transfer residual is GBP %.2f, the deductible itself, not the E[loss below "
+            "the deductible] of GBP %.2f that the insured actually carries" % (m["residual"],
+                                                                                e_below))
+
+    def d2():
+        """A bigger deductible must not raise TCoR monotonically: buying a
+        higher retention buys a cheaper premium, which is what a deductible IS."""
+        small = moves(_t79_risk(1_000.0), tolerance)["transfer"]
+        big = moves(_t79_risk(80_000.0), tolerance)["transfer"]
+        told.append("    deductible GBP 1,000 -> TCoR GBP %.2f; deductible GBP 80,000 -> "
+                    "TCoR GBP %.2f" % (small["tcor"], big["tcor"]))
+        assert big["transfer_premium"] < small["transfer_premium"], (
+            "raising the deductible from GBP 1,000 to GBP 80,000 left the premium at GBP %.2f "
+            "and GBP %.2f -- it did not fall, because the premium is priced off the whole loss "
+            "and the deductible only ever gets ADDED to it" % (small["transfer_premium"],
+                                                                big["transfer_premium"]))
+
+    case("d", "a transfer premium is (1 + load) x E[loss above the deductible]", d1)
+    case("d", "a higher deductible buys a cheaper premium", d2)
+    return reds, greens, told
+
+
+def ticket79_selfcheck(tolerance) -> int:
+    reds, greens, told = ticket79_cases(tolerance)
+    for line in told:
+        print(line)
+    for n, title in greens:
+        print("ok  (%s) %s" % (n, title))
+    for n, title, what in reds:
+        print("FAIL (%s) %s: %s" % (n, title, what))
+    if reds:
+        print("FAIL: %d ticket-79 selfcheck case(s) red" % len(reds))
+        return 1
+    return 0
 
 
 def main(argv=None):
