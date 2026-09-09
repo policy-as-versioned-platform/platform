@@ -390,11 +390,57 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
         a(f"**Exposure** — booked under perspective `{exposure['perspective']}` in "
           f"`{exposure['currency']}`.")
         a("")
+        # WHAT THE NUMBER IS, beside the number (eco-system ticket 79 item 10;
+        # ticket 75 Q4). The composer writes it onto the section; this page
+        # RENDERS what the artefact says and never a sentence of its own, so an
+        # artefact composed before the statement existed is a named absence here
+        # rather than a total this page qualifies on its own authority.
+        ordinal = exposure.get("ordinal")
         total = exposure.get("total")
         if total is None:
             _absent(absences, "exposure.total", HEADER_PATH, "no total is stated")
         else:
             a(f"- Total: {_money(total, exposure['currency'])}")
+            if ordinal:
+                a(f"  - What this number is: {ordinal}.")
+            else:
+                _absent(absences, "exposure.ordinal", HEADER_PATH,
+                        "the artefact states a total and does not say what the number is; "
+                        "eco-system ticket 79 item 10 puts that sentence in the composer, so "
+                        "an artefact composed before the next signed platform tag carries none")
+        if exposure.get("ordinal_basis"):
+            a(f"  - {exposure['ordinal_basis']}")
+        agg = exposure.get("aggregate")
+        if isinstance(agg, dict) and agg.get("selected_tier_residual_total") is not None:
+            breach = agg.get("breaches_band")
+            cnl = agg.get("could_not_look")
+            # Review F3: no verdict where the two amounts are in two currencies
+            # and no signed rate could be read. This page renders what the
+            # artefact says; where the artefact declines to compare, so does it.
+            verdict = ("BREACHES the declared aggregate" if breach
+                       else "within the declared aggregate" if breach is False
+                       else f"NO VERDICT -- {cnl}" if cnl
+                       else "no aggregate tolerance is declared to compare it with")
+            converted = agg.get("tolerance_in_reporting_currency")
+            shown = _money(agg.get("tolerance"),
+                            agg.get("tolerance_currency") or exposure["currency"])
+            if converted is not None:
+                shown += (f" (= {_money(converted, agg.get('currency', exposure['currency']))} "
+                          f"through the signed FX feed)")
+            a(f"- Aggregate of the selected-tier residuals: "
+              f"{_money(agg['selected_tier_residual_total'], agg.get('currency', exposure['currency']))} "
+              f"against a tolerance of {shown} -- {verdict}.")
+            for ln in agg.get("lines") or []:
+                a(f"  - `{ln.get('name')}` at tier `{ln.get('tier')}`: "
+                  f"{_money(ln.get('residual'), agg.get('currency', exposure['currency']))}")
+            if agg.get("not_tiered"):
+                a(f"  - Not in this total, because they carry no selected tier: "
+                  f"{', '.join(agg['not_tiered'])}")
+        else:
+            _absent(absences, "exposure.aggregate", HEADER_PATH,
+                    "the artefact states a per-line total and no aggregate of the residuals the "
+                    "selected tiers leave, so a breach of the one annual aggregate the appetite "
+                    "declares is not visible (eco-system ticket 79 item 9)")
         att = exposure.get("attachment")
         if isinstance(att, dict) and att.get("currency") is not None:
             a(f"- Attachment: {_money(att.get('amount'), att['currency'])}")
