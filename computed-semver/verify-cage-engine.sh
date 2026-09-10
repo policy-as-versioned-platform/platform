@@ -25,3 +25,7 @@ fi
 selfcheck_absent "$SELF" kyverno
 
 python3 cage_engine.py --selfcheck
+# Ticket 71: grade the actual published policy trees under the declared CLI.
+# Kept in this registered check: no second discovery/manifest entry is needed.
+python3 -m unittest discover -s . -p test_engine_compatibility.py
+python3 engine_compatibility.py

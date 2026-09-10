@@ -74,7 +74,9 @@ spec:
         # bump was derived from the tag arithmetic, so it could never disagree
         # with itself. major: the cage tier moved to the governed Namespace and
         # the pod label became an output -- every 3.0.0 consumer must act.
-        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major" }
+        # Ticket 71: exact CLI fixture evidence, NOT a runtime support range.
+        # The gate reads actual policy tags and preserves their frozen bodies.
+        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major", tested_engines: { scope: published-cage-fixtures-v1, kyverno: ["1.18.2"] } }
         #
         # 5.0.0 -- the isolated-default release (ticket 63, ADR-0022). Two
         # things move, and only the first is why it is a major:
@@ -123,7 +125,7 @@ spec:
         # fakes a tag, a signature or a commit hash, so the field stays empty
         # and the live-tail checks could-not-look by name rather than reporting
         # a defect that is really an unmade release.
-        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major" }
+        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major", tested_engines: { scope: published-cage-fixtures-v1, kyverno: ["1.18.2"] } }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
