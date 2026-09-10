@@ -381,7 +381,8 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                     _absent(absences, f"prices[{prices.index(p)}].hole identity", EVIDENCE_PATH,
                             "the hole names neither `source`/`name` nor `id`, so this page "
                             "cannot say which pin it is")
-                a(f"- **{p.get('source')}/{p.get('name')}** is itself a priced hole: "
+                state = "records a closed priced hole" if whole.get("status") == "closed" else "is itself a priced hole"
+                a(f"- **{p.get('source')}/{p.get('name')}** {state}: "
                   f"{whole.get('kind') or 'hole'} `{ident or 'absent'}` — {whole.get('detail')}, "
                   f"priced at the whole entry ({_money(p.get('amount'), p['currency'])}).")
         a("")

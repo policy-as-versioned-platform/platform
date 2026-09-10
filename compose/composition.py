@@ -250,8 +250,8 @@ no git metadata, no tag at all, or a matched tag that is not an annotated
 object because a second fetch flattened it). Untagged, the pin
 is a `hole` on the premium entry -- the premium itself, booked as paid
 against a quote no tag signs, under the adopter's own perspective and
-currency -- printed as a `new-untagged-pin` delta, recorded on the next
-composition, and closed (a `closed-untagged-pin` delta) by the first
+currency -- printed as a `new-untagged-pin` delta, retained on identical
+composition and recorded when inputs next change, and closed (a `closed-untagged-pin` delta) by the first
 signed tag that carries it, with no edit. Unobserved opens nothing and
 closes nothing. Nothing here refuses, and nothing here claims a signature
 VERIFIES: the identity-pinned verification against the publisher's real
@@ -343,6 +343,7 @@ import pin_content  # noqa: E402
 # mapping -- same pull request, same drift check, same signed tag. It reads nothing else.
 sys.path.insert(0, str(HERE))
 import handbook  # noqa: E402
+import comparison_history  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -1746,7 +1747,8 @@ def _previous_prices(adopter_dir: Path) -> list[dict]:
 
 
 def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
-                        adopter_dir: Path, parent_trees: dict[str, Path] | None = None
+                        adopter_dir: Path, parent_trees: dict[str, Path] | None = None, *,
+                        previous_cages: list[dict] | None = None
                         ) -> tuple[list[dict], list[dict], list[dict]]:
     """Every `overlay.restate` entry against the merged member set. Returns
     (restatements, refusals, cages). Mutates `merged` in place: an accepted
@@ -1762,7 +1764,8 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
     threat_pin = threat_edge["version"] if threat_edge else None
     threat_tree = Path((parent_trees or {}).get(threat_edge["party"], PLATFORM_DIR)) \
         if threat_edge else PLATFORM_DIR
-    previous_cages = _previous_cages(adopter_dir)
+    if previous_cages is None:
+        previous_cages = _previous_cages(adopter_dir)
 
     for r in party_doc.get("overlay", {}).get("restate", []) or []:
         name, version, action = r["name"], r["version"], r["action"]
@@ -3855,6 +3858,20 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     if missing:
         return _refused(missing), {}
 
+    try:
+        recorded_header, recorded_prices, recorded_cages = comparison_history.read_recorded(adopter_dir)
+        comparison = comparison_history.resolve(
+            comparison_history.identity(adopter_dir, parents, list(observations.values()),
+                                        _composition_as_of(edges, parent_trees, as_of),
+                                        _namespace_facts(adopter_dir)),
+            recorded_header, recorded_prices, recorded_cages,
+            replay=replay_observations)
+    except comparison_history.InvalidHistory as error:
+        return _refused([str(error)]), {}
+    comparison_before = comparison["before"]
+    prev_header = comparison_before["header"]
+    prev_prices = comparison_before["prices"]
+
     refusals: list[dict] = check_diamonds(edges)
 
     # Merge every implementations parent's members into one set, keyed on
@@ -3949,7 +3966,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     })
 
     restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
-                                                                parent_trees)
+                                                                parent_trees, previous_cages=comparison_before["cages"])
     refusals += restate_refusals
 
     # -----------------------------------------------------------------
@@ -4008,7 +4025,6 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     covered, claim_refusals = resolve_claims(claims, policy_owner, catalogs, baseline_source)
     refusals += claim_refusals
 
-    prev_header = _previous_header(adopter_dir)
     prev_source = _header_controls_source(prev_header, adopter_party) or baseline_source
     prev_holes = ({_decode_control(h, prev_source) for h in prev_header.get("holes", [])}
                   if prev_header is not None else None)
@@ -4045,7 +4061,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             adopter_dir=adopter_dir, perspective_doc=party_doc,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
-            prev_prices=_previous_prices(adopter_dir), as_of=as_of, observations=observations)
+            prev_prices=prev_prices, as_of=as_of, observations=observations)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -4085,14 +4101,14 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # A separate counterfactual isolates a floor edit at current feed inputs.
     try:
         floor_inputs = floor_comparison_inputs(
-            (party_doc.get("overlay") or {}).get("floor"), prev_header)
+            (party_doc.get("overlay") or {}).get("floor"), recorded_header)
         before_prices = None
         if floor_inputs["before"]["known"] and band is not None:
             before_prices = compute_prices(
                 edges, adopter_party, band["amount"], parent_trees, prev_header,
                 adopter_dir=adopter_dir, perspective_doc=party_doc,
                 band_currency=band.get("currency"), floor=floor_inputs["before"]["value"],
-                prev_prices=_previous_prices(adopter_dir), as_of=as_of,
+                prev_prices=prev_prices, as_of=as_of,
                 observations=observations, include_switching=False)
         floor_change = floor_change_evidence(floor_inputs, before_prices, prices)
     except Refused as e:
@@ -4163,12 +4179,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         })
 
     # The recorded hole ids -- open (new + recorded), never closed ones --
-    # are what the NEXT run's compute_holes() compares against. A closed
+    # are the after-state for the NEXT changed-input comparison. A closed
     # hole drops out of the recorded set: if it becomes a hole again later
     # it is "new" again, not "recorded" (spec.md names no reopened case).
     recorded_hole_ids = sorted(_encode_control((e["source"], e["control_id"]), baseline_source)
                                for e in hole_entries if e["status"] != "closed")
-    # Same shape: the recorded (open) set the NEXT run compares against.
+    # Same shape: the recorded open set the NEXT changed-input run compares against.
     # A closed namespace drops out -- if it goes ungoverned again later it
     # is "new" again, not "recorded" (compute_ungoverned names no reopened
     # case, matching compute_holes).
@@ -4184,6 +4200,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "selected-controls": sorted(_encode_control(k, baseline_source) for k in selected_set),
         "ungoverned-namespaces": recorded_ungoverned,
     }
+    # Legacy verification preserves the old comparison contract byte-for-byte.
+    # Fresh composition always records history; present invalid history never falls back.
+    if not replay_observations or (recorded_header and "comparison-inputs" in recorded_header):
+        header["comparison-inputs"] = comparison
     # Which versioned rule picked the tier (ADR-0021). Recorded only where the
     # adopter actually ships a selection-policy package -- a null key on an
     # adopter that ships none would be noise in a rendered, Flux-applied file.
@@ -4248,12 +4268,16 @@ def verify(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[bool, list
     exact SHAs the committed HEADER.yaml records (that checkout is the
     verifier's job, not this function's). Publisher tag observations and an
     explicit pricing date are replayed from the adopter's signed artefact.
+    Recorded comparison inputs replay the original transition; legacy headers
+    without comparison history retain their historical verification behavior.
     Legacy provenance without these observations must be verified by its
     pinned composer, or refreshed from publishers before signing a new artefact.
     """
     adopter_dir = Path(adopter_dir)
-    header_path = adopter_dir / "composed" / "HEADER.yaml"
-    header = yaml.safe_load(header_path.read_text()) if header_path.exists() else {}
+    try:
+        header, _, _ = comparison_history.read_recorded(adopter_dir)
+    except comparison_history.InvalidHistory as error:
+        return False, [str(error)]
     document, rendered = compose(adopter_dir, parent_trees,
                                  as_of=(header or {}).get("composition-as-of"),
                                  replay_observations=True)
@@ -5066,14 +5090,14 @@ def selfcheck() -> None:
                   "driftwood's perspective, printed as a new-untagged-pin delta"
                   % (hole["amount"], hole["currency"]))
 
-            # 2. recorded: the last signed artefact already carried the hole
+            # 2. identical inputs retain the original transition after saving evidence
             _commit(doc1, rendered1)
             doc2, rendered2 = compose(work, trees)
             assert doc2["outcome"] == "composed", doc2["refusals"]
-            assert _premium(doc2)["hole"]["status"] == "recorded", _premium(doc2)["hole"]
+            assert _premium(doc2)["hole"]["status"] == "new", _premium(doc2)["hole"]
             assert _premium(doc2)["hole"]["amount"] == p1["amount"], _premium(doc2)["hole"]
-            assert _pin_deltas(doc2) == [], doc2["deltas"]
-            print("OK untagged pin: a second composition records the hole and prints no delta")
+            assert _pin_deltas(doc2) == d1, doc2["deltas"]
+            print("OK untagged pin: identical composition preserves the opening delta for replay")
 
             # 3. unobserved: a checkout that cannot show the publisher's tags
             # -- no git metadata, and no tag at all (the shape `actions/checkout`
@@ -5128,10 +5152,10 @@ def selfcheck() -> None:
             assert sig["tag"] in d4[0]["detail"], d4
             _commit(doc4, rendered4)
             doc5, rendered5 = compose(work, parent_trees)
-            assert _premium(doc5)["hole"] is None and _pin_deltas(doc5) == [], doc5["deltas"]
+            assert _premium(doc5)["hole"]["status"] == "closed" and _pin_deltas(doc5) == d4, doc5["deltas"]
             print("OK closed pin: composing against the insurer's real signed tag closes the "
                   "hole, prints one closed-untagged-pin delta, and the next composition "
-                  "carries no hole -- the hole heals itself when the tag lands")
+                  "retains the closure transition so its handbook replays")
 
             # 5. the rendered policies never change on a signature state move.
             # Compared across untagged, recorded and unobserved, which are the
@@ -5154,9 +5178,8 @@ def selfcheck() -> None:
             assert not engine, engine
             # The sentence asserted is the one the page derives from the hole's own fields --
             # its kind and its `source/name@version` -- and it must be present while the hole is
-            # open (untagged, then recorded: the parent SHAs differ between those two renders,
-            # so "the pages differ" proved nothing -- review F-03) and absent once the hole has
-            # healed (rendered5, composed against the insurer's real signed tag).
+            # open (untagged and repeated), and its closure must be explicitly named
+            # once the insurer's real signed tag heals it (rendered5).
             hb = "composed/HANDBOOK.md"
             hole_sentence = (f"{UNTAGGED_PIN_HOLE_KIND} `{hole['source']}/{hole['name']}"
                              f"@{hole['version']}`")
@@ -5164,12 +5187,12 @@ def selfcheck() -> None:
                 f"the handbook does not name the untagged pin as {hole_sentence}"
             assert handbook._money(hole["amount"], hole["currency"]) in rendered1[hb], \
                 "the handbook does not state the premium the hole is priced at"
-            assert UNTAGGED_PIN_HOLE_KIND not in rendered5[hb], \
-                "the handbook still names an untagged pin after the hole healed"
+            assert "records a closed priced hole" in rendered5[hb], \
+                "the handbook must distinguish the retained closure from an open hole"
             print("OK untagged pin: every object the engine applies is byte-identical across "
                   "untagged, recorded and unobserved -- signature state lives in the evidence, "
                   "never the enforced render -- and the handbook, which nothing applies, names "
-                  "the hole as %s with its premium while it is open and drops it once it heals"
+                  "the hole as %s with its premium while open and explicitly records its closure"
                   % hole_sentence)
 
     # --- no sum crosses a perspective or a currency: the one summing helper
@@ -6951,7 +6974,7 @@ def selfcheck() -> None:
         "ECO-SYSTEM TICKET 69: the premium entry reads the pin's signature state off the "
         "insurer tree's own tags; an untagged pin composes with a hole of its own premium under "
         "the adopter's perspective and currency, printed as a new-untagged-pin delta, recorded "
-        "on the next composition, kept open under an unobserved tree, and closed by the first "
+        "when inputs next change, retained on identical replay, kept open under an unobserved tree, and closed by the first "
         "signed tag that carries it -- never a refusal and never a claimed signature; and only "
         "a checkout that can show the publisher's tag namespace says `untagged` at all, so a "
         "tagless checkout, a lightweight tag and a flattened annotated tag read `unobserved` "
