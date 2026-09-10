@@ -123,7 +123,7 @@ spec:
         # fakes a tag, a signature or a commit hash, so the field stays empty
         # and the live-tail checks could-not-look by name rather than reporting
         # a defect that is really an unmade release.
-        - { version: "5.0.0", tag: "policy/v5.0.0", bump: "major" }
+        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major" }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
