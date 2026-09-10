@@ -318,6 +318,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from calendar import monthrange
+
 import yaml
 
 HERE = Path(__file__).resolve().parent
@@ -770,7 +772,8 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def vendor_feed(edge: dict, tree: Path, sha: str) -> tuple[str, dict[str, str], dict]:
+def vendor_feed(edge: dict, tree: Path, sha: str, *,
+                observation: dict | None = None) -> tuple[str, dict[str, str], dict]:
     """The adopter's own copy of ONE priced feed: the publisher's party
     artefact, the payload at the version this adopter pins, and the converter
     that prices it -- each at the publisher's own relative path, so a vendored
@@ -838,8 +841,105 @@ def vendor_feed(edge: dict, tree: Path, sha: str) -> tuple[str, dict[str, str], 
         "published_at": _feed_as_of(feed_path),
         "files": {rel: _digest(text) for rel, text in sorted(files.items())},
     }
+    # The converter's original source does not become this publisher merely
+    # because the adopter now holds a copy (ticket 110).
+    prior_path = tree / VENDORED_PROVENANCE
+    if prior_path.exists():
+        prior = json.loads(prior_path.read_text())
+        record["converter_from"] = prior.get("converter_from")
+    record["publisher_observation"] = (observation if observation is not None else
+                                       publisher_observation(edge, tree, sha))
     files[VENDORED_PROVENANCE] = json.dumps(record, indent=2, sort_keys=True) + "\n"
     return vendored_rel(edge["party"], version), files, record
+
+
+# The snapshot is an adopter-signed observation, not a second publisher
+# declaration. Replaying it makes no assertion about tags published later.
+OBSERVATION_SCOPE = ("Publisher tags were observed when this artefact was composed; "
+                     "the recorded observation is replayed offline and during verification. "
+                     "It does not establish the publisher's current newest major. "
+                     "A fresh composition with the publisher present refreshes it.")
+
+
+def _observation_key(edge: dict) -> tuple[str, str, str]:
+    return edge["party"], _feed_name(edge) or "", str(edge["version"])
+
+
+def publisher_observation(edge: dict, tree: Path, sha: str, *, replay: bool = False) -> dict:
+    """One feed's complete tag observation, resolved once per composition.
+
+    A vendored tree always replays its record. Verification also explicitly
+    requests replay even when a live publisher tree is available. Legacy
+    provenance cannot prove what it never recorded: replay refuses; a fresh
+    composition from the publisher creates a new snapshot for the next tag.
+    """
+    party, name, version = _observation_key(edge)
+    provenance = Path(tree) / VENDORED_PROVENANCE
+    if replay or provenance.exists():
+        try:
+            record = json.loads(provenance.read_text())
+            snapshot = record["publisher_observation"]
+            identity = {"party": party, "name": name, "version": version, "sha": sha}
+            if not isinstance(snapshot, dict) or snapshot.get("schema") != 1:
+                raise ValueError("unsupported observation schema")
+            if any(record.get(k) != v or snapshot.get(k) != v for k, v in identity.items()):
+                raise ValueError("observation does not belong to this feed pin and parent SHA")
+            signature, observed, newer = snapshot["pin_signature"], snapshot["superseded"], snapshot["newer"]
+            if (not isinstance(signature, dict) or signature.get("state") not in PIN_SIGNATURE_STATES
+                    or not isinstance(signature.get("detail"), str)
+                    or not isinstance(observed, dict)
+                    or observed.get("state") not in ("behind", "current", "unobserved")
+                    or not isinstance(observed.get("detail"), str)):
+                raise ValueError("invalid publisher observation")
+            # A state label without the tag it claims is not the complete
+            # observation the adopter signed (ticket 110, spec review).
+            if "tag" not in signature:
+                raise ValueError("pin-signature observation omits its tag")
+            signature_tag = signature["tag"]
+            if (signature_tag is not None and
+                    (not isinstance(signature_tag, str) or
+                     not _pin_tag_pattern(name, version).fullmatch(signature_tag))):
+                raise ValueError("signature tag does not name this feed pin")
+            if signature["state"] == "signed" and signature_tag is None:
+                raise ValueError("signed pin-signature observation requires its tag")
+            if (observed["state"] == "behind") != (newer is not None):
+                raise ValueError("behind observation requires its signed target")
+            if newer is not None:
+                if not isinstance(newer, dict) or not all(isinstance(newer.get(k), str) for k in
+                        ("version", "tag", "tagged", "since_tag", "since")):
+                    raise ValueError("incomplete supersede target")
+                if ("published_at" not in newer or newer["published_at"] is not None
+                        and not isinstance(newer["published_at"], str)):
+                    raise ValueError("incomplete supersede target")
+                for key in ("since", "tagged"):
+                    date = newer[key]
+                    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
+                        raise ValueError("invalid tag date")
+                    year, month, day = map(int, date.split("-"))
+                    if year < 1 or not 1 <= day <= monthrange(year, month)[1]:
+                        raise ValueError("invalid tag date")
+                if not re.fullmatch(r"v[0-9]+", newer["version"]):
+                    raise ValueError("supersede target must name a major")
+                pinned_major = int(_major_dir(version)[1:])
+                target_major = int(newer["version"][1:])
+                if target_major <= pinned_major:
+                    raise ValueError("supersede target is not ahead of the pin")
+                if not _pin_tag_pattern(name, newer["version"]).fullmatch(newer["tag"]):
+                    raise ValueError("supersede target tag does not name this feed and major")
+                first_tag = re.fullmatch(
+                    rf"(?:{re.escape(name)}/)?v([0-9]+)\.[0-9]+\.[0-9]+", newer["since_tag"])
+                if not first_tag or not pinned_major < int(first_tag[1]) <= target_major:
+                    raise ValueError("supersede start tag does not name an intervening major of this feed")
+            return snapshot
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            raise Refused(f"missing instrument: {party}/{name}@{version} has no valid recorded "
+                          f"publisher observation ({error}); re-compose with this composer and "
+                          f"the publisher present before signing a new artefact; verify older "
+                          f"artefacts with their pinned composer") from None
+    newer, observed = newest_published_major(tree, party, name, version)
+    return {"schema": 1, "party": party, "name": name, "version": version, "sha": sha,
+            "pin_signature": pin_signature_state(tree, party, name, version),
+            "newer": newer, "superseded": observed}
 
 
 def vendored_tree(adopter_dir: Path, party: str, version: str) -> Path | None:
@@ -2428,7 +2528,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
                   reporting_currency: str, band_currency: str | None,
                   floor: str | None, parent_trees: dict[str, Path] | None = None,
                   composition_as_of: str | None = None,
-                  prev_prices: list[dict] | None = None) -> dict:
+                  prev_prices: list[dict] | None = None,
+                  observation: dict | None = None) -> dict:
     """One prices[] entry for one feed edge, in the one schema every price in
     this estate shares: perspective, currency, source, kind, amount and a
     per-customer restatement (ticket 25). Priced at the OLD version (the last
@@ -2520,7 +2621,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     # The pin's signature state is read off the publisher's checkout the same
     # way, and an untagged feed pin is a hole of the exposure this line prices
     # -- money priced from bytes no signature carries -- never a refusal.
-    signature = pin_signature_state(tree, party, name, new_version)
+    signature = (observation["pin_signature"] if observation is not None else
+                 pin_signature_state(tree, party, name, new_version))
     entry["pin_signature"] = signature
     entry["hole"] = untagged_pin_hole(
         signature, _previous_pin_hole(prev_prices, party, name), party=party, name=name,
@@ -2635,7 +2737,7 @@ def newest_published_major(tree: Path | None, party: str, name: str,
 
 def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | None, *,
                     adopter_party: str, reporting_currency: str,
-                    perspective_doc: dict) -> dict | None:
+                    perspective_doc: dict, observation: dict | None = None) -> dict | None:
     """One `supersede` prices[] entry for a feed line whose pin is behind a
     newer SIGNED major (ticket 84; ticket 13 D5): the line's own amount times
     (eol_ramp(since, as_of) - 1), `since` being the day the newer major's tag
@@ -2647,7 +2749,10 @@ def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | Non
     the exposure already, and adding the surcharge to it would need a rule for
     counting one line twice that nobody has asked for."""
     party, name, version = edge["party"], _feed_name(edge) or "", str(edge["version"])
-    newer, observed = newest_published_major(tree, party, name, version)
+    newer, observed = ((observation["newer"], observation["superseded"]) if observation is not None
+                       else newest_published_major(tree, party, name, version))
+    if observation is not None:
+        entry["publisher_observation_scope"] = OBSERVATION_SCOPE
     if observed["state"] == "current" and (entry.get("pin_signature") or {}).get("state") != "signed":
         # Review F7: "current" would say the pinned major is the newest PUBLISHED
         # one, and an untagged pin is not published at all.
@@ -3036,7 +3141,8 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  perspective_doc: dict, reporting_currency: str,
                  prev_version: str | None,
                  parent_trees: dict[str, Path] | None = None,
-                 prev_prices: list[dict] | None = None) -> dict:
+                 prev_prices: list[dict] | None = None,
+                 observation: dict | None = None) -> dict:
     """One `kind: premium` prices[] entry, read off the insurer's own signed
     quote feed. There is no arithmetic here on purpose: the premium is a
     CONTRACT COST -- what this adopter pays, booked under its own perspective
@@ -3082,8 +3188,9 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
     # Ticket 69: the pin's signature state, read off the parent tree's own
     # tags (`tree` as passed, never the platform fallback: the platform's
     # tags sign nothing of the insurer's), and the hole an untagged pin is.
-    signature = pin_signature_state(tree if tree != PLATFORM_DIR else None, edge["party"], name,
-                                    str(edge["version"]))
+    signature = (observation["pin_signature"] if observation is not None else
+                 pin_signature_state(tree if tree != PLATFORM_DIR else None, edge["party"], name,
+                                     str(edge["version"])))
     hole = untagged_pin_hole(
         signature, _previous_pin_hole(prev_prices or [], edge["party"], name),
         party=edge["party"], name=name, version=str(edge["version"]),
@@ -3347,7 +3454,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        *, adopter_dir: Path, perspective_doc: dict,
                        band_currency: str | None, floor: str | None,
                        prev_prices: list[dict] | None, full_prices: list[dict],
-                       as_of: str | None = None) -> list[dict]:
+                       as_of: str | None = None,
+                       observations: dict | None = None) -> list[dict]:
     """One `switching` entry per substitutable parent edge, under the adopter's
     own perspective and in the adopter's own reporting currency.
 
@@ -3428,7 +3536,7 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 [e for e in edges if e not in dropped], adopter_party, tolerance, parent_trees,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-                include_switching=False, as_of=as_of_override)
+                include_switching=False, as_of=as_of_override, observations=observations)
         except Refused as e:
             could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
@@ -3478,7 +3586,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                     *, adopter_dir: Path, perspective_doc: dict,
                     band_currency: str | None = None, floor: str | None = None,
                     prev_prices: list[dict] | None = None,
-                    include_switching: bool = True, as_of: str | None = None) -> list[dict]:
+                    include_switching: bool = True, as_of: str | None = None,
+                    observations: dict | None = None) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -3499,6 +3608,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
         if edge["kind"] not in FEED_KINDS:
             continue
         prev_version = _previous_parent_version(prev_header, edge)
+        observation = (observations or {}).get(_observation_key(edge))
         if (_feed_name(edge) or "").startswith(QUOTE_PREFIX):
             # An insurance quote is not priced through a converter: the premium
             # is a contract cost the insurer already priced and signed.
@@ -3506,20 +3616,20 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                 edge, adopter_party, parent_trees.get(edge["party"]),
                 perspective_doc=perspective_doc, reporting_currency=reporting,
                 prev_version=prev_version, parent_trees=parent_trees,
-                prev_prices=prev_prices))
+                prev_prices=prev_prices, observation=observation))
             continue
         entry = price_parent(
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
             perspective_doc=perspective_doc, reporting_currency=reporting,
             band_currency=band_currency, floor=floor, parent_trees=parent_trees,
-            composition_as_of=comp_as_of, prev_prices=prev_prices)
+            composition_as_of=comp_as_of, prev_prices=prev_prices, observation=observation)
         prices.append(entry)
         # Ticket 84: is this pin behind a newer major its publisher has signed?
         # A quote (above) is a cost, not an exposure, and is not surcharged.
         supersede = price_supersede(
             edge, entry, parent_trees.get(edge["party"]), comp_as_of,
             adopter_party=adopter_party, reporting_currency=reporting,
-            perspective_doc=perspective_doc)
+            perspective_doc=perspective_doc, observation=observation)
         if supersede is not None:
             prices.append(supersede)
         if _feed_name(edge) == "threat-register":
@@ -3543,7 +3653,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             edges, adopter_party, tolerance, parent_trees, prev_header,
             adopter_dir=adopter_dir, perspective_doc=perspective_doc,
             band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-            full_prices=prices, as_of=as_of)
+            full_prices=prices, as_of=as_of, observations=observations)
     return prices
 
 
@@ -3571,12 +3681,18 @@ def _refused(errors: list[str]) -> dict:
 
 
 def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
-            as_of: str | None = None) -> tuple[dict, dict[str, str]]:
+            as_of: str | None = None, replay_observations: bool = False) -> tuple[dict, dict[str, str]]:
     """The one entry point. Takes the adopter repo state (a directory) and
     the pinned parent trees (party name -> that party's directory). Returns
     the evidence document as a dict and the rendered composed artefact as a
     mapping of path (relative to `adopter_dir`) to file content. Writes
-    nothing to disk -- that is the CLI's job."""
+    nothing to disk -- that is the CLI's job.
+
+    Fresh composition observes publisher tags and records them with each feed.
+    Missing publishers reuse the vendored observation. `replay_observations`
+    is verification's explicit mode: it uses the adopter's recorded observations
+    even when publisher clones are present and have gained tags since signing.
+    """
     adopter_dir = Path(adopter_dir)
     party_yaml = adopter_dir / "party.yaml"
     if not party_yaml.exists():
@@ -3593,6 +3709,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     adopter_party = party_doc["party"]
     edges = party_doc.get("inherits", []) or []
 
+    observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
     missing: list[str] = []
     parent_trees = dict(parent_trees)
@@ -3651,6 +3768,19 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         if kind == "feed":
             parent = {"party": party, "kind": kind, "name": edge["name"], "version": version, "sha": sha}
         parents.append(parent)
+        if kind in FEED_KINDS:
+            try:
+                observation_tree = (adopter_dir / vendored_rel(party, str(version))
+                                    if replay_observations else Path(tree))
+                if replay_observations:
+                    # Validate the copied payloads before trusting their observation.
+                    if vendored_tree(adopter_dir, party, str(version)) is None:
+                        raise Refused(f"missing instrument: {party}@{version} has no vendored "
+                                      "publisher observation; re-compose from its publisher")
+                observations[_observation_key(edge)] = publisher_observation(
+                    edge, observation_tree, sha, replay=replay_observations)
+            except Refused as error:
+                missing.append(str(error))
     if missing:
         return _refused(missing), {}
 
@@ -3844,7 +3974,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             adopter_dir=adopter_dir, perspective_doc=party_doc,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
-            prev_prices=_previous_prices(adopter_dir), as_of=as_of)
+            prev_prices=_previous_prices(adopter_dir), as_of=as_of, observations=observations)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -3907,7 +4037,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             _, files, record = vendor_feed(
                 edge, parent_trees[edge["party"]],
                 next(p["sha"] for p in parents if p["party"] == edge["party"]
-                      and p.get("name") == edge.get("name")))
+                      and p.get("name") == edge.get("name")),
+                observation=observations.get(_observation_key(edge)))
         except Refused as e:
             refusals.append({"kind": "missing-instrument", "subject": edge["party"],
                               "detail": str(e), "needs_composition": True})
@@ -3983,6 +4114,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # never zero -- where nothing priced.
     if exposure is not None:
         header["exposure"] = exposure
+    if as_of is not None:
+        header["composition-as-of"] = as_of
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
 
     document = {
@@ -4019,9 +4152,17 @@ def verify(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[bool, list
     compares byte-for-byte against whatever is already committed under
     `adopter_dir`. A verifier runs this with parent_trees checked out at the
     exact SHAs the committed HEADER.yaml records (that checkout is the
-    verifier's job, not this function's)."""
+    verifier's job, not this function's). Publisher tag observations and an
+    explicit pricing date are replayed from the adopter's signed artefact.
+    Legacy provenance without these observations must be verified by its
+    pinned composer, or refreshed from publishers before signing a new artefact.
+    """
     adopter_dir = Path(adopter_dir)
-    document, rendered = compose(adopter_dir, parent_trees)
+    header_path = adopter_dir / "composed" / "HEADER.yaml"
+    header = yaml.safe_load(header_path.read_text()) if header_path.exists() else {}
+    document, rendered = compose(adopter_dir, parent_trees,
+                                 as_of=(header or {}).get("composition-as-of"),
+                                 replay_observations=True)
     if document["outcome"] != "composed":
         return False, [f"re-composition refused: {document['party_artefact_errors']} "
                         f"{document.get('refusals', [])}"]
@@ -4910,8 +5051,11 @@ def selfcheck() -> None:
             # admits. The handbook is applied by nobody and read by a human, and the one fact
             # ticket 69 priced is exactly "money committed against a quote no signature carries"
             # -- a page that hid it would be hiding the number the £ seam exists to report.
+            # Ticket 110 records changing signature observations in provenance;
+            # that record is not an installed object either.
             engine = [k for k in rendered1
                       if k not in ("composed/HEADER.yaml", "composed/HANDBOOK.md")
+                      and not k.endswith("/PROVENANCE.json")
                       and not (rendered1[k] == rendered2.get(k) == rendered3.get(k))]
             assert not engine, engine
             # The sentence asserted is the one the page derives from the hole's own fields --

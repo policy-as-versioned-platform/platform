@@ -174,6 +174,28 @@ itself needs.
   way (`behind`, `current`, or `unobserved` for a checkout that cannot show the tags). The live
   case: tuppence and ludlow pin `threat-register@v1` while `threat-register/v2.0.0` was cut on
   2026-09-01.
+- **Publisher observations travel with the artefact (ticket 110).** A fresh `compose`
+  records the complete observed tag state in each feed's `PROVENANCE.json`: the pin's signature
+  state, the supersede observation (including current or unobserved), the newest readable signed
+  target and the oldest signed major's tag date. The snapshot names the feed, version and parent
+  SHA. `verify` always replays that signed observation, even when a publisher clone is present
+  and has gained tags since composition. An offline `compose` reuses the vendored snapshot;
+  a fresh `compose` with the publisher present observes its tags again. No wall clock is read.
+  An explicit `--as-of` is recorded in the header and replayed by verification too.
+
+  Portability wins: the surcharge describes the publisher state recorded when this artefact was
+  composed, **not the publisher's current newest major**. The handbook prints this limitation,
+  along with the surcharge's start and pricing dates. Zero rows remain visible: they name the day
+  the clock starts. The scheduled proposer's existing `compose --as-of` is a fresh composition,
+  so it observes newly fetched tags and grows the ramp; verification never refreshes history.
+
+  **Migration:** legacy `PROVENANCE.json` without `publisher_observation` is not guessed from a
+  live clone during verification and is not treated as “current” offline. Replay refuses with a
+  named missing instrument. Verify an old signed artefact with the composer its tag pins; to
+  adopt this composer, re-compose with the publishers present and sign the new artefact through
+  the normal release workflow. Invalid snapshots or snapshots belonging to another feed or SHA
+  also refuse. This does not retroactively make an old artefact portable under a newer renderer.
+
 - **Every feed line carries `pin_signature` and `hole`** (ticket 69's rule reaching past the
   premium): an untagged feed pin is a hole of the whole line, naming the tag that does not exist.
 - The proposer reads the `supersede` line: `wargamer.wargame_retirement()` and `tier_pr.py`'s
