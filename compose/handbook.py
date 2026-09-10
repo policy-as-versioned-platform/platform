@@ -346,6 +346,12 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{'yes' if p.get('changed') else 'no'} | {tier_cell} |")
         a("")
         for i, p in enumerate(prices):
+            if p.get("publisher_observation_scope"):
+                a(f"- **{p.get('source')}/{p.get('name')}** — {p['publisher_observation_scope']}")
+            if p.get("kind") == "supersede":
+                a(f"- **{p.get('source')}/{p.get('name')} supersede** — "
+                  f"clock starts {p.get('since')}; priced as of {p.get('as_of')}. "
+                  + " ".join(p.get("limits") or []))
             if p.get("lef_basis"):
                 a(f"- **{p.get('source')}/{p.get('name')}** — basis: {p['lef_basis']}")
             elif p.get("basis"):
