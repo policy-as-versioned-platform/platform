@@ -25,6 +25,9 @@ python3 -m unittest discover -s "$HERE" -p test_portable_observations.py || fail
 say "0a. floor-change evidence (compose, persisted history and replay)"
 python3 -m unittest discover -s "$HERE" -p test_floor_change.py || fail "floor-change evidence"
 
+say "0b. durable transition comparisons (saved evidence and replay)"
+python3 -m unittest discover -s "$HERE" -p test_comparison_history.py || fail "comparison history"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

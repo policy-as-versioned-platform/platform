@@ -358,3 +358,62 @@ Run the public compose/replay regression seam with:
 ```sh
 python3 -m unittest discover -s compose -p test_floor_change.py
 ```
+
+### Durable transition comparisons
+
+Fresh composition records `HEADER.yaml` → `comparison-inputs` (schema 1). The
+before-state contains only the historical fields used by control, namespace,
+publisher-version, pin-hole, twin-tier and restatement-cage comparisons. It does
+not contain rendered deltas or money to copy into the new answer. Current pinned
+instruments still compute all amounts, selections and transition evidence.
+
+The after-state is a SHA-256 identity over the adopter's non-hidden source files
+(excluding `composed/` and Python caches), resolved parent records, publisher
+observations, effective composition date and parsed namespace/workload facts.
+Including parsed namespace facts covers manifests in hidden source directories
+that the namespace scanner also reads. Paths are relative: relocating a checkout
+or substituting a verified vendored publisher does not start a new transition.
+Changing source bytes (even an unrelated non-hidden document), a parent pin,
+observation or pricing date does. This conservative source boundary does not
+promise to distinguish meaningful edits from formatting. Parent contents must
+still match their pins; this identity is not a replacement for pin-content and
+provenance verification. Existing adopter Git-tag history used by namespace
+pricing must still be available to replay its clock.
+
+Identical inputs retain the same before-state through compose, saving **all**
+outputs including `evidence.json`, repeated composition and verification. A new
+input state advances the before-state to the existing recorded after-state.
+Thus a new or closed hole remains a transition until inputs next change; saving
+its outputs alone no longer erases it. The handbook explicitly distinguishes a
+retained closed pin-hole transition from an open priced hole. Floor comparison
+history remains its separate floor-specific contract: an unchanged floor retains
+its own before-floor even when other inputs change.
+
+This is the delegated architecture decision for the held subscription replay
+failure, under ADR-0025; it changes no owner date, purpose, appetite or price
+calibration. The signed artefact is the authority for the historical input
+snapshot. Shape validation detects incomplete/malformed history and replay
+refuses a snapshot bound to different current inputs; it does not authenticate
+unsigned local files or reconstruct history that an older compiler overwrote.
+
+Legacy compatibility is explicit. Verification with no `comparison-inputs`
+retains the old compiler comparison behavior and does not add the field to its
+re-render. Already-replayable artefacts in the v3.1 output format remain replayable; a
+legacy transition whose delta already disappeared still fails naturally. This
+fallback does not remove v3.1's existing floor-format migration: real v3.0
+Tuppence/Ludlow artefacts still need fresh composition for the new floor header,
+`floor-change.json` and handbook section. Fresh compose
+always upgrades, using the existing header/evidence as its before-state (absent
+legacy evidence supplies empty price/cage history, not invented lost events).
+Present invalid history or corrupt present header/evidence refuses, never silently
+falls back. To preserve a previously failed subscription's original transition,
+re-compose its intended source edit against the actual prior composed artefact;
+refreshing an already-overwritten legacy output cannot recover its lost event.
+
+Downstream migration therefore needs the fixed software compiler and fresh
+composition for these held subscriptions, followed by review and replay checks.
+It does not change economic policy pins or require a new policy tag. Legacy
+verification retains the v3.1 baseline contract, so this fix is a software patch
+candidate relative to v3.1.0, not a claim of byte-compatible v3.0 output. The
+existing v3.0-to-v3.1 floor refresh requirement still applies. Release approval and signed publication
+remain separate from this implementation.
