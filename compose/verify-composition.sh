@@ -22,6 +22,9 @@ export PAVC_ESTATE_CLONE="${PAVC_ESTATE_CLONE:-$(cd "$HERE/../.." && pwd)}"
 say "0. portable publisher observations (fixture publishers only)"
 python3 -m unittest discover -s "$HERE" -p test_portable_observations.py || fail "portable observations"
 
+say "0a. floor-change evidence (compose, persisted history and replay)"
+python3 -m unittest discover -s "$HERE" -p test_floor_change.py || fail "floor-change evidence"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

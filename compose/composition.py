@@ -375,7 +375,7 @@ BESPOKE_SCENARIO_PROP = "scenario"
 # The deltas[] kinds: what replaced the three refusals, plus their closings.
 DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
                "new-ungoverned-namespace", "closed-ungoverned-namespace",
-               "new-untagged-pin", "closed-untagged-pin")
+               "new-untagged-pin", "closed-untagged-pin", "floor-change")
 # Ticket 69: what a premium entry's `pin_signature.state` may read, and the
 # kind of the hole an untagged pin opens on that entry.
 PIN_SIGNATURE_STATES = ("signed", "untagged", "unobserved")
@@ -3249,6 +3249,77 @@ ORDINAL_BASIS = (
     "eco-system ticket 79 item 10.")
 
 
+def floor_comparison_inputs(current: str | None, previous_header: dict | None) -> dict:
+    """Persist the floor transition, not a tier inferred from historical prices.
+
+    The same after-floor retains the original before-floor on repeated compose
+    and verify. A later floor edit starts a new comparison from the recorded
+    after-floor. Legacy artefacts have unknown history, not an absent floor.
+    """
+    def valid(state):
+        return (isinstance(state, dict) and type(state.get("known")) is bool
+                and ((state == {"known": False}) or
+                     (state.get("known") is True and set(state) == {"known", "value"}
+                      and (state["value"] is None or state["value"] in _cage_engine().ORDER))))
+
+    after = {"known": True, "value": current}
+    if not valid(after):
+        raise Refused("missing instrument: current cage floor is outside the selection ladder")
+    prior = (previous_header or {}).get("floor-comparison")
+    if previous_header is None or "floor-comparison" not in previous_header:
+        return {"schema": 1, "before": {"known": False}, "after": after}
+    if (not isinstance(prior, dict) or type(prior.get("schema")) is not int
+            or prior.get("schema") != 1
+            or not valid(prior.get("before")) or not valid(prior.get("after"))
+            or not prior["after"]["known"]):
+        raise Refused("missing instrument: recorded floor comparison has invalid floor history")
+    before = prior["before"] if prior["after"] == after else prior["after"]
+    return {"schema": 1, "before": before, "after": after}
+
+
+def floor_change_evidence(inputs: dict, before_prices: list[dict] | None,
+                          after_prices: list[dict]) -> dict:
+    """Floor-only counterfactual, holding THIS run's other pricing inputs fixed.
+
+    Existing price producers select both sides; the pinned cage table prices
+    their retained residuals exactly as aggregate_section does. No selection
+    here invents a second rule or claims a Namespace was actually changed.
+    """
+    cage = _cage_engine()
+    def key(entry):
+        return entry["source"], entry["kind"], entry.get("name")
+    old = {key(e): e for e in before_prices or [] if e.get("kind") in EXPOSURE_KINDS}
+    lines = []
+    for entry in after_prices:
+        if entry.get("kind") not in EXPOSURE_KINDS:
+            continue
+        prior = old.get(key(entry))
+        tier = entry.get("proposed_tier")
+        old_tier = prior.get("proposed_tier") if prior else None
+        residual = cage.caged_residual(entry["amount"], tier) if tier in cage.ORDER else None
+        before = (cage.caged_residual(prior["amount"], old_tier)
+                  if prior is not None and old_tier in cage.ORDER else None)
+        lines.append({"source": entry["source"], "kind": entry["kind"],
+                      "name": entry.get("name"), "perspective": entry["perspective"],
+                      "currency": entry["currency"], "uncaged_amount": entry["amount"],
+                      "before_tier": old_tier, "after_tier": tier,
+                      "before_residual": before, "after_residual": residual,
+                      "residual_delta": residual - before
+                          if before is not None and residual is not None else None})
+    changed = inputs["before"] != inputs["after"] if inputs["before"]["known"] else None
+    return {**inputs, "changed": changed,
+            "basis": "floor-only counterfactual at current publisher, scenario, appetite and selection inputs",
+            "residual_basis": f"platform-cage-tiers@{cage.TABLE_VERSION}",
+            "lines": lines,
+            "could_not_look": ("previous floor was not recorded; absence of history is not an absent floor"
+                               if not inputs["before"]["known"] else
+                               "no priced exposure lines carry a selectable tier"
+                               if not lines else
+                               "one or more exposure lines have no selectable tier"
+                               if any(e["residual_delta"] is None for e in lines) else None),
+            "limit": "selection evidence, not an enacted Namespace tier; platform reductions are self-declared calibration, not measured effectiveness"}
+
+
 def aggregate_section(prices: list[dict], adopter_party: str, band: dict | None,
                        reporting_currency: str, as_of: str | None = None,
                        parent_trees: dict[str, Path] | None = None) -> dict | None:
@@ -4010,6 +4081,26 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # an untagged-pin hole.
     deltas += untagged_pin_deltas(prices, adopter_party, reporting)
 
+    # Ticket 27: publisher-version comparisons above retain their meaning.
+    # A separate counterfactual isolates a floor edit at current feed inputs.
+    try:
+        floor_inputs = floor_comparison_inputs(
+            (party_doc.get("overlay") or {}).get("floor"), prev_header)
+        before_prices = None
+        if floor_inputs["before"]["known"] and band is not None:
+            before_prices = compute_prices(
+                edges, adopter_party, band["amount"], parent_trees, prev_header,
+                adopter_dir=adopter_dir, perspective_doc=party_doc,
+                band_currency=band.get("currency"), floor=floor_inputs["before"]["value"],
+                prev_prices=_previous_prices(adopter_dir), as_of=as_of,
+                observations=observations, include_switching=False)
+        floor_change = floor_change_evidence(floor_inputs, before_prices, prices)
+    except Refused as e:
+        return _refused([str(e)]), {}
+    if floor_change["changed"] is True:
+        deltas.append({"kind": "floor-change", "subject": adopter_party,
+                       "detail": floor_change["basis"], "comparison": floor_change})
+
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
 
@@ -4087,6 +4178,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "policy-as-versioned.dev/composed": True,
         "parents": parents,
         "baseline": baseline_name,
+        "floor-comparison": floor_inputs,
         "governed-namespaces": governed_namespaces(adopter_dir),
         "holes": recorded_hole_ids,
         "selected-controls": sorted(_encode_control(k, baseline_source) for k in selected_set),
@@ -4117,6 +4209,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     if as_of is not None:
         header["composition-as-of"] = as_of
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
+    rendered["composed/floor-change.json"] = json.dumps(floor_change, indent=2) + "\n"
 
     document = {
         "outcome": "refused" if refusals else "composed",
@@ -4130,6 +4223,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "ungoverned": ungoverned_entries,
         "prices": prices,
         "deltas": deltas,
+        "floor_change": floor_change,
         "limits": limits,
         "vendored": vendored_records,
     }
@@ -6911,9 +7005,11 @@ def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str,
     way here; each caller then asserts the specific derived string the page must
     have gained, so a page with no price rows cannot pass this by moving for
     some other reason (review F-03)."""
+    # Ticket 27's counterfactual is also derived from current prices. A feed
+    # move changes its residuals even when the recorded floor stays fixed.
     vendored = "/".join(VENDORED_DIR) + "/"
     for path, content in before.items():
-        if path in ("composed/HEADER.yaml", handbook.HANDBOOK_PATH) or path.startswith(vendored):
+        if path in ("composed/HEADER.yaml", "composed/floor-change.json", handbook.HANDBOOK_PATH) or path.startswith(vendored):
             continue
         assert after[path] == content, path
     assert after[handbook.HANDBOOK_PATH] != before[handbook.HANDBOOK_PATH], \

@@ -461,6 +461,34 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{len(r.get('controls') or [])} control(s) named")
         a("")
 
+    floor_change = evidence.get("floor_change")
+    if floor_change is not None:
+        a("### Floor comparison")
+        a("")
+        a("Source: `composed/floor-change.json`; recorded floor inputs in "
+          "`composed/HEADER.yaml` → `floor-comparison`.")
+        a("")
+        def floor_label(state):
+            return ("unknown" if not state["known"] else
+                    "absent" if state["value"] is None else str(state["value"]))
+        a(f"Floor: **{floor_label(floor_change['before'])} → "
+          f"{floor_label(floor_change['after'])}**. {floor_change['basis']}.")
+        a("")
+        if floor_change.get("could_not_look"):
+            a(f"Could not look: {floor_change['could_not_look']}.")
+            a("")
+        def residual_money(value, currency):
+            return "unknown" if value is None else _money(value, currency)
+        for line in floor_change["lines"]:
+            a(f"- {line['source']}/{line.get('name') or line['kind']}: "
+              f"{line['before_tier'] or 'unknown'} → {line['after_tier'] or 'unknown'}; "
+              f"retained residual {residual_money(line['before_residual'], line['currency'])} → "
+              f"{residual_money(line['after_residual'], line['currency'])}; "
+              f"delta {residual_money(line['residual_delta'], line['currency'])}.")
+        a("")
+        a(f"Instrument: `{floor_change['residual_basis']}`. {floor_change['limit']}.")
+        a("")
+
     # ---------------------------------------------------------------- 5. gaps
     a("## 5. What is not covered")
     a("")
