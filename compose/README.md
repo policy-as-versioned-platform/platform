@@ -306,3 +306,55 @@ grades the page only once the adopter's pin carries this renderer, see above), a
 `verify-fresh.sh` and the hub's `verify/handbook/` re-render from a served ref regardless of the
 pin. `verify.sh` was never lifted into this estate, so there is no file here to delete; this
 paragraph is the retirement.
+
+### Floor-change evidence (ecosystem ticket 27)
+
+Delegated architectural decision under hub ADR-0025: compare the recorded previous
+`overlay.floor` with the current floor **holding this composition's other inputs
+fixed**. This isolates the floor's effect when a publisher version, scenario,
+appetite or selection package changes in the same pull request. It is a
+counterfactual at current inputs, not a reconstruction of a historical price.
+The ordinary publisher `old_price`/`new_price` and `old_tier`/`proposed_tier`
+comparison keeps its existing meaning: old and new publisher versions under the
+current adopter inputs. Its amounts remain uncaged exposure.
+
+`HEADER.yaml` now records `floor-comparison` schema 1 with `before` and `after`
+floor states. `{known: true, value: null}` means a known absent floor;
+`{known: false}` means the earlier artefact did not record it. A selected tier
+cannot establish a previous floor, so legacy history is never guessed from
+`prices[]`. A missing historical input yields a named could-not-look, not a zero
+delta. Invalid recorded floor history refuses composition.
+
+A fresh floor edit starts a comparison from the previously recorded after-floor.
+While that after-floor remains unchanged, repeated composition preserves the
+same before-floor. Thus a saved artefact retains its change evidence through
+verification; a second floor edit starts the next comparison. Current pricing
+inputs are re-derived from the artefact's pinned/vendored sources on every run.
+The floor states are historical inputs attested by the artefact that records
+them, not an independent proof of the predecessor's signature or Git history.
+
+`composed/floor-change.json` and `evidence.json`'s `floor_change` record each
+exposure line's identity, perspective, currency, current uncaged amount, selected
+tiers, retained residuals and residual delta. `deltas[]` gets a `floor-change`
+entry when the known floor differs, even when its selection effect is zero.
+The handbook prints the same figures, and `verify` compares the rendered JSON
+and handbook byte for byte. Feed selection uses the ordinary composer and twin
+selection uses the adopter's existing package; retained residuals use the
+composer's pinned `platform-cage-tiers` instrument, just as the aggregate does.
+No monetary threshold or calibration is introduced.
+
+Limits: these are per-line selection counterfactuals, not enacted Namespace
+tiers, automatic permission to loosen, summed independent losses, historical
+operating costs, or measurements of cage effectiveness. The platform reduction
+table is self-declared calibration. Contract premiums and surcharge/switching
+rows do not select a cage and are excluded. A missing selectable exposure is
+named. This completes only ticket 27's floor-change evidence subtask; access
+retirement, per-organisation break-glass bands and other ticket 27 scope remain
+separate. Previously signed artefacts retain their previously pinned verifier;
+an upgrade produces the new history record without fabricating a predecessor.
+
+Run the public compose/replay regression seam with:
+
+```sh
+python3 -m unittest discover -s compose -p test_floor_change.py
+```
