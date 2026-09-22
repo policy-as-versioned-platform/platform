@@ -23,6 +23,12 @@
 #        b. none of the substrate Namespaces is governed, so
 #           `governed-namespace-requires-claim` (which cages an UNCLAIMED pod
 #           on the bottom rung) never reaches them either.
+#      Proof 3a reads PLACEMENT as well as text: the file must be one
+#      MutatingPolicy document, and the gate must be an item of that
+#      policy's one spec.matchConditions list, equal to the claim test as a
+#      whole. A second policy document, or the gate's words parked in an
+#      annotation, each left the text in the file while the engine caged
+#      CoreDNS (second review of PR 28, 2026-09-22).
 #      Break either one and every substrate pod lands on `isolated` -- no
 #      ingress, no egress -- and the cluster stops. That is the live hazard,
 #      and this is the tripwire for it. Until 2026-09-22 this proof guarded a
@@ -206,14 +212,43 @@ def policy_body(text):
     return strip_comments(text).replace("\\n", "\n")
 
 
-def claim_gate_expressions(text):
-    """Every `claims-a-policy-version` expression in a body, read WHOLE. The value runs from
-    `expression:` to the first non-blank line indented no deeper than the `expression:` key, so
-    a plain one-line scalar, its continuation lines and a `>-` block scalar all come back
-    entire. Reading only a prefix let `<gate> || true` pass as the gate (review of PR 28)."""
-    lines = text.split("\n")
+def indent_of(line):
+    return len(line) - len(line.lstrip())
+
+
+def block_after(lines, i):
+    """The lines under the key on `lines[i]`: every following line up to the first non-blank one
+    indented less than the key, or at the key's indent and not a `- ` list item (YAML lets a
+    block sequence sit at its parent key's indent, which is how a rendered body writes it)."""
+    ind = indent_of(lines[i])
+    out = []
+    for line in lines[i + 1:]:
+        if line.strip():
+            d = indent_of(line)
+            if d < ind or (d == ind and not line.lstrip().startswith("-")):
+                break
+        out.append(line)
+    return out
+
+
+def yaml_documents(text):
+    """The non-empty YAML documents in a file, split on `---` lines. Comments are already gone."""
+    return [d for d in re.split(r"(?m)^---(?:[ \t].*)?$", text) if d.strip()]
+
+
+def claim_gate_expressions(lines):
+    """Every `claims-a-policy-version` expression among the ITEMS of a matchConditions block,
+    read WHOLE. Only an item line counts (a `- name:` at the block's item indent), so text nested
+    inside another item is not an entry. The value runs from `expression:` to the first non-blank
+    line indented no deeper than the `expression:` key, so a plain one-line scalar, its
+    continuation lines and a `>-` block scalar all come back entire. Reading only a prefix let
+    `<gate> || true` pass as the gate (review of PR 28)."""
+    items = [indent_of(l) for l in lines if l.strip()]
+    item_ind = items[0] if items else -1
     out = []
     for i, line in enumerate(lines):
+        if indent_of(line) != item_ind:
+            continue
         if not re.match(r"^\s*-\s*name:\s*['\"]?claims-a-policy-version['\"]?\s*$", line):
             continue
         j = i + 1
@@ -223,7 +258,7 @@ def claim_gate_expressions(text):
             out.append("")
             continue
         m = re.match(r"^(?P<ind>\s*)expression:\s?(?P<rest>.*)$", lines[j])
-        if not m:
+        if not m or len(m.group("ind")) <= item_ind:
             out.append("")
             continue
         ind = len(m.group("ind"))
@@ -232,7 +267,7 @@ def claim_gate_expressions(text):
         k = j + 1
         while k < len(lines):
             nxt = lines[k]
-            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= ind:
+            if nxt.strip() and indent_of(nxt) <= ind:
                 break
             parts.append(nxt.strip())
             k += 1
@@ -243,14 +278,49 @@ def claim_gate_expressions(text):
     return out
 
 
-def carries_claim_gate(path):
-    """Proof 3a: the body's `claims-a-policy-version` matchCondition exists and is EXACTLY the
-    claim test, nothing added before or after it. Read whitespace-insensitively, so the authoring
-    block scalar and the rendered one-line form both match. A body without it, or with it
-    loosened, matches an UNCLAIMED pod -- CoreDNS included."""
-    exprs = claim_gate_expressions(policy_body(open(path).read()))
+def claim_gate_problem(text):
+    """Proof 3a, as a pure function over a body's text. None when the body is ONE MutatingPolicy
+    whose one `spec.matchConditions` list carries the `claims-a-policy-version` entry EXACTLY as
+    the claim test, nothing added before or after it; otherwise the reason it is not.
+
+    Placement is read, not just text (second review of PR 28, 2026-09-22): a second policy
+    document in the file with no gate, or the gate's words parked in an annotation while the real
+    matchCondition admits every pod, each let the engine cage an unclaimed CoreDNS pod at
+    `isolated` while a whole-file search still found the gate. Extra matchConditions are allowed:
+    the engine ANDs them, so they only narrow. The expression is compared whitespace-insensitively,
+    so the authoring block scalar and the rendered one-line form both match. Comments are stripped
+    first; the `\\n` escapes are NOT unfolded here, so a string cannot forge a key line."""
+    docs = yaml_documents(strip_comments(text))
+    if len(docs) != 1:
+        return f"{len(docs)} YAML documents, not one policy"
+    lines = docs[0].split("\n")
+    kinds = [m.group(1) for l in lines for m in [re.match(r"^kind:\s*(\S+)\s*$", l)] if m]
+    if kinds != ["MutatingPolicy"]:
+        return f"top-level kind {kinds}, not one MutatingPolicy"
+    specs = [i for i, l in enumerate(lines) if re.match(r"^spec:\s*$", l)]
+    if len(specs) != 1:
+        return f"{len(specs)} top-level spec blocks, not one"
+    spec = block_after(lines, specs[0])
+    child = min((indent_of(l) for l in spec if l.strip()), default=0)
+    keys = [i for i, l in enumerate(spec)
+            if indent_of(l) == child and re.match(r"^\s*matchConditions:", l)]
+    if len(keys) != 1:
+        return f"{len(keys)} spec.matchConditions keys, not one"
+    if not re.match(r"^\s*matchConditions:\s*$", spec[keys[0]]):
+        return "spec.matchConditions is not a block list"
+    exprs = claim_gate_expressions(block_after(spec, keys[0]))
+    if not exprs:
+        return "no claims-a-policy-version entry in spec.matchConditions"
     squash = lambda s: re.sub(r"\s+", "", s)
-    return len(exprs) > 0 and all(squash(e) == squash(CLAIM_GATE) for e in exprs)
+    if any(squash(e) != squash(CLAIM_GATE) for e in exprs):
+        return "claims-a-policy-version is not exactly the claim test"
+    return None
+
+
+def carries_claim_gate(path):
+    """Proof 3a over a file. A body without the gate, with it loosened, or with it anywhere but
+    the one policy's own matchConditions, matches an UNCLAIMED pod -- CoreDNS included."""
+    return claim_gate_problem(open(path).read()) is None
 
 
 def unlabelled_default(path):
@@ -338,34 +408,65 @@ if selfcheck:
         return body
 
     # the claim gate: authoring block scalar, rendered one-line form, missing, and a
-    # gate loosened to something that admits the unclaimed
+    # gate loosened to something that admits the unclaimed. Each fragment is read inside a
+    # real policy document, because proof 3a reads placement, not just text.
+    def policy(spec, name="cage-tier", meta=""):
+        return (f"apiVersion: policies.kyverno.io/v1alpha1\nkind: MutatingPolicy\nmetadata:\n"
+                f"  name: {name}\n{meta}spec:\n  matchConstraints:\n    resourceRules: []\n{spec}")
+
+    def gated(spec, **kw):
+        return carries_claim_gate(write(policy(spec, **kw)))
+
     gate_block = ("  matchConditions:\n    - name: claims-a-policy-version\n      expression: >-\n"
                   "        object.metadata.?labels['policy-as-versioned.dev/policy-version']"
                   ".orValue('') != ''\n")
     gate_line = ("  matchConditions:\n  - name: claims-a-policy-version\n    expression: "
                  "object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''\n"
                  "  - name: only-this-policy-version\n    expression: x == '5.0.0'\n")
-    assert carries_claim_gate(write(gate_block)), "authoring block-scalar gate must be read"
-    assert carries_claim_gate(write(gate_line)), "rendered one-line gate must be read"
-    assert not carries_claim_gate(write("  matchConditions: []\n")), "no gate must read as no gate"
-    assert not carries_claim_gate(write(gate_block.replace("!= ''", "!= 'x' || true"))), \
+    any_pod = "  matchConditions:\n    - name: any-pod\n      expression: 'true'\n"
+    assert gated(gate_block), "authoring block-scalar gate must be read"
+    assert gated(gate_line), "rendered one-line gate must be read"
+    assert not gated("  matchConditions: []\n"), "no gate must read as no gate"
+    assert not gated(gate_block.replace("!= ''", "!= 'x' || true")), \
         "a gate loosened to admit the unclaimed is not the gate"
     # the real gate kept as a PREFIX and loosened after it: a prefix match read these as the
     # gate while the engine caged an unclaimed pod at isolated (review of PR 28, 2026-09-22)
-    assert not carries_claim_gate(write(gate_block.replace("!= ''", "!= '' || true"))), \
+    assert not gated(gate_block.replace("!= ''", "!= '' || true")), \
         "block scalar: the gate with `|| true` after it admits the unclaimed"
-    assert not carries_claim_gate(write(gate_line.replace("!= ''\n", "!= '' || true\n", 1))), \
+    assert not gated(gate_line.replace("!= ''\n", "!= '' || true\n", 1)), \
         "one-line form: the gate with `|| true` after it admits the unclaimed"
-    assert not carries_claim_gate(write(gate_line.replace("!= ''\n", "!= ''\n      || true\n", 1))), \
+    assert not gated(gate_line.replace("!= ''\n", "!= ''\n      || true\n", 1)), \
         "one-line form: a `|| true` continuation line admits the unclaimed"
-    assert not carries_claim_gate(write(gate_block + "        || true\n")), \
+    assert not gated(gate_block + "        || true\n"), \
         "block scalar: a `|| true` continuation line admits the unclaimed"
-    assert carries_claim_gate(write(gate_block + "  variables:\n    - name: x\n      expression: y\n")), \
+    assert gated(gate_block + "  variables:\n    - name: x\n      expression: y\n"), \
         "the next key after the gate is not part of the gate"
-    assert not carries_claim_gate(write(
+    assert not gated(
         "  # - name: claims-a-policy-version\n  #   expression: >-\n"
         "  #     object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''\n"
-        "  matchConditions: []\n")), "a COMMENTED-OUT gate is no gate"
+        "  matchConditions: []\n"), "a COMMENTED-OUT gate is no gate"
+    # PLACEMENT (second review of PR 28, 2026-09-22): each of these carries the gate's exact
+    # text somewhere in the file while the engine cages an unclaimed pod, or cannot be read
+    shadow = policy(any_pod, name="cage-tier-shadow")
+    assert not carries_claim_gate(write(policy(gate_block) + "---\n" + shadow)), \
+        "a second policy document without the gate matches every pod"
+    assert not carries_claim_gate(write(policy(gate_block) + "--- \n" + shadow)), \
+        "a `---` with trailing space still starts a document"
+    note = "".join("      " + l + "\n" for l in gate_block.splitlines()[1:])
+    assert not gated(any_pod, meta="  annotations:\n    note: |\n" + note), \
+        "the gate's words in an annotation are not the policy's matchCondition"
+    assert not gated(gate_block + any_pod), "a duplicated matchConditions key is not one gate"
+    assert not gated("  matchConstraints2:\n" + gate_block.replace("  ", "    ", 1) + any_pod), \
+        "the gate nested under another key is not spec.matchConditions"
+    assert not gated("  matchConditions: [{name: claims-a-policy-version, expression: x}]\n"), \
+        "a flow-form list is not read, so it is not vouched for"
+    assert not gated(gate_block.replace("    - name: claims", "    - name: any-pod\n"
+                                        "      expression: 'true'\n"
+                                        "      note:\n        - name: claims", 1)), \
+        "a gate-shaped line nested inside another item is not an item"
+    assert not carries_claim_gate(write(policy(gate_block).replace("kind: MutatingPolicy",
+                                                                    "kind: List"))), \
+        "a body that is not one MutatingPolicy is not vouched for"
 
     # unlabelled_default: all three shapes, the danger value, the safe value, prose ignored
     write("    - name: tier\n      expression: >-\n"
@@ -437,11 +538,12 @@ if not files:
 rel = lambda f: os.path.relpath(f, estate)
 
 print(f"3. the substrate is outside the cage by match condition, over {len(files)} served bodies")
-ungated, governed = outside_the_cage({f: carries_claim_gate(f) for f in files},
+problems = {f: claim_gate_problem(open(f).read()) for f in files}
+ungated, governed = outside_the_cage({f: p is None for f, p in problems.items()},
                                      substrate_labels(platform))
 if ungated:
     fail(f"served cage-tier bodies without the claims-a-policy-version gate: "
-         f"{', '.join(rel(f) for f in ungated)} -- every unclaimed substrate pod (CoreDNS, Flux, "
+         f"{', '.join(f'{rel(f)} ({problems[f]})' for f in ungated)} -- every unclaimed substrate pod (CoreDNS, Flux, "
          f"Kyverno) would be caged, and the cluster stops")
 if governed:
     fail(f"substrate Namespaces carry {GOVERNED}: \"true\": {', '.join(governed)} -- "
