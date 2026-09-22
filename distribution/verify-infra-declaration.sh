@@ -179,18 +179,22 @@ def declared_versions(platform_dir):
 
 def served_cage_tier_files(estate_dir, platform_dir):
     """Every cage-tier body that is delivered somewhere: each declared line,
-    the graded/ authoring copy, and each adopter's composed copy."""
-    out = []
+    the graded/ authoring copy, and each adopter's composed copy. Returns (found, missing):
+    a line versions.yaml declares whose body is absent is named in `missing`, never dropped,
+    because the gate cannot vouch for a body it did not read."""
+    out, missing = [], []
     for v in declared_versions(platform_dir):
         p = os.path.join(platform_dir, "distribution", "policies", f"v{v}", "cage-tier.yaml")
         if os.path.isfile(p):
             out.append(p)
+        else:
+            missing.append(v)
     g = os.path.join(platform_dir, "graded", "policies", "cage-tier.yaml")
     if os.path.isfile(g):
         out.append(g)
     out.extend(sorted(glob.glob(os.path.join(estate_dir, "*", "composed", "policies", "*",
                                              "cage-tier.yaml"))))
-    return out
+    return out, missing
 
 
 def policy_body(text):
@@ -202,18 +206,51 @@ def policy_body(text):
     return strip_comments(text).replace("\\n", "\n")
 
 
+def claim_gate_expressions(text):
+    """Every `claims-a-policy-version` expression in a body, read WHOLE. The value runs from
+    `expression:` to the first non-blank line indented no deeper than the `expression:` key, so
+    a plain one-line scalar, its continuation lines and a `>-` block scalar all come back
+    entire. Reading only a prefix let `<gate> || true` pass as the gate (review of PR 28)."""
+    lines = text.split("\n")
+    out = []
+    for i, line in enumerate(lines):
+        if not re.match(r"^\s*-\s*name:\s*['\"]?claims-a-policy-version['\"]?\s*$", line):
+            continue
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j >= len(lines):
+            out.append("")
+            continue
+        m = re.match(r"^(?P<ind>\s*)expression:\s?(?P<rest>.*)$", lines[j])
+        if not m:
+            out.append("")
+            continue
+        ind = len(m.group("ind"))
+        rest = m.group("rest").strip()
+        parts = [] if re.fullmatch(r"[>|][-+]?", rest) else [rest]
+        k = j + 1
+        while k < len(lines):
+            nxt = lines[k]
+            if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= ind:
+                break
+            parts.append(nxt.strip())
+            k += 1
+        expr = " ".join(p for p in parts if p)
+        if len(expr) >= 2 and expr[0] == expr[-1] and expr[0] in "'\"":
+            expr = expr[1:-1]
+        out.append(expr)
+    return out
+
+
 def carries_claim_gate(path):
-    """Proof 3a: the body's `claims-a-policy-version` matchCondition exists
-    and is exactly the claim test. Read whitespace-insensitively, so the
-    authoring block scalar and the rendered one-line form both match. A body
-    without it matches an UNCLAIMED pod -- CoreDNS included."""
-    text = policy_body(open(path).read())
-    m = re.search(r"-\s*name:\s*claims-a-policy-version\s*\n\s*expression:\s*(?:>-?\s*\n)?"
-                  r"(?P<expr>(?:.*\n?){1,3})", text)
-    if not m:
-        return False
+    """Proof 3a: the body's `claims-a-policy-version` matchCondition exists and is EXACTLY the
+    claim test, nothing added before or after it. Read whitespace-insensitively, so the authoring
+    block scalar and the rendered one-line form both match. A body without it, or with it
+    loosened, matches an UNCLAIMED pod -- CoreDNS included."""
+    exprs = claim_gate_expressions(policy_body(open(path).read()))
     squash = lambda s: re.sub(r"\s+", "", s)
-    return squash(m.group("expr")).startswith(squash(CLAIM_GATE))
+    return len(exprs) > 0 and all(squash(e) == squash(CLAIM_GATE) for e in exprs)
 
 
 def unlabelled_default(path):
@@ -313,6 +350,18 @@ if selfcheck:
     assert not carries_claim_gate(write("  matchConditions: []\n")), "no gate must read as no gate"
     assert not carries_claim_gate(write(gate_block.replace("!= ''", "!= 'x' || true"))), \
         "a gate loosened to admit the unclaimed is not the gate"
+    # the real gate kept as a PREFIX and loosened after it: a prefix match read these as the
+    # gate while the engine caged an unclaimed pod at isolated (review of PR 28, 2026-09-22)
+    assert not carries_claim_gate(write(gate_block.replace("!= ''", "!= '' || true"))), \
+        "block scalar: the gate with `|| true` after it admits the unclaimed"
+    assert not carries_claim_gate(write(gate_line.replace("!= ''\n", "!= '' || true\n", 1))), \
+        "one-line form: the gate with `|| true` after it admits the unclaimed"
+    assert not carries_claim_gate(write(gate_line.replace("!= ''\n", "!= ''\n      || true\n", 1))), \
+        "one-line form: a `|| true` continuation line admits the unclaimed"
+    assert not carries_claim_gate(write(gate_block + "        || true\n")), \
+        "block scalar: a `|| true` continuation line admits the unclaimed"
+    assert carries_claim_gate(write(gate_block + "  variables:\n    - name: x\n      expression: y\n")), \
+        "the next key after the gate is not part of the gate"
     assert not carries_claim_gate(write(
         "  # - name: claims-a-policy-version\n  #   expression: >-\n"
         "  #     object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''\n"
@@ -355,6 +404,12 @@ if selfcheck:
         "    - versions:\n        - { version: \"4.0.0\", tag: \"policy/v4.0.0\" }\n"
         "        - { version: \"5.0.0\", tag: \"policy/v5.0.0\" }\n")
     assert declared_versions(tmp) == ["4.0.0", "5.0.0"], declared_versions(tmp)
+    # a declared line with no body on disk is NAMED, never dropped from the served set
+    os.makedirs(os.path.join(tmp, "distribution", "policies", "v5.0.0"))
+    open(os.path.join(tmp, "distribution", "policies", "v5.0.0", "cage-tier.yaml"), "w").write("x\n")
+    found, missing = served_cage_tier_files(os.path.join(tmp, "no-estate"), tmp)
+    assert [os.path.basename(os.path.dirname(f)) for f in found] == ["v5.0.0"], found
+    assert missing == ["4.0.0"], missing
     import shutil
     shutil.rmtree(tmp)
     print("ok   selfcheck: namespace parsing, the claim gate, the governed read, the substrate "
@@ -373,7 +428,10 @@ if not platform_role_ok(platform):
     fail("platform/party.yaml does not declare the 'platform' role -- infra declaration is unentitled")
 print("  ok   platform/party.yaml carries the platform role")
 
-files = served_cage_tier_files(estate, platform)
+files, missing = served_cage_tier_files(estate, platform)
+if missing:
+    fail("versions.yaml declares " + ", ".join(missing) + " but no distribution/policies/v<N>/"
+         "cage-tier.yaml exists for it -- a declared line with no body cannot be vouched for")
 if not files:
     fail("no served cage-tier.yaml policy body found anywhere -- cannot run the substrate proofs")
 rel = lambda f: os.path.relpath(f, estate)
