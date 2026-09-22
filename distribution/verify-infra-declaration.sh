@@ -1,50 +1,64 @@
 #!/usr/bin/env bash
-# Beat (ticket 26, ADR-0022 story 34/35): "the platform declares its own
-# Namespaces at the infra tier by role, and that declaration lands -- and
-# the truth surface asserts it -- BEFORE the unlabelled-governed-Namespace
-# default flips from baseline to isolated." Three proofs:
+# Beat (ticket 26, ADR-0022; re-aimed by eco-system ticket 113, 2026-09-22).
+#
+# `infra` is a ROLE declaration, not a rung. The platform declares its three
+# substrate Namespaces -- kube-system, flux-system and kyverno -- at
+# `posture.acme.io/tier: infra`, and only a `platform`-role party may. No
+# served cage-tier body reads the word, by decision (ticket 113): a rung is a
+# cage with dials, and any `infra` dial row would either repeat `isolated` or
+# be looser than it, which is an exemption bought by choosing a Namespace.
+# What the declaration does is NAME the substrate, and this check reads it to
+# know which Namespaces to guard. Four proofs:
 #
 #   1. DECLARATION: kube-system, flux-system and kyverno each carry
-#      `posture.acme.io/tier: infra` on their own Namespace manifest, in
-#      the platform's own namespaces.yaml files. No allowlist anywhere --
-#      each is read straight off the manifest.
+#      `posture.acme.io/tier: infra` on their own Namespace manifest, in the
+#      platform's own namespaces.yaml files. No allowlist anywhere.
 #   2. ENTITLEMENT: the party declaring them (platform/party.yaml) carries
-#      the `platform` role. Only a platform-role party may declare `infra`
-#      (ADR-0022) -- a declaration from any other party renders to
-#      `isolated`, so the entitlement is what makes proof 1 mean anything.
-#   3. THE ORDERING RULE: scans every served copy of the `cage-tier` policy
-#      body (distribution, graded, and each adopter's composed/) for the
-#      UNGOVERNED-namespace tier default -- the fallback a Namespace with no
-#      `governed: "true"` label renders to (kube-system/flux-system/kyverno
-#      included, since none of them are governed). If ANY served copy's
-#      default has moved to `isolated` while any of the three infra
-#      namespaces is NOT (yet) declared infra, this FAILS LOUDLY -- that gap
-#      is exactly what stops CoreDNS landing in isolated the moment the
-#      fail-closed default ships. It is a live tripwire, not a historical
-#      fact: the flip has now shipped (below), so pulling an infra
-#      declaration is what would fire it.
+#      the `platform` role (ADR-0022).
+#   3. THE SUBSTRATE IS OUTSIDE THE CAGE, BY MATCH CONDITION. CoreDNS, Flux's
+#      controllers and Kyverno's own pods claim no policy version. What keeps
+#      them out of the cage is not the `infra` label: it is that
+#        a. every served cage-tier body carries the `claims-a-policy-version`
+#           matchCondition, so a pod with no claim is never matched, and
+#        b. none of the substrate Namespaces is governed, so
+#           `governed-namespace-requires-claim` (which cages an UNCLAIMED pod
+#           on the bottom rung) never reaches them either.
+#      Break either one and every substrate pod lands on `isolated` -- no
+#      ingress, no egress -- and the cluster stops. That is the live hazard,
+#      and this is the tripwire for it. Until 2026-09-22 this proof guarded a
+#      different configuration: "pull an infra declaration while the default
+#      reads isolated". No served body produces that outcome, because no body
+#      reads `infra` and an unclaimed pod is skipped with the label or without
+#      it (measured under kyverno 1.18.2 by the hub's
+#      tests/test_cage_ladder_holes.py). The old proof passed on a hazard that
+#      did not exist.
+#   4. A CLAIMING POD IN THE SUBSTRATE FALLS CLOSED. A pod that DOES claim a
+#      version in one of those Namespaces is cage-tier's. `infra` is not in the
+#      body's membership test, so it gets the body's ungoverned else-branch.
+#      That must be `isolated`, the rung the ladder gives whatever it cannot
+#      place. Under 4.0.0 it is `baseline`, the LOOSEST rung, so anyone who can
+#      deploy into the substrate can run a claiming workload with the lightest
+#      cage on the ladder. This proof names every served body that still does
+#      that and FAILS until none does. A body that starts reading `infra` also
+#      fails here, by name: that is a new decision, not a shape to guess at.
 #
-#      THREE served shapes exist side by side, and this check must read all
-#      three or it goes blind exactly when it matters:
-#        a. the pre-namespaceObject flat CEL,
-#           `...['posture.acme.io/tier'].orValue('<default>')` -- the
-#           retired 2.x/3.x trees;
-#        b. the namespaceObject ternary `nsGoverned ? 'isolated' :
-#           '<default>'` -- 4.0.0, vselfcheck, and every adopter composed
-#           copy still pinned to 4.0.0;
-#        c. the COLLAPSED else-branch, `? variables.nsTier : '<default>'` --
-#           graded and 5.0.0 since 2026-09-04 (ticket 63). The flip made
-#           both arms of (b)'s ternary the same rung, so the ternary and the
-#           `nsGoverned` variable it was the only reader of both went away.
-#           A shape this check cannot see reads None, never a safe guess.
+# "Served" means what is delivered to a cluster: each line distribution/
+# versions.yaml DECLARES, the graded/ authoring copy the next line is cut
+# from, and each adopter's composed copy. The retired 1.x-3.x trees and the
+# vselfcheck fixture are frozen and delivered nowhere, so they are not read.
 #
-#      COMMENTS ARE STRIPPED before any of that (ticket 63). They were not
-#      until 2026-09-04, and the flip's own changelog comment in graded's
-#      cage-tier.yaml -- prose quoting the OLD shape, "collapsed from
-#      `nsGoverned ? 'isolated' : 'baseline'`" -- was read as shape (b) and
-#      reported that already-flipped body as still `baseline`. Same bug this
-#      script fixed for parse_namespace_docs on 2026-08-28, one function
-#      down: a comment must declare nothing, here too.
+# THREE served body shapes exist, and proof 4 reads all three:
+#   a. the pre-namespaceObject flat CEL,
+#      `...['posture.acme.io/tier'].orValue('<default>')` -- the retired trees;
+#   b. the namespaceObject ternary `nsGoverned ? 'isolated' : '<default>'` --
+#      4.0.0, vselfcheck and every adopter composed copy pinned to 4.0.0;
+#   c. the COLLAPSED else-branch, `? variables.nsTier : '<default>'` --
+#      graded and 5.0.0 since 2026-09-04 (ticket 63).
+# A shape this check cannot see reads None, and None is an offender in
+# proof 4, never a safe guess.
+#
+# COMMENTS ARE STRIPPED before any of that (ticket 63): the flip's own
+# changelog comment quoted the shape it replaced and was read as shape (b).
 #
 # Wholly offline: reads YAML/text off disk, touches no cluster. Never turns
 # absence of a served copy into a pass -- at least one must be found.
@@ -60,11 +74,12 @@ have() { command -v "$1" >/dev/null 2>&1; }
 have python3 || skip "python3 required"
 [ -f "$PLATFORM/party.yaml" ] || skip "platform/party.yaml not found"
 
-# The selfcheck is what proves the parser and the ordering rule still BITE; run
-# it from the no-argument path, so a regression in the checker cannot ship
-# unnoticed behind a green real run (the gate calls this script with no args).
+# The selfcheck is what proves the parsers and both substrate proofs still
+# BITE; run it from the no-argument path, so a regression in the checker
+# cannot ship unnoticed behind a green real run (the gate calls this script
+# with no args).
 if [ -z "${1:-}" ]; then
-  say "0. selfcheck: the parser and the ordering rule bite (and a COMMENT declares nothing)"
+  say "0. selfcheck: the parsers and the substrate proofs bite (and a COMMENT declares nothing)"
   bash "$0" --selfcheck >/dev/null || fail "the selfcheck did not bite -- the checker itself has regressed"
 fi
 
@@ -74,6 +89,12 @@ import glob, os, re, sys
 platform, estate, selfcheck = sys.argv[1], sys.argv[2], sys.argv[3] == "--selfcheck"
 INFRA_NS = ["kube-system", "flux-system", "kyverno"]
 LABEL = "posture.acme.io/tier"
+GOVERNED = "policy-as-versioned.dev/governed"
+FALLS_CLOSED = "isolated"
+# The one matchCondition that keeps an unclaimed pod out of cage-tier. Read as
+# the expression the served bodies carry, whitespace-insensitive.
+CLAIM_GATE = ("object.metadata.?labels['policy-as-versioned.dev/policy-version']"
+              ".orValue('') != ''")
 
 
 def fail(msg):
@@ -81,33 +102,30 @@ def fail(msg):
     sys.exit(1)
 
 
-def parse_namespace_docs(text):
-    """No pyyaml dependency assumed on the estate's plain python3 (per the
-    brief) -- these manifests are flat `Namespace` docs with a one-line flow
-    map for labels, so a small regex walk is the whole job and needs no
-    parser. Returns {name: {label: value, ...}} for every `kind: Namespace`
-    document in the file.
+def strip_comments(text):
+    """A `#` that starts a line or follows whitespace is a comment; a `#`
+    inside a value would be part of the token, and no label or CEL here has
+    one. Prose about a policy is not the policy (ticket 63, 2026-08-28)."""
+    return re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", text)
 
-    COMMENTS ARE STRIPPED FIRST. Until 2026-08-28 the label walk ran over the
-    raw document, and engine/namespaces.yaml's own HEADER COMMENT contains the
-    words `posture.acme.io/tier: infra` -- so deleting the label from the
-    kyverno Namespace's real labels still produced a PASS, read out of prose.
-    That made ordering_rule() below, the whole point of this script, permanently
-    inert for that namespace. Only the `labels:` mapping is read now, so a
-    declaration has to be a declaration."""
+
+def parse_namespace_docs(text):
+    """No pyyaml dependency assumed on the estate's plain python3 -- these
+    manifests are flat `Namespace` docs with a one-line flow map (or a small
+    indented block) for labels. Returns {name: {label: value, ...}} for every
+    `kind: Namespace` document. COMMENTS ARE STRIPPED FIRST: engine/
+    namespaces.yaml's own header comment contains the words
+    `posture.acme.io/tier: infra`, and until 2026-08-28 prose satisfied the
+    declaration."""
     docs = {}
     for doc in re.split(r"^---\s*$", text, flags=re.M):
-        # a `#` that starts a line or follows whitespace is a comment; a `#`
-        # inside a value would be part of the token, and no label here has one.
-        doc = re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", doc)
+        doc = strip_comments(doc)
         if "kind: Namespace" not in doc:
             continue
         m = re.search(r"^\s*name:\s*(\S+)", doc, re.M)
         if not m:
             continue
         name = m.group(1).strip().strip('"').strip("'")
-        # Only what sits under `labels:` -- either the one-line flow map these
-        # manifests use, or an indented block -- never the whole document.
         lm = re.search(r"^\s*labels:\s*(?:\{(?P<flow>[^}]*)\}|\n(?P<block>(?:[ \t]+\S.*\n?)+))",
                        doc, re.M)
         chunk = ""
@@ -118,12 +136,10 @@ def parse_namespace_docs(text):
     return docs
 
 
-def declared_infra(platform_dir):
-    """Proof 1: read the platform's own namespaces.yaml files (only the
-    three this ticket owns -- access, engine, identity) and check every one
-    of INFRA_NS carries posture.acme.io/tier: infra. No namespace LIST is
-    built or emitted anywhere (ADR-0018 §1) -- this is a read, per name,
-    straight off the manifests it was told to check."""
+def substrate_labels(platform_dir):
+    """{name: labels} for each of INFRA_NS the platform's own namespaces.yaml
+    files declare (access, engine, identity). Read per name, straight off the
+    manifests; no namespace LIST is built or emitted (ADR-0018 §1)."""
     found = {}
     for plane in ("access", "engine", "identity"):
         p = os.path.join(platform_dir, plane, "namespaces.yaml")
@@ -131,71 +147,79 @@ def declared_infra(platform_dir):
             continue
         for name, labels in parse_namespace_docs(open(p).read()).items():
             if name in INFRA_NS:
-                found[name] = labels.get(LABEL)
+                found[name] = labels
+    return found
+
+
+def declared_infra(platform_dir):
+    """Proof 1: every one of INFRA_NS carries posture.acme.io/tier: infra."""
+    found = {n: l.get(LABEL) for n, l in substrate_labels(platform_dir).items()}
     missing = [n for n in INFRA_NS if found.get(n) != "infra"]
     return missing, found
 
 
 def platform_role_ok(platform_dir):
-    """Proof 2: platform/party.yaml's roles[] includes 'platform' -- the
-    only role ADR-0022 entitles to declare infra."""
+    """Proof 2: platform/party.yaml's roles[] includes 'platform'."""
     text = open(os.path.join(platform_dir, "party.yaml")).read()
     m = re.search(r"^roles:\s*\[([^\]]*)\]", text, re.M)
     if not m:
         return False
-    roles = [r.strip() for r in m.group(1).split(",")]
-    return "platform" in roles
+    return "platform" in [r.strip() for r in m.group(1).split(",")]
 
 
-def served_cage_tier_files(estate_dir):
-    pats = [
-        "platform/distribution/policies/*/cage-tier.yaml",
-        "platform/graded/policies/cage-tier.yaml",
-        "*/composed/policies/*/cage-tier.yaml",
-    ]
+def declared_versions(platform_dir):
+    """The lines distribution/versions.yaml DECLARES -- the ones Flux
+    delivers. Comments stripped: the file's changelog prose names versions
+    too."""
+    p = os.path.join(platform_dir, "distribution", "versions.yaml")
+    if not os.path.isfile(p):
+        return []
+    return re.findall(r"\{\s*version:\s*\"([^\"]+)\"", strip_comments(open(p).read()))
+
+
+def served_cage_tier_files(estate_dir, platform_dir):
+    """Every cage-tier body that is delivered somewhere: each declared line,
+    the graded/ authoring copy, and each adopter's composed copy."""
     out = []
-    for pat in pats:
-        out.extend(sorted(glob.glob(os.path.join(estate_dir, pat))))
+    for v in declared_versions(platform_dir):
+        p = os.path.join(platform_dir, "distribution", "policies", f"v{v}", "cage-tier.yaml")
+        if os.path.isfile(p):
+            out.append(p)
+    g = os.path.join(platform_dir, "graded", "policies", "cage-tier.yaml")
+    if os.path.isfile(g):
+        out.append(g)
+    out.extend(sorted(glob.glob(os.path.join(estate_dir, "*", "composed", "policies", "*",
+                                             "cage-tier.yaml"))))
     return out
 
 
 def policy_body(text):
-    """A served policy body with its COMMENTS REMOVED and its rendered
-    escapes unfolded, ready for the shape regexes below.
+    """A served policy body with its COMMENTS REMOVED and its rendered escapes
+    unfolded. A rendered version tree writes each CEL expression as one
+    double-quoted YAML scalar with literal backslash-n escapes, the authoring
+    copy uses a block scalar with real newlines; unfolding makes one set of
+    regexes read both."""
+    return strip_comments(text).replace("\\n", "\n")
 
-    Comments first: a rendered tree and an authoring copy both carry prose,
-    and prose about a policy is not the policy. On 2026-09-04 the flip's own
-    changelog comment in graded/policies/cage-tier.yaml quoted the shape it
-    had just replaced, and unlabelled_default read that quotation instead of
-    the live expression -- reporting a body that defaults to `isolated` as
-    still `baseline`, which is precisely the direction this tripwire must
-    never be wrong in. Then `\\n`: a rendered version tree writes each CEL
-    expression as one double-quoted YAML scalar with literal backslash-n
-    escapes, while the authoring copy uses a block scalar with real
-    newlines. Unfolding makes one set of regexes read both."""
-    text = re.sub(r"(?m)(?:^|(?<=\s))#.*$", "", text)
-    return text.replace("\\n", "\n")
+
+def carries_claim_gate(path):
+    """Proof 3a: the body's `claims-a-policy-version` matchCondition exists
+    and is exactly the claim test. Read whitespace-insensitively, so the
+    authoring block scalar and the rendered one-line form both match. A body
+    without it matches an UNCLAIMED pod -- CoreDNS included."""
+    text = policy_body(open(path).read())
+    m = re.search(r"-\s*name:\s*claims-a-policy-version\s*\n\s*expression:\s*(?:>-?\s*\n)?"
+                  r"(?P<expr>(?:.*\n?){1,3})", text)
+    if not m:
+        return False
+    squash = lambda s: re.sub(r"\s+", "", s)
+    return squash(m.group("expr")).startswith(squash(CLAIM_GATE))
 
 
 def unlabelled_default(path):
-    """The tier an UNGOVERNED namespace (kube-system/flux-system/kyverno's
-    own population) falls to when this served body has no tier opinion for
-    it. Three shapes, checked in the order a served copy migrates through:
-      1. The COLLAPSED else-branch -- `? variables.nsTier : '<default>'` --
-         graded and 5.0.0 since ticket 63 flipped the default. Checked
-         first: shape 2's regex cannot match it, but a body carrying both
-         (an authoring copy mid-edit) is honestly described by the arm that
-         actually runs, which is the collapsed one.
-      2. The namespaceObject ternary's else-branch --
-         `nsGoverned ? 'isolated' : '<default>'` -- 4.0.0, vselfcheck, and
-         every adopter composed copy still pinned to 4.0.0.
-      3. The older flat CEL read straight off the pod's own label --
-         `...['posture.acme.io/tier'].orValue('<default>')` -- the retired
-         2.x/3.x trees, not yet migrated when they were frozen.
-    None if this file matches none of them (a shape this check cannot see is
-    never treated as safe -- served_cage_tier_files' caller still lists it,
-    with its default printed as None, so a genuinely new shape is visible
-    in the output rather than silently skipped)."""
+    """The tier an UNGOVERNED namespace falls to when this body has no tier
+    opinion for it. Three shapes, checked in the order a served copy migrates
+    through (collapsed, ternary, flat). None if none matches."""
     text = policy_body(open(path).read())
     m = re.search(r"\?\s*variables\.nsTier\s*:\s*'([a-zA-Z]+)'", text)
     if m:
@@ -207,112 +231,135 @@ def unlabelled_default(path):
     return m.group(1) if m else None
 
 
-def ordering_rule(defaults_by_file, missing_infra):
-    """THE check this ticket exists for: a served body whose unlabelled
-    default is 'isolated' while any infra namespace is undeclared is the
-    exact gap that flips CoreDNS/Flux/Kyverno into isolated the instant that
-    default ships. Returns the offending (file, default) pairs, or []."""
-    if not missing_infra:
-        return []
-    return [(f, d) for f, d in defaults_by_file.items() if d == "isolated"]
+def reads_infra(path):
+    """True when the body itself (not its prose) mentions `infra`. Ticket 113
+    decided no served body does; one that does has a rung this check cannot
+    read off the else-branch."""
+    return re.search(r"\binfra\b", policy_body(open(path).read())) is not None
+
+
+def substrate_rung(path):
+    """Proof 4: the rung a pod that CLAIMS a version gets in an ungoverned
+    `infra` Namespace under this body. `infra` is outside the membership
+    test, so it is the ungoverned else-branch. 'reads-infra' if the body now
+    reads the word, None for a shape this check cannot see."""
+    if reads_infra(path):
+        return "reads-infra"
+    return unlabelled_default(path)
+
+
+def outside_the_cage(claim_gated, substrate):
+    """Proof 3, as a pure function: the served bodies that match an unclaimed
+    pod, and the substrate Namespaces that are governed. Both lists empty is
+    the only PASS."""
+    ungated = sorted(f for f, ok in claim_gated.items() if not ok)
+    governed = sorted(n for n, labels in substrate.items() if labels.get(GOVERNED) == "true")
+    return ungated, governed
+
+
+def falls_closed(rungs):
+    """Proof 4, as a pure function: every body whose substrate rung is not
+    `isolated`. None and 'reads-infra' are offenders, never a safe guess."""
+    return sorted((f, r) for f, r in rungs.items() if r != FALLS_CLOSED)
 
 
 if selfcheck:
-    # Pure-function proof of the ordering rule itself, no disk involved:
-    # the danger case must fire, and two safe cases must not.
-    assert ordering_rule({"a": "isolated"}, ["kube-system"]) == [("a", "isolated")], \
-        "isolated default + a missing infra namespace must fail"
-    assert ordering_rule({"a": "baseline"}, ["kube-system"]) == [], \
-        "baseline default must never fail even with a missing declaration"
-    assert ordering_rule({"a": "isolated"}, []) == [], \
-        "isolated default is safe once every infra namespace is declared"
+    import tempfile
+    # parse_namespace_docs: flow map, block map, and a comment declares nothing
     docs = parse_namespace_docs(
         "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: kyverno\n"
-        "  labels: { platform.acme.io/plane: engine, posture.acme.io/tier: infra }\n"
-    )
+        "  labels: { platform.acme.io/plane: engine, posture.acme.io/tier: infra }\n")
     assert docs["kyverno"]["posture.acme.io/tier"] == "infra", docs
-    # THE COMMENT CASE. engine/namespaces.yaml's real header comment contains
-    # the words `posture.acme.io/tier: infra`, and until 2026-08-28 the label
-    # walk read the whole document, so prose satisfied the declaration and this
-    # script's tripwire was inert. A comment must declare nothing.
     docs = parse_namespace_docs(
         "# All three Namespaces below carry `posture.acme.io/tier: infra`\n"
         "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: kyverno\n"
-        "  labels: { platform.acme.io/plane: engine }\n"
-    )
+        "  labels: { platform.acme.io/plane: engine }\n")
     assert docs["kyverno"].get("posture.acme.io/tier") is None, docs
-    # and the indented block form of `labels:` is read too
     docs = parse_namespace_docs(
         "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: kyverno\n"
-        "  labels:\n    platform.acme.io/plane: engine\n    posture.acme.io/tier: infra\n"
-    )
+        "  labels:\n    platform.acme.io/plane: engine\n    posture.acme.io/tier: infra\n")
     assert docs["kyverno"]["posture.acme.io/tier"] == "infra", docs
-    # unlabelled_default must read BOTH served shapes, and the danger value
-    # in each -- this is what silently went blind mid-build once the
-    # Kyverno half landed the namespaceObject ternary, so it is pinned here.
-    tmp = "/tmp/_verify_infra_selfcheck_%d.yaml" % os.getpid()
-    open(tmp, "w").write(
-        "    - name: tier\n      expression: >-\n"
-        "        variables.nsTier in ['baseline','restricted','quarantine','isolated']\n"
-        "          ? variables.nsTier\n"
-        "          : (variables.nsGoverned ? 'isolated' : 'isolated')\n"
-    )
-    assert unlabelled_default(tmp) == "isolated", "ternary shape: danger value must be read"
-    open(tmp, "w").write(
-        "        object.metadata.?labels['posture.acme.io/tier'].orValue('isolated')\n"
-    )
-    assert unlabelled_default(tmp) == "isolated", "flat orValue shape: danger value must be read"
-    open(tmp, "w").write("no tier expression of any known shape in this file\n")
-    assert unlabelled_default(tmp) is None, "an unrecognised shape must read as None, not a safe guess"
-    # THE COLLAPSED SHAPE (ticket 63). Once both arms of the ternary became
-    # `isolated` the ternary went, and with it the only regex this check had.
-    # An unread shape is a None, and a None is not an offender -- so without
-    # this leg the flip would have shipped invisible to the tripwire that
-    # gates it. Both the authoring block scalar and the rendered one-line
-    # form with literal \n escapes are pinned, because the served copies use
-    # one each.
-    open(tmp, "w").write(
-        "    - name: tier\n      expression: >-\n"
-        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
-        "          ? variables.nsTier\n"
-        "          : 'isolated'\n"
-    )
-    assert unlabelled_default(tmp) == "isolated", "collapsed shape, block scalar: danger value must be read"
-    open(tmp, "w").write(
-        '  - name: tier\n    expression: "variables.nsTier in [\'baseline\', \'restricted\']'
-        "\\n  ? variables.nsTier\\n  : 'isolated'\"\n"
-    )
-    assert unlabelled_default(tmp) == "isolated", "collapsed shape, rendered \\n form: danger value must be read"
-    open(tmp, "w").write(
-        "    - name: tier\n      expression: >-\n"
-        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
-        "          ? variables.nsTier\n"
-        "          : 'baseline'\n"
-    )
-    assert unlabelled_default(tmp) == "baseline", "collapsed shape: a safe value must be read as itself"
-    # A COMMENT DECLARES NOTHING, HERE TOO (ticket 63). The flip's changelog
-    # comment quotes the shape it replaced; reading prose reported an
-    # already-flipped body as `baseline` -- the tripwire wrong in the one
-    # direction it must never be wrong in.
-    open(tmp, "w").write(
-        "    # collapsed from `nsGoverned ? 'isolated' : 'baseline'` on 2026-09-04\n"
-        "    # and the older flat read was ['posture.acme.io/tier'].orValue('baseline')\n"
-        "    - name: tier\n      expression: >-\n"
-        "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
-        "          ? variables.nsTier\n"
-        "          : 'isolated'\n"
-    )
-    assert unlabelled_default(tmp) == "isolated", \
-        "prose quoting an older shape must not outvote the expression that actually runs"
-    open(tmp, "w").write(
-        "# this file's only mention of a default is in prose:\n"
-        "# `nsGoverned ? 'isolated' : 'baseline'`\n"
-        "apiVersion: policies.kyverno.io/v1alpha1\n"
-    )
-    assert unlabelled_default(tmp) is None, "a body whose ONLY match is a comment declares nothing"
-    os.remove(tmp)
-    print("ok   selfcheck: ordering_rule, parse_namespace_docs and unlabelled_default (all "
-          "three served shapes, and comments declaring nothing) behave as claimed")
+
+    # proof 3 as a pure function: a clean estate passes, each break fires by name
+    assert outside_the_cage({"a": True}, {"kube-system": {LABEL: "infra"}}) == ([], [])
+    assert outside_the_cage({"a": False}, {"kube-system": {LABEL: "infra"}}) == (["a"], []), \
+        "a body without the claim gate cages CoreDNS and must fire"
+    assert outside_the_cage({"a": True}, {"kube-system": {GOVERNED: "true"}}) == ([], ["kube-system"]), \
+        "a governed substrate Namespace puts CoreDNS under the unclaimed-pod cage and must fire"
+    # proof 4 as a pure function: isolated passes, anything else fires, unknown fires
+    assert falls_closed({"a": "isolated"}) == []
+    assert falls_closed({"a": "baseline"}) == [("a", "baseline")]
+    assert falls_closed({"a": None}) == [("a", None)], "an unread shape is an offender"
+    assert falls_closed({"a": "reads-infra"}) == [("a", "reads-infra")], \
+        "a body that reads infra is a new decision, not a guess"
+
+    tmp = tempfile.mkdtemp(prefix="verify-infra-")
+    body = os.path.join(tmp, "cage-tier.yaml")
+
+    def write(text):
+        open(body, "w").write(text)
+        return body
+
+    # the claim gate: authoring block scalar, rendered one-line form, missing, and a
+    # gate loosened to something that admits the unclaimed
+    gate_block = ("  matchConditions:\n    - name: claims-a-policy-version\n      expression: >-\n"
+                  "        object.metadata.?labels['policy-as-versioned.dev/policy-version']"
+                  ".orValue('') != ''\n")
+    gate_line = ("  matchConditions:\n  - name: claims-a-policy-version\n    expression: "
+                 "object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''\n"
+                 "  - name: only-this-policy-version\n    expression: x == '5.0.0'\n")
+    assert carries_claim_gate(write(gate_block)), "authoring block-scalar gate must be read"
+    assert carries_claim_gate(write(gate_line)), "rendered one-line gate must be read"
+    assert not carries_claim_gate(write("  matchConditions: []\n")), "no gate must read as no gate"
+    assert not carries_claim_gate(write(gate_block.replace("!= ''", "!= 'x' || true"))), \
+        "a gate loosened to admit the unclaimed is not the gate"
+    assert not carries_claim_gate(write(
+        "  # - name: claims-a-policy-version\n  #   expression: >-\n"
+        "  #     object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''\n"
+        "  matchConditions: []\n")), "a COMMENTED-OUT gate is no gate"
+
+    # unlabelled_default: all three shapes, the danger value, the safe value, prose ignored
+    write("    - name: tier\n      expression: >-\n"
+          "        variables.nsTier in ['baseline','restricted','quarantine','isolated']\n"
+          "          ? variables.nsTier\n"
+          "          : (variables.nsGoverned ? 'isolated' : 'baseline')\n")
+    assert unlabelled_default(body) == "baseline", "ternary shape: the loose value must be read"
+    write("        object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')\n")
+    assert unlabelled_default(body) == "baseline", "flat orValue shape must be read"
+    write("no tier expression of any known shape in this file\n")
+    assert unlabelled_default(body) is None, "an unrecognised shape must read as None"
+    collapsed = ("    - name: tier\n      expression: >-\n"
+                 "        variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']\n"
+                 "          ? variables.nsTier\n"
+                 "          : 'isolated'\n")
+    write(collapsed)
+    assert unlabelled_default(body) == "isolated", "collapsed shape, block scalar"
+    write('  - name: tier\n    expression: "variables.nsTier in [\'baseline\', \'restricted\']'
+          "\\n  ? variables.nsTier\\n  : 'isolated'\"\n")
+    assert unlabelled_default(body) == "isolated", "collapsed shape, rendered \\n form"
+    write("    # collapsed from `nsGoverned ? 'isolated' : 'baseline'` on 2026-09-04\n" + collapsed)
+    assert unlabelled_default(body) == "isolated", "prose quoting an older shape must not outvote the expression"
+    write("# `nsGoverned ? 'isolated' : 'baseline'`\napiVersion: policies.kyverno.io/v1alpha1\n")
+    assert unlabelled_default(body) is None, "a body whose ONLY match is a comment declares nothing"
+
+    # substrate_rung: prose about infra is not a reader; a membership test that admits it is
+    write("# `infra` is deliberately absent from the dial table\n" + collapsed)
+    assert substrate_rung(body) == "isolated", "a COMMENT mentioning infra must not count as a reader"
+    write(collapsed.replace("'isolated']", "'isolated', 'infra']"))
+    assert substrate_rung(body) == "reads-infra", "a body that admits infra must be named, not guessed"
+
+    # declared_versions reads the array, not the prose
+    os.makedirs(os.path.join(tmp, "distribution"))
+    open(os.path.join(tmp, "distribution", "versions.yaml"), "w").write(
+        "        # { version: \"9.9.9\" } was never declared\n"
+        "    - versions:\n        - { version: \"4.0.0\", tag: \"policy/v4.0.0\" }\n"
+        "        - { version: \"5.0.0\", tag: \"policy/v5.0.0\" }\n")
+    assert declared_versions(tmp) == ["4.0.0", "5.0.0"], declared_versions(tmp)
+    import shutil
+    shutil.rmtree(tmp)
+    print("ok   selfcheck: namespace parsing, the claim gate, the governed read, the substrate "
+          "rung (all three shapes, a body that reads infra, comments declaring nothing) and the "
+          "declared-line read behave as claimed")
     sys.exit(0)
 
 missing, found = declared_infra(platform)
@@ -326,22 +373,38 @@ if not platform_role_ok(platform):
     fail("platform/party.yaml does not declare the 'platform' role -- infra declaration is unentitled")
 print("  ok   platform/party.yaml carries the platform role")
 
-files = served_cage_tier_files(estate)
+files = served_cage_tier_files(estate, platform)
 if not files:
-    fail("no served cage-tier.yaml policy body found anywhere -- cannot run the ordering check")
-defaults = {f: unlabelled_default(f) for f in files}
-print(f"3. ordering rule: unlabelled-tier defaults across {len(files)} served cage-tier.yaml bodies:")
-for f, d in defaults.items():
-    print(f"     {os.path.relpath(f, estate)}: {d!r}")
-offenders = ordering_rule(defaults, missing)
-if offenders:
-    names = ", ".join(f"{os.path.relpath(f, estate)}={d}" for f, d in offenders)
-    fail(f"unlabelled-governed-Namespace default is 'isolated' in {names} while infra is "
-         f"undeclared for {', '.join(missing)} -- CoreDNS/Flux/Kyverno would fall to isolated")
-print("  ok   no served body defaults an unlabelled tier to isolated while infra is undeclared "
-      "(currently: infra is fully declared, so this is a live tripwire, not a historical fact)")
+    fail("no served cage-tier.yaml policy body found anywhere -- cannot run the substrate proofs")
+rel = lambda f: os.path.relpath(f, estate)
 
-print("PASS: the platform's infra declaration covers kube-system, flux-system and kyverno, "
-      "entitled by the platform role on party.yaml, and no served policy body's unlabelled "
-      "default can flip them to isolated before that declaration lands.")
+print(f"3. the substrate is outside the cage by match condition, over {len(files)} served bodies")
+ungated, governed = outside_the_cage({f: carries_claim_gate(f) for f in files},
+                                     substrate_labels(platform))
+if ungated:
+    fail(f"served cage-tier bodies without the claims-a-policy-version gate: "
+         f"{', '.join(rel(f) for f in ungated)} -- every unclaimed substrate pod (CoreDNS, Flux, "
+         f"Kyverno) would be caged, and the cluster stops")
+if governed:
+    fail(f"substrate Namespaces carry {GOVERNED}: \"true\": {', '.join(governed)} -- "
+         f"governed-namespace-requires-claim would put every unclaimed pod there on the bottom "
+         f"rung, and the cluster stops")
+print("  ok   every served body skips an unclaimed pod, and no substrate Namespace is governed")
+
+rungs = {f: substrate_rung(f) for f in files}
+print("4. a claiming pod in the substrate falls closed -- the rung each served body gives it:")
+for f, r in rungs.items():
+    print(f"     {rel(f)}: {r!r}")
+offenders = falls_closed(rungs)
+if offenders:
+    fail(f"a pod that claims a policy version in kube-system, flux-system or kyverno is not caged "
+         f"at {FALLS_CLOSED!r} under {len(offenders)} served bodies: "
+         f"{', '.join(f'{rel(f)}={r}' for f, r in offenders)} -- `infra` is read by none of them, "
+         f"so it is their ungoverned else-branch; this closes when every line that serves it is "
+         f"retired (eco-system ticket 113)")
+print(f"  ok   every served body cages a claiming substrate pod at {FALLS_CLOSED!r}")
+
+print("PASS: the platform declares kube-system, flux-system and kyverno at infra, entitled by "
+      "the platform role; every served cage-tier body skips their unclaimed pods and none of "
+      "them is governed; and a pod that claims a version there falls closed to isolated.")
 PY

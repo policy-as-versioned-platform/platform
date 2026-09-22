@@ -26,20 +26,26 @@
 # on the platform's own signed namespaces.yaml manifests, party.yaml carries
 # the `platform` role that entitles the declaration, and
 # ../../distribution/verify-infra-declaration.sh asserts both on every gate
-# run. It stays a live tripwire afterwards, not a historical fact: if any infra
-# declaration is ever removed while this default reads `isolated`, that check
-# FAILS loudly rather than letting the cluster stop quietly.
+# run.
 #
-# `infra` is deliberately absent from the dial table. It is a role declaration
-# by a `platform`-role party on its OWN Namespace manifests, never a priced
-# cage, and those namespaces hold no version-claiming pods, so this policy
-# never reaches them. A GOVERNED (adopter) Namespace that writes
-# `posture.acme.io/tier: infra` is not a platform declaration: it is not in the
-# selectable ladder, so it falls closed to `isolated`, exactly as ADR-0022
-# says a declaration from a party without the role must render.
-# ponytail: admission cannot read a party's roles; the role check lives in the
-# composed render (ADR-0022 C8). Add an `infra` dial row here only if the
-# platform ever governs a Namespace of its own.
+# Corrected 2026-09-22 (eco-system ticket 113). That precondition turned out
+# to guard nothing. This body never reads `infra`, so pulling the declaration
+# changes no rung, and an unclaimed CoreDNS pod is skipped by the
+# `claims-a-policy-version` matchCondition below with the label or without it
+# (measured under kyverno 1.18.2). What keeps the substrate running is that
+# matchCondition, plus the substrate Namespaces not being governed, and
+# verify-infra-declaration.sh proof 3 is now the tripwire for exactly those two.
+#
+# `infra` is deliberately absent from this body, by decision (ticket 113). It
+# is a role declaration by a `platform`-role party on its OWN Namespace
+# manifests, never a rung. An `infra` dial row would either repeat `isolated`
+# or be looser than it, and looser is an exemption bought by choosing a
+# Namespace. So a pod that CLAIMS a version in an `infra` Namespace takes the
+# else-branch below and lands on `isolated`, the rung the ladder gives
+# whatever it cannot place; verify-infra-declaration.sh proof 4 holds every
+# served body to that. A GOVERNED (adopter) Namespace that writes
+# `posture.acme.io/tier: infra` gets the same `isolated`, entitled or not:
+# admission cannot read a party's roles.
 #
 # SCOPE: only pods that claim a `policy-as-versioned.dev/policy-version` (the
 # matchConditions gate below, same convention as ../../posture/policies/
@@ -182,7 +188,9 @@ spec:
           : ''
     # Fail closed, everywhere. A governed Namespace with no tier, an unknown
     # tier value (`infra` included — see the header) AND a namespace nobody
-    # governs at all all render `isolated`, the strictest running cage.
+    # governs at all all render `isolated`, the strictest running cage. The
+    # platform's own `infra` Namespaces take this branch too, for any pod there
+    # that claims a version (ticket 113).
     #
     # 2026-09-04 (ticket 63): the ungoverned arm was `baseline` until today.
     # ADR-0022's ordering rule held it there — the platform's own `infra`
@@ -192,7 +200,9 @@ spec:
     # the three namespaces carry `posture.acme.io/tier: infra` on the platform's
     # signed namespaces.yaml, party.yaml carries the platform role, and
     # ../../distribution/verify-infra-declaration.sh is the gating check that
-    # asserts it on every gate run. Governance no longer selects the default:
+    # asserts it on every gate run. (Ticket 113 later measured that the ordering
+    # rule was vacuous: no body reads `infra` and unclaimed pods are skipped, so
+    # the flip could not have reached CoreDNS either way.) Governance no longer selects the default:
     # silence is the bottom rung for everyone, so the else-branch collapsed
     # from `nsGoverned ? 'isolated' : 'baseline'` to the single literal below
     # and the `nsGoverned` variable went with it (see above). A namespace
