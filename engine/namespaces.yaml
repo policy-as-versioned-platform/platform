@@ -3,7 +3,7 @@
 # Kyverno needs a new one.
 #
 # All three Namespaces below carry `posture.acme.io/tier: infra` (ticket 26,
-# ADR-0022): the substrate rung, entitled ONLY to a party whose `roles[]`
+# ADR-0022): the substrate ROLE declaration, entitled ONLY to a party whose `roles[]`
 # includes `platform` (platform/party.yaml declares it: "roles: [publisher,
 # platform]" -- confirmed by this file's own sibling, party.yaml, and by
 # `verify-infra-declaration.sh` which reads both and ties them together). A
@@ -11,11 +11,18 @@
 # there is no allowlist, only this role check. `infra` is NOT selected by
 # the price (it is absent from cage.py's ORDER) and NOT a governed
 # Namespace: none of these three carry `policy-as-versioned.dev/governed`.
-# This is the ordering-critical declaration: it must land, and the truth
-# surface must assert it, before any served policy body's unlabelled-
-# governed-Namespace default flips from `baseline` to `isolated` -- or
-# CoreDNS (kube-system) and Flux itself (flux-system) go dark the moment
-# that default tightens (spec.md story 35).
+# It is NOT a rung: no served cage-tier body reads `infra` (eco-system
+# ticket 113, decided 2026-09-22). It names the substrate, and
+# verify-infra-declaration.sh reads it to know which Namespaces to guard.
+# What keeps CoreDNS (kube-system) and Flux itself (flux-system) running is
+# that their pods claim no policy version, so cage-tier's
+# `claims-a-policy-version` matchCondition skips them, and that none of these
+# Namespaces is governed, so the unclaimed-pod cage skips them too. Label one
+# of these Namespaces `policy-as-versioned.dev/governed: "true"` and the
+# cluster stops; proof 3 of that script fails first. A pod that DOES claim a
+# version here is caged `isolated` under 5.0.0 (proof 4). Until 2026-09-22
+# this comment called the declaration ordering-critical for the isolated
+# flip; it was not, because no body read it.
 apiVersion: v1
 kind: Namespace
 metadata:

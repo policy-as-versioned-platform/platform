@@ -14,9 +14,10 @@ hub's gate over the real adopters:
 Why a second check when the proposer already only tightens: the proposer writes proposals,
 and a human edits the Namespace by hand too. This is the pull-request gate that catches the
 hand edit -- or a merge that raced a re-price -- before Flux renders a looser cage than the
-party's worst-priced regime. A missing declaration is `isolated` by ADR-0022 and binds; ADR-0022's
-`infra` rung is a declaration a platform-role party may make and is tighter than anything a price
-can select, so it binds too; any other tier cannot be compared and is refused as a missing
+party's worst-priced regime. A missing declaration is `isolated` by ADR-0022 and binds. An `infra`
+declaration binds too, and is graded as the rung the cage RENDERS for it, `isolated`: no served
+cage-tier body reads `infra` (eco-system ticket 113), so on a governed Namespace it falls to the
+body's else-branch whoever wrote it. Any other tier cannot be compared and is refused as a missing
 instrument. Two governed Namespace DOCUMENTS -- in two files or in one -- is could-not-look.
 
 Reads the COMMITTED evidence document: on a pull request the compose-check job regenerates
@@ -45,16 +46,34 @@ LADDER = wargamer.LADDER
 FAIL_CLOSED = wargamer.FAIL_CLOSED
 
 
+def rendered(declared: str | None) -> str | None:
+    """The rung `cage-tier` renders for a GOVERNED Namespace's declaration.
+
+    A missing declaration is `isolated` (ADR-0022). `infra` is `isolated` too: no
+    served cage-tier body reads the word (eco-system ticket 113, decided), so it is
+    the body's else-branch, and admission cannot read a party's roles to tell an
+    entitled declaration from an unentitled one. So an entitled `infra` and an
+    unentitled one grade alike here, both as the rung they actually get. Until
+    2026-09-22 this check reported `effective: infra`, a rung no cage delivers,
+    and a reader of the verdict could believe `infra` bought something `isolated`
+    does not. It never did: `isolated` is the tightest rung a price selects, so
+    the verdict was always `bound`, and it still is."""
+    if declared is None or declared == wargamer.INFRA:
+        return FAIL_CLOSED
+    return declared
+
+
 def bind(prices: list[dict], declared: str | None, floor: str | None) -> dict:
     """The verdict, as data. `bound` is True when the declaration is at least as
     tight as the strictest priced line clamped to the floor."""
     sel = wargamer.select_party_tier(prices, current=declared, floor=floor)
     required = sel["tier"]
-    effective = declared if declared is not None else FAIL_CLOSED
-    # rank(), not LADDER.index(): ADR-0022's `infra` rung is a declaration a
-    # platform-role party may make, and it is tighter than every rung a price can
-    # select. LADDER.index() raised on it, which graded a legitimate declaration
-    # as a missing instrument (fixed 2026-09-04).
+    effective = rendered(declared)
+    # rank(), not LADDER.index(): an `infra` declaration is legitimate and
+    # LADDER.index() raised on it, which graded it as a missing instrument (fixed
+    # 2026-09-04). rank() still validates `declared` -- an off-ladder tier raises
+    # here -- before `effective` is compared.
+    wargamer.rank(declared if declared is not None else FAIL_CLOSED)
     bound = required is None or wargamer.rank(effective) >= wargamer.rank(required)
     return {"bound": bound, "declared": declared, "effective": effective, "required": required,
             "strictest_line": sel["strictest_line"], "lines": sel["lines"], "floor": floor,
@@ -96,7 +115,9 @@ def check(evidence_path: Path, adopter_dir: Path) -> tuple[int, str, dict | None
     verdict["manifest"] = str(hits[0].relative_to(adopter_dir))
     lines = ", ".join(f"{k}={v}" for k, v in sorted(verdict["lines"].items())) or "none priced"
     where = (f"{verdict['manifest']} declares {declared!r}"
-             + (f" (none: {FAIL_CLOSED} by default, ADR-0022)" if declared is None else ""))
+             + (f" (none: {FAIL_CLOSED} by default, ADR-0022)" if declared is None else "")
+             + (f" (renders {FAIL_CLOSED!r}: no served cage-tier body reads `infra`, "
+                f"eco-system ticket 113)" if declared == wargamer.INFRA else ""))
     what = (f"strictest priced line {verdict['strictest_line']!r} [{lines}]"
             + (f", clamped to the declared floor {floor!r}" if verdict["clamped_to_floor"] else
                (f", floor {floor!r} does not clamp" if floor else "")))
@@ -198,13 +219,23 @@ def selfcheck() -> None:
             ("a second governed Namespace in the SAME file must be counted, not read past", rc, last)
         assert "2 documents in it" in last, ("the reason must name the file and say it carries "
                                              "two declarations", last)
-        # 12. ADR-0022's `infra`: a platform-role party's legitimate declaration, and
-        #     tighter than any rung a price can select. It binds; it is not a missing
-        #     instrument (which is how it graded until 2026-09-04).
+        # 12. ADR-0022's `infra` on a GOVERNED Namespace. It is not a missing
+        #     instrument (which is how it graded until 2026-09-04), and it binds. But
+        #     no served cage-tier body reads `infra` (ticket 113), so the cage renders
+        #     it `isolated`, entitled or not, and the verdict must say THAT rung. Until
+        #     2026-09-22 it reported `effective: infra`, a rung no cage delivers.
         rc, last, v = plant(tmp, "infra", driftwood_today)
-        assert rc == 0 and v["bound"] and v["effective"] == "infra", (rc, last, v)
+        assert rc == 0 and v["bound"] and v["effective"] == "isolated", (rc, last, v)
+        assert "renders 'isolated'" in last, ("the verdict names the rung the cage renders", last)
         rc, last, v = plant(tmp, "infra", [line("ico", "restricted")], floor="quarantine")
-        assert rc == 0 and v["bound"], (rc, last, v)
+        assert rc == 0 and v["bound"] and v["effective"] == "isolated", (rc, last, v)
+        # and it binds exactly where `isolated` binds, over every priced shape: writing
+        # `infra` buys a party nothing that writing `isolated` does not
+        for prices in (driftwood_today, [line("ico", "restricted")], [line("ico", "baseline")]):
+            a = plant(tmp, "infra", prices)
+            b = plant(tmp, "isolated", prices)
+            assert (a[0], a[2]["bound"], a[2]["effective"]) == (b[0], b[2]["bound"], b[2]["effective"]), \
+                ("infra and isolated must grade alike", a, b)
         # 13. the floor is read only as a DIRECT child of `overlay:`. A `floor:` nested
         #     deeper under `overlay:` is not a declaration party_artefact.py's schema
         #     admits, and until 2026-09-04 the read matched it at any depth -- so a
@@ -246,7 +277,7 @@ def selfcheck() -> None:
           "what to declare; tighter or equal is bound; no declaration is isolated by default; "
           "the declared floor binds, and only where it is declared as a direct child of "
           "`overlay:`; an off-ladder tier is a missing instrument while ADR-0022's `infra` is a "
-          "legitimate declaration that binds; a premium-only document binds nothing and says so; "
+          "legitimate declaration that binds and grades as the `isolated` it renders; a premium-only document binds nothing and says so; "
           "no Namespace, two governed Namespace documents in one file, or no evidence is "
           "could-not-look; and two named feeds from ONE publisher of one kind fold to the "
           "STRICTER of them, in either order, rather than collapsing onto one key")

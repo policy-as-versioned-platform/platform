@@ -92,6 +92,11 @@ spec:
         #     passes, so the precondition is met and the flip ships. It stays a
         #     tripwire afterwards: pull an infra declaration while this default
         #     reads `isolated` and that check FAILS.
+        #     Corrected 2026-09-22 (eco-system ticket 113): that tripwire
+        #     guarded nothing, because no body reads `infra` and an unclaimed
+        #     pod is skipped either way. The check now guards the claim gate
+        #     and the substrate's ungoverned state, and FAILS while any served
+        #     line (4.0.0 today) cages a claiming substrate pod at `baseline`.
         #
         #     Every 4.0.0 consumer must act -- a namespace that was ungoverned
         #     and running normally is now caged to the bottom rung, so this
