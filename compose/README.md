@@ -322,6 +322,22 @@ itself needs.
   parent stays a coherent parent under the new refusal. An estate platform clone that predates
   that machinery now gets a named SKIP listing the missing paths, not a traceback.
 
+## What eco-system ticket 130 changes: the machinery has a delivery route
+
+- **The composer renders `composed/kustomization.yaml`.** It lists every platform machinery file
+  the composer wrote at the `composed/` root, from the same list that wrote them, and nothing
+  else: files only, never a directory, so no version tree is reached twice. The adopter
+  reconciles `./composed` with one Kustomization, beside one per version under
+  `composed/policies/v<version>/`. Before this, nothing reached the root, so the orphan cage,
+  the governed-namespace cages and the `cage-isolated` class they name were rendered and never
+  installed.
+- It is rendered, so `verify()` holds it byte for byte, and a hand edit fails verification like
+  a hand edit to any member. The handbook does not list it: it is kustomize's build input, not an
+  object the cluster holds.
+- The machinery allow-lists are ranged from the parent's served array. The adopter must install
+  exactly the versions it composed, or a claim on a composed but uninstalled version reaches no
+  cage. Each adopter's `scripts/render_composed.py reach` grades that offline.
+
 ## Run
 
 ```sh

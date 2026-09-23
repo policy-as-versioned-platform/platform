@@ -540,6 +540,16 @@ HEADER_COMMENT = (
     "# source-path annotations are the same story, one level down).\n"
 )
 
+# Eco-system ticket 130. The one route to the platform machinery at the composed/ root: the
+# adopter reconciles `./composed` with a Kustomization, and this file is what it builds. It is
+# rendered, never hand-written, so `verify()` holds it byte for byte like every member.
+ROOT_KUSTOMIZATION_PATH = "composed/kustomization.yaml"
+ROOT_KUSTOMIZATION_COMMENT = (
+    "# The delivery route for the platform machinery at the composed/ root (eco-system ticket 130).\n"
+    "# Rendered by composition.py from the same list that wrote the files; never edit by hand.\n"
+    "# Each policy version under policies/v<version>/ has its own Kustomization and is not listed here.\n"
+)
+
 
 class Refused(Exception):
     """A reason composition cannot even start. Turned into outcome:refused,
@@ -4817,7 +4827,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # priced from and the converter that priced it, rendered into the composed
     # tree so the adopter's OWN tag signs it. Nothing in composed/ reads it and
     # no Flux Kustomization points at composed/feeds/ (the adopter's
-    # ResourceSet ranges composed/policies/v<version> only); it is there so a
+    # ResourceSet ranges composed/policies/v<version> and the root list only); it is there so a
     # reader with this repository and nothing else can re-derive these prices.
     vendored_records: list[dict] = []
     for edge in feed_edges:
@@ -4871,6 +4881,22 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             "kind": g["kind"], "version": None,
             "source_party": g["source_party"], "source_sha": g["source_sha"], "action": None,
         })
+
+    # Eco-system ticket 130: the machinery's delivery route. The adopter's ResourceSet ranges
+    # one Kustomization per version over composed/policies/v<version>/, and nothing reached the
+    # composed/ root, so every guard above was rendered and never installed. The root gets its
+    # own kustomization, rendered here from the same list that wrote the files, so a machinery
+    # file can never be rendered and left without a route. It names files only: a directory
+    # would reach a version tree a second time and give its objects two owners.
+    root_objects = sorted(g["out_path"] for g in guards)
+    if root_objects:
+        root_doc: dict[str, object] = {
+            "apiVersion": "kustomize.config.k8s.io/v1beta1",
+            "kind": "Kustomization",
+            "resources": [p[len("composed/"):] for p in root_objects],
+        }
+        rendered[ROOT_KUSTOMIZATION_PATH] = ROOT_KUSTOMIZATION_COMMENT + yaml.safe_dump(
+            root_doc, sort_keys=False, allow_unicode=True, width=4096)
 
     # The recorded hole ids -- open (new + recorded), never closed ones --
     # are the after-state for the NEXT changed-input comparison. A closed
