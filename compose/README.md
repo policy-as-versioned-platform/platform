@@ -179,6 +179,14 @@ itself needs.
   way (`behind`, `current`, or `unobserved` for a checkout that cannot show the tags). The live
   case: tuppence and ludlow pin `threat-register@v1` while `threat-register/v2.0.0` was cut on
   2026-09-01.
+- **A newer major the pinned checkout cannot read still prices the line (ticket 128).** The
+  adopters check a publisher out at their pinned commit, so the day a newer major is tagged on a
+  later commit its directory is not there. The signed tags alone say the pin is behind and since
+  when, and the ramp needs nothing else. The target is then the newest signed tag ahead, marked
+  `newer.readable: false` with `published_at: null`, and the line carries a limit that says so.
+  Before ticket 128 this case wrote `unobserved` and no line, so being behind was free. The
+  proposer does not open a retirement to an unreadable target: a `party.yaml` edit alone would
+  not compose until the publisher pin moves.
 - **Publisher observations travel with the artefact (ticket 110).** A fresh `compose`
   records the complete observed tag state in each feed's `PROVENANCE.json`: the pin's signature
   state, the supersede observation (including current or unobserved), the newest readable signed
@@ -204,7 +212,8 @@ itself needs.
 - **Every feed line carries `pin_signature` and `hole`** (ticket 69's rule reaching past the
   premium): an untagged feed pin is a hole of the whole line, naming the tag that does not exist.
 - The proposer reads the `supersede` line: `wargamer.wargame_retirement()` and `tier_pr.py`'s
-  retirement landing move the one `inherits[]` edge forward in `party.yaml`, forward-only.
+  retirement landing move the one `inherits[]` edge forward in `party.yaml`, forward-only. A
+  line whose target says `readable: false` is priced and not proposed (ticket 128).
 
 ## What eco-system ticket 38 changes: a hole is priced, not counted
 

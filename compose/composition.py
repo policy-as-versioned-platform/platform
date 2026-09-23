@@ -934,6 +934,12 @@ def publisher_observation(edge: dict, tree: Path, sha: str, *, replay: bool = Fa
                 if ("published_at" not in newer or newer["published_at"] is not None
                         and not isinstance(newer["published_at"], str)):
                     raise ValueError("incomplete supersede target")
+                # Ticket 128: a target this checkout could not read says so, and
+                # then carries no envelope date it never read.
+                if "readable" in newer and (newer["readable"] is not False
+                                            or newer["published_at"] is not None):
+                    raise ValueError("an unreadable supersede target must say readable: false "
+                                     "and carry no published_at")
                 for key in ("since", "tagged"):
                     date = newer[key]
                     if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date):
@@ -3305,7 +3311,10 @@ def newest_published_major(tree: Path | None, party: str, name: str,
     skipped for the target, never a reason to write no line (review F1: the
     adopters check the publisher out at one pinned commit, so the newest tag's
     directory is routinely absent, and "unobserved" there made being behind
-    silently free). `observation` is {"state": behind | current | unobserved,
+    silently free). Where NO signed major ahead has a directory here, the target
+    is the newest signed tag, marked `readable: False` with no `published_at`,
+    and the line still prices: the ramp needs only the tag days (ticket 128).
+    `observation` is {"state": behind | current | unobserved,
     "detail"}; the tags NOT counted (lightweight, flattened, unsigned) are
     always named on it. The same could-not-look rules as pin_signature_state:
     a checkout that cannot show the publisher's tags observes nothing."""
@@ -3362,10 +3371,22 @@ def newest_published_major(tree: Path | None, party: str, name: str,
                                      f"the pinned v{pinned}; behind since {oldest_date}, the day "
                                      f"{oldest_tag} was cut{skipped}{uncounted}"}
         unreadable.append(tag)
-    return None, {"state": "unobserved",
-                  "detail": f"{', '.join(unreadable)} sign(s) {name} majors ahead of the pinned "
-                            f"v{pinned}, but this checkout carries no directory for any of them "
-                            f"to price against{uncounted}"}
+    # Ticket 128 (ticket 84's review F1, finished): no signed major ahead has a
+    # directory in this checkout. The adopters check the publisher out at their
+    # pinned commit, so this is the ordinary shape the day a newer major is cut.
+    # The signed tags alone say the pin is behind and since when, and the ramp
+    # needs nothing more: the line prices against the NEWEST signed tag, marked
+    # `readable: False` so no reader mistakes it for content this checkout read.
+    newest_tag, newest_date, newest_major = ordered[-1]
+    newer = {"version": f"v{newest_major}", "tag": newest_tag, "tagged": newest_date,
+             "published_at": None, "readable": False, "since_tag": oldest_tag,
+             "since": oldest_date}
+    return newer, {"state": "behind",
+                   "detail": f"tag {newest_tag}, signed {newest_date}, publishes {name} "
+                             f"v{newest_major} ahead of the pinned v{pinned}; behind since "
+                             f"{oldest_date}, the day {oldest_tag} was cut; this checkout carries "
+                             f"no directory for {', '.join(reversed(unreadable))}, so the line is "
+                             f"priced from the signed tags alone{uncounted}"}
 
 
 def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | None, *,
@@ -3409,6 +3430,11 @@ def price_supersede(edge: dict, entry: dict, tree: Path | None, as_of: str | Non
         limits.append(f"zero (as_of {as_of} precedes the tag day {since}): the signed artefact's "
                       f"as-of is its newest signed input; only a re-composition --as-of a later "
                       f"day (the scheduled proposer's) grows this line")
+    if newer.get("readable") is False:
+        limits.append(f"the pinned checkout carries no directory for {newer['tag']}, so the "
+                      f"newer major's content is unread here: this line is priced from the "
+                      f"signed tags alone, and no retirement to {newer['version']} is proposed "
+                      f"until the {party} pin reaches a commit that carries it")
     ramp = _ramp(since, as_of)
     base = float(entry["amount"])
     return _price_entry(
@@ -7843,14 +7869,27 @@ def selfcheck() -> None:
                  s["currency"], s["as_of"], s["ramp"], s["base"], s2["amount"],
                  ", ".join(f"{p}/{n}" for p, n in behind)))
 
-        # the same pin moved to the newest published major: no line, said so
+        # the same pin moved to the newest READABLE major. Ticket 128: a signed major
+        # still ahead of it whose directory this checkout lacks keeps the pin behind,
+        # priced from the tags alone and marked unreadable; with nothing signed ahead
+        # there is no line, and the entry says `current`.
         _bump_feed_pin(work, "feeds", "threat-register", s["newer"]["version"])
         doc_cur, _ = compose(work, trees)
         assert doc_cur["outcome"] == "composed", doc_cur["refusals"]
-        assert not [e for e in doc_cur["prices"] if e["kind"] == SUPERSEDE_KIND
-                    and e["name"] == "threat-register"], doc_cur["prices"]
+        still_ahead = [major for major, _ in ahead if major > int(s["newer"]["version"][1:])]
+        cur_sups = [e for e in doc_cur["prices"] if e["kind"] == SUPERSEDE_KIND
+                    and e["name"] == "threat-register"]
         cur = next(e for e in doc_cur["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
-        assert cur["superseded"]["state"] == "current", cur["superseded"]
+        if still_ahead:
+            assert not [m for m in still_ahead if (feeds_clone / "threat-register" / f"v{m}").is_dir()], still_ahead
+            assert len(cur_sups) == 1 and cur["superseded"]["state"] == "behind", (cur_sups, cur["superseded"])
+            unread = cur_sups[0]["newer"]
+            assert unread["version"] == f"v{max(still_ahead)}" and unread["readable"] is False \
+                and unread["published_at"] is None, unread
+            assert tag_form.match(unread["since_tag"]).group(1) == str(min(still_ahead)), unread
+        else:
+            assert not cur_sups, doc_cur["prices"]
+            assert cur["superseded"]["state"] == "current", cur["superseded"]
         # and a checkout that cannot show the tags, or shows only an unsigned tag
         # ahead, observes no supersede -- the shapes ticket 69 fixed, at this seam
         with tempfile.TemporaryDirectory() as shapes:
@@ -7882,21 +7921,40 @@ def selfcheck() -> None:
             # a pin at v2 in the same repo is behind v3 since v3's own cut day
             got2, _ = newest_published_major(pub3, "fixture-publisher", "fixture-feed", "v2")
             assert got2 is not None and got2["since"] == "2026-09-05", got2
-            # nothing readable at all: unobserved, naming every signed tag ahead
+            # Ticket 128 (red before: (None, unobserved), so no line was written): no
+            # directory for ANY signed major ahead is still behind. The target is the
+            # newest signed tag, marked unreadable, and since is the oldest's cut day.
             pub0 = _fixture_publisher(Path(shapes) / "publisher0", dirs=("v1",),
-                                      tags={"fixture-feed/v2.0.0": "2026-09-01"})
+                                      tags={"fixture-feed/v2.0.0": "2026-09-01",
+                                            "fixture-feed/v3.0.0": "2026-09-05"})
             got0, obs0 = newest_published_major(pub0, "fixture-publisher", "fixture-feed", "v1")
-            assert got0 is None and obs0["state"] == "unobserved" and "fixture-feed/v2.0.0" in obs0["detail"], obs0
+            assert obs0["state"] == "behind" and "fixture-feed/v3.0.0" in obs0["detail"] \
+                and "no directory" in obs0["detail"], obs0
+            assert got0 == {"version": "v3", "tag": "fixture-feed/v3.0.0", "tagged": "2026-09-05",
+                            "published_at": None, "readable": False,
+                            "since_tag": "fixture-feed/v2.0.0", "since": "2026-09-01"}, got0
+            base0 = {"amount": 1000.0, "pin_signature": {"state": "signed"}}
+            s_0 = price_supersede({"party": "fixture-publisher", "kind": "feed",
+                                   "name": "fixture-feed", "version": "v1"}, base0, pub0,
+                                  "2027-09-01", adopter_party="tuppence",
+                                  reporting_currency="GBP",
+                                  perspective_doc=yaml.safe_load(
+                                      (work / "party.yaml").read_text()))
+            assert s_0 is not None and abs(s_0["amount"] - 1000.0) < 1e-6 and s_0["ramp"] == 2.0, s_0
+            assert any("no retirement" in lim for lim in s_0["limits"]), s_0["limits"]
             # the not-counted tags are named on a behind observation too (review F4)
             subprocess.run(["git", "-C", str(pub), "-c", "tag.gpgsign=false", "tag", "fixture-feed/v4.0.0"],
                            check=True, capture_output=True)
             _, obs_l = newest_published_major(pub, "fixture-publisher", "fixture-feed", "v1")
             assert obs_l["state"] == "behind" and "fixture-feed/v4.0.0" in obs_l["detail"] and "publishes nothing" in obs_l["detail"], obs_l
-        print("OK supersede: the same pin at v2 prints no line and the feed entry says `current`; "
+        print("OK supersede: the same pin at the newest readable major is still behind a signed "
+              "major this checkout cannot read (priced from the tags, marked unreadable), or else "
+              "prints no line and says `current`; "
               "no tag at all is `unobserved`; an unsigned or lightweight tag ahead publishes "
               "nothing and is named rather than counted; a signed major ahead whose directory "
               "the checkout does not carry is named and the line prices against the newest "
-              "readable one, behind since the OLDEST signed major ahead was cut")
+              "readable one, behind since the OLDEST signed major ahead was cut; with no "
+              "readable major ahead at all the line still prices, from the signed tags alone")
 
         # (b) an untagged cve pin is a PRICED HOLE naming the tag that does not
         # exist, never a refusal -- and it prices through the cve converter.

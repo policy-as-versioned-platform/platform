@@ -342,6 +342,12 @@ def wargame_retirement(prices, org):
         newer = price.get("newer") or {}
         if not newer.get("version"):
             continue                       # nothing signed ahead: composition wrote no target
+        if newer.get("readable") is False:
+            # Ticket 128: priced from the signed tags alone. The pinned publisher
+            # checkout has no directory for the target, so a party.yaml edit to it
+            # would not compose until the publisher pin moves; that is a pin bump
+            # (Renovate's), after which the next composition names a readable target.
+            continue
         rows.append({
             "kind": RETIREMENT_KIND,
             "org": org,
@@ -685,6 +691,11 @@ def selfcheck():
     assert "signed" not in ret, ret
     assert not wargame_retirement([line("feeds", "isolated")], "driftwood"), "no supersede line, no row"
     assert not wargame_retirement([dict(sup, newer={})], "driftwood"), "no signed target, no row"
+    # ticket 128: a target the pinned checkout could not read is priced, never proposed --
+    # moving party.yaml to it alone would not compose until the publisher pin moves too
+    assert not wargame_retirement([dict(sup, newer=dict(sup["newer"], published_at=None,
+                                                        readable=False))], "driftwood"), \
+        "an unreadable target is priced but not proposed"
     cage_rows = wargame_cage_tier([sup], "driftwood", selection=None)
     assert len(cage_rows) == 1 and cage_rows[0]["drift"] is False and propose(cage_rows[0]) is None, cage_rows
     assert select_party_tier([sup, line("ico", "quarantine")], current="baseline")["tier"] == "quarantine", \
