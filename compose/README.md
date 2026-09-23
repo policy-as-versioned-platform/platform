@@ -78,11 +78,9 @@ adopter already pins `platform` and calls through that pin.
 - **Holes** compare against the *last signed composed artefact's own header*: a new hole refuses
   and names it, a recorded one does not, a closed one prints so. No committed header at all is the
   bootstrap case — the first composition ever records every hole and refuses on none.
-- **A control that leaves the selected set refuses**, no exceptions — a narrowed named baseline
-  included for free, since its dropped controls just show up as removed. **A named-baseline
-  widening** (a MODERATE→HIGH shape: the new resolved set is a strict superset of the old) refuses
-  too, with no override — kept separate from the removed-control check so the two never
-  double-fire on one change.
+- **A control that leaves the selected set refused**, no exceptions, and **a named-baseline
+  widening** (a MODERATE→HIGH shape) refused too. Eco-system tickets 38 and 124 turned both into
+  priced deltas; see the ticket 38 section below.
 - The header gains `holes` (the still-open recorded set) and `selected-controls` (the full
   resolved set) — what the *next* run compares against. The document gains `holes[]`.
 
@@ -208,7 +206,13 @@ itself needs.
   last signed composed artefact and what a pinned instrument prices it at. A delta no pinned
   instrument names carries `amount: null` and `priced_by: null`: a named absence, never a zero.
   The only hole-shaped refusal left is a bespoke control with no signed scenario (a missing
-  instrument, ADR-0020). `removed-control` stands: a removal is an exemption by another name.
+  instrument, ADR-0020).
+- **A removal is priced, never refused** (eco-system ticket 124, ADR-0026 point 5). A control
+  that leaves the selected set prints a `removed-control` delta carrying the amount its hole
+  carried: the regulator's weight times the triple, a bespoke control's own scenario residual, or
+  a named absence. Its line on the regime partition reads `unselected` with its amount unchanged.
+  A named-baseline change that only drops controls prints one `baseline-narrowing` delta beside
+  them: how many left the selected set, how many carry an amount, and the sum.
 - **Every hole is `(source, id)`** across every `controls` parent, an adopter's own catalogue
   included. A claim's source is its component-definition's `source` href (`../nist/...` → `nist`);
   a bare `overlay.controls` id is the baseline's catalogue's, `party:id` names another controls

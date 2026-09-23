@@ -121,11 +121,10 @@ this same compose():
     header at all) is the bootstrap case -- the first composition ever
     records every hole and refuses on none (spec.md). The real estate's
     first composition records exactly 285.
-  * A control that LEAVES the selected set refuses, no exceptions
+  * A control that LEAVES the selected set refused, no exceptions
     (`check_selected_set`); a named-baseline WIDENING (MODERATE->HIGH
-    shape) refuses too, with no override (`check_baseline_widening`) --
-    narrowing is left entirely to the removed-control check so the two
-    never double-fire on one change.
+    shape) refused too, with no override (`check_baseline_widening`).
+    Eco-system tickets 38 and 124 turned both into priced deltas (below).
   * The header gains `holes` (the still-open recorded set) and
     `selected-controls` (the full resolved set) -- what the NEXT run
     compares against.
@@ -208,7 +207,11 @@ ECO-SYSTEM TICKET 38 (ticket 15's resolution; ADR-0020; the ADR superseding
 ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
 
   * The new-hole, baseline-widening and new-ungoverned-namespace refusals are
-    GONE. Each prints as a `deltas[]` entry under the adopter's own
+    GONE, and eco-system ticket 124 (ADR-0026 point 5) removed the
+    removed-control refusal too: a control that leaves the selected set
+    prints a `removed-control` delta carrying the price its hole carried,
+    and a named-baseline change that only drops controls prints one
+    `baseline-narrowing` summary beside them. Each prints as a `deltas[]` entry under the adopter's own
     perspective and currency: what changed since the last signed composed
     artefact, and what a pinned instrument prices it at. A delta no pinned
     instrument names carries `amount: null` and `priced_by: null` -- a named
@@ -381,6 +384,7 @@ CONTROL_KEY_SEP = ":"
 BESPOKE_SCENARIO_PROP = "scenario"
 # The deltas[] kinds: what replaced the three refusals, plus their closings.
 DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
+               "removed-control", "baseline-narrowing",
                "new-ungoverned-namespace", "closed-ungoverned-namespace",
                "new-untagged-pin", "closed-untagged-pin", "floor-change")
 # Ticket 69: what a premium entry's `pin_signature.state` may read, and the
@@ -2263,23 +2267,35 @@ def compute_holes(selected_set: set[ControlKey], covered: set[ControlKey],
     return entries
 
 
-def check_selected_set(selected_set: set[ControlKey], prev_selected: set[ControlKey] | None,
-                       baseline_source: str | None) -> list[dict]:
-    """A control leaving the selected set is refused, no exceptions:
-    "a removal is refused... the composition compares the selected set
-    against the last signed composed artefact's selected set and refuses
-    on any control that left" (spec.md; ADR-0013's removal rule, which
-    ticket 38 leaves standing -- a removal is an exemption by another name).
-    None means the first composition -- nothing to compare against yet."""
+def removed_controls(selected_set: set[ControlKey],
+                     prev_selected: set[ControlKey] | None) -> list[ControlKey]:
+    """The controls that left the selected set since the last signed
+    composed artefact, sorted. None means the first composition -- nothing
+    to compare against yet. Nothing here refuses (eco-system ticket 124;
+    ADR-0026 point 5: a removal is priced, never refused). compute_deltas
+    prints each one as a `removed-control` delta."""
     if prev_selected is None:
         return []
-    return [{
-        "kind": "removed-control", "subject": _encode_control(key, baseline_source),
-        "detail": f"{_encode_control(key, baseline_source)} was in the last signed composed "
-                  f"artefact's selected control set and is absent now -- a control may be "
-                  f"added, never removed (ADR-0013)",
-        "needs_composition": True,
-    } for key in sorted(prev_selected - selected_set)]
+    return sorted(prev_selected - selected_set)
+
+
+def _price_removed(removed: list[ControlKey], hole_prices: dict[ControlKey, tuple[float, str]],
+                   adopter_party: str, adopter_dir: Path, catalog_props: dict[str, dict[str, str]],
+                   band: dict | None, reporting: str, floor: str | None) -> list[dict]:
+    """One entry per removed control, carrying the amount its hole carried
+    (ADR-0026 point 5): the regulator's weight times the triple, a bespoke
+    control's own scenario residual, or a named absence. A bespoke control
+    priced through `_price_bespoke_holes` only where its scenario still
+    exists; a removal is never refused for a missing instrument, so one
+    with no scenario, or a band in another currency, is a named absence."""
+    entries = [{"source": source, "control_id": cid, "status": "removed"} for source, cid in removed]
+    _price_holes(entries, hole_prices, adopter_party, reporting)
+    bespoke = [e for e in entries if e["source"] == adopter_party
+               and (catalog_props.get(e["control_id"]) or {}).get(BESPOKE_SCENARIO_PROP)
+               and (Path(adopter_dir) / catalog_props[e["control_id"]][BESPOKE_SCENARIO_PROP]).exists()]
+    if bespoke and band is not None and (band.get("currency") or reporting) == reporting:
+        _price_bespoke_holes(bespoke, adopter_party, adopter_dir, catalog_props, band, reporting, floor)
+    return entries
 
 
 def baseline_widening_delta(baseline_ids: set[str], prev_baseline_ids: set[str] | None,
@@ -2292,8 +2308,8 @@ def baseline_widening_delta(baseline_ids: set[str], prev_baseline_ids: set[str] 
     prices, and the sum of those prices -- or no amount at all where no
     pinned weight names any of them, a named absence rather than a zero.
     The controls themselves print as new-hole deltas beside it. A change
-    that drops a control is check_selected_set's, so a narrowing is never
-    double-counted here."""
+    that drops a control is baseline_narrowing_delta's, so a narrowing is
+    never double-counted here."""
     if prev_baseline_ids is None or prev_name == name or not (baseline_ids > prev_baseline_ids):
         return None
     added = sorted(baseline_ids - prev_baseline_ids)
@@ -2311,6 +2327,37 @@ def baseline_widening_delta(baseline_ids: set[str], prev_baseline_ids: set[str] 
                   f"{prev_name} -> {name} adds {len(added)} control(s), none of which a pinned "
                   f"regulator weight names, so the widening carries no amount yet -- a named "
                   f"absence, not a zero",
+    }
+
+
+def baseline_narrowing_delta(baseline_ids: set[str], prev_baseline_ids: set[str] | None,
+                             prev_name: str | None, name: str, baseline_source: str | None,
+                             removed: list[dict], perspective: str, currency: str) -> dict | None:
+    """A named-baseline change that only DROPS controls prints as ONE
+    summary delta beside the `removed-control` deltas it causes, mirroring
+    the widening (eco-system ticket 124; ADR-0026 point 5). It counts the
+    baseline's dropped controls that actually left the selected set (one
+    the overlay still selects moved no pound), how many of those carry an
+    amount, and their sum -- or no amount where none does, a named
+    absence rather than a zero."""
+    if prev_baseline_ids is None or prev_name == name or not (baseline_ids < prev_baseline_ids):
+        return None
+    dropped_ids = prev_baseline_ids - baseline_ids
+    dropped = [e for e in removed
+               if e["source"] == str(baseline_source) and e["control_id"] in dropped_ids]
+    priced = [e["amount"] for e in dropped if e.get("amount") is not None]
+    return {
+        "kind": "baseline-narrowing", "subject": f"{prev_name} -> {name}",
+        "perspective": perspective, "currency": currency,
+        "dropped": len(dropped), "priced": len(priced),
+        "amount": sum(priced) if priced else None,
+        "detail": f"{prev_name} -> {name} drops {len(dropped)} control(s) from the selected set; "
+                  f"{len(priced)} of them carry a pinned price and withdraw "
+                  f"{sum(priced):.2f} {currency} of selection; the rest are named absences"
+                  if priced else
+                  f"{prev_name} -> {name} drops {len(dropped)} control(s) from the selected set, "
+                  f"none of which a pinned instrument prices, so the narrowing carries no amount "
+                  f"-- a named absence, not a zero",
     }
 
 
@@ -2417,11 +2464,15 @@ def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selecte
 
 
 def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
-                   widening: dict | None, perspective: str, currency: str) -> list[dict]:
+                   widening: dict | None, perspective: str, currency: str,
+                   removed: list[dict] | None = None,
+                   narrowing: dict | None = None) -> list[dict]:
     """deltas[]: what changed since the last signed composed artefact, each
     under the adopter's own perspective and currency with the amount its
     hole or namespace entry carries. This is what the three refusals
-    became (ticket 38): a report of a priced move, never a wall."""
+    became (ticket 38), and the removal refusal after them (ticket 124): a
+    report of a priced move, never a wall. `removed` is _price_removed's
+    entries; `narrowing` is baseline_narrowing_delta's summary."""
     deltas: list[dict] = []
     for h in hole_entries:
         if h["status"] in ("new", "closed"):
@@ -2440,6 +2491,20 @@ def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
             })
     if widening is not None:
         deltas.append(widening)
+    for r in removed or []:
+        deltas.append({
+            "kind": "removed-control", "source": r["source"], "control_id": r["control_id"],
+            "perspective": perspective, "currency": currency,
+            "amount": r.get("amount"), "priced_by": r.get("priced_by"),
+            "detail": f"{r['source']}{CONTROL_KEY_SEP}{r['control_id']} was in the last signed "
+                      f"composed artefact's selected control set and left {perspective}'s "
+                      f"selected control set"
+                      + (f"; its hole carried {r['amount']:.2f} {currency} by {r['priced_by']}"
+                         if r.get("amount") is not None else
+                         "; no pinned instrument names a price for it"),
+        })
+    if narrowing is not None:
+        deltas.append(narrowing)
     for e in ungoverned_entries:
         if e["status"] in ("new", "closed"):
             price = e.get("price") or {}
@@ -4212,7 +4277,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     )
 
     hole_entries = compute_holes(selected_set, covered, prev_holes)
-    refusals += check_selected_set(selected_set, prev_selected, baseline_source)
+    removed = removed_controls(selected_set, prev_selected)
 
     # -----------------------------------------------------------------
     # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
@@ -4259,11 +4324,17 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                                      catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
     _decorate_regime_holes(prices, hole_entries, selected_set, covered)
+    removed_entries = _price_removed(removed, hole_prices, adopter_party, adopter_dir,
+                                     catalog_props.get(adopter_party, {}), band, reporting,
+                                     (party_doc.get("overlay", {}) or {}).get("floor"))
     deltas = compute_deltas(
         hole_entries, ungoverned_entries,
         baseline_widening_delta(baseline_ids, prev_baseline_ids, prev_baseline_name, baseline_name,
                                 baseline_source, hole_prices, adopter_party, reporting),
-        adopter_party, reporting)
+        adopter_party, reporting, removed=removed_entries,
+        narrowing=baseline_narrowing_delta(baseline_ids, prev_baseline_ids, prev_baseline_name,
+                                           baseline_name, baseline_source, removed_entries,
+                                           adopter_party, reporting))
     # Ticket 69 (and 84, for every feed line): a pin that opened or closed as
     # an untagged-pin hole.
     deltas += untagged_pin_deltas(prices, adopter_party, reporting)
@@ -4778,8 +4849,8 @@ def _assert_only_known_dangling(refusals: list[dict], context: str) -> None:
 def _write_fixture_catalog(nist_root: Path) -> None:
     """aa-1 (with a nested enhancement aa-1.1), aa-2, aa-3, bb-1. Three
     named baselines: SMALL={aa-1,aa-1.1,aa-2}, BIG=SMALL plus aa-3 (a
-    strict superset, for the widening refusal), TINY={aa-1} (a strict
-    subset, for the removed-control refusal)."""
+    strict superset, for the widening delta), TINY={aa-1} (a strict
+    subset, for the removed-control and baseline-narrowing deltas)."""
     catalog_dir = nist_root / "catalog"
     catalog_dir.mkdir(parents=True, exist_ok=True)
     catalog_doc = {"catalog": {"uuid": "f" * 8, "groups": [{"id": "fam", "controls": [
@@ -5950,7 +6021,9 @@ def selfcheck() -> None:
         print("OK compute_holes: a second composition with a hole filled (aa-1.1, by an "
               "adopter claim added since the last signed artefact) marks it closed")
 
-        # --- a removed control refuses ---
+        # --- a removed control composes and prints as priced deltas
+        # (eco-system ticket 124; ADR-0026 point 5: a removal is priced,
+        # never refused) ---
         shrunk = Path(td) / "run2-removed"
         shutil.copytree(base, shrunk)
         doc_shrunk = yaml.safe_load((shrunk / "party.yaml").read_text())
@@ -5958,12 +6031,19 @@ def selfcheck() -> None:
         (shrunk / "party.yaml").write_text(yaml.safe_dump(doc_shrunk, sort_keys=False))
         _write_baseline_configmap(shrunk, "TINY")
         doc5, _ = compose(shrunk, fixture_trees)
-        assert doc5["outcome"] == "refused", doc5
-        removed = [r for r in doc5["refusals"] if r["kind"] == "removed-control"]
-        assert {r["subject"] for r in removed} == {"aa-1.1", "aa-2"}, doc5["refusals"]
-        assert all(r["needs_composition"] is True for r in removed)
-        print("OK check_selected_set: TINY drops aa-1.1 and aa-2 from SMALL's selected set, and "
-              "a removed control refuses, naming both")
+        assert doc5["outcome"] == "composed", doc5
+        assert not [r for r in doc5["refusals"] if r["kind"] == "removed-control"], doc5["refusals"]
+        removed = [d for d in doc5["deltas"] if d["kind"] == "removed-control"]
+        assert [d["control_id"] for d in removed] == ["aa-1.1", "aa-2"], doc5["deltas"]
+        assert all(d["amount"] is None and d["priced_by"] is None for d in removed), removed
+        narrowing = [d for d in doc5["deltas"] if d["kind"] == "baseline-narrowing"]
+        assert len(narrowing) == 1 and narrowing[0]["subject"] == "SMALL -> TINY", doc5["deltas"]
+        assert (narrowing[0]["dropped"], narrowing[0]["priced"], narrowing[0]["amount"]) == (2, 0, None)
+        assert [d["kind"] for d in doc5["deltas"]] == ["removed-control", "removed-control",
+                                                       "baseline-narrowing"], doc5["deltas"]
+        print("OK removed_controls: TINY drops aa-1.1 and aa-2 from SMALL's selected set, and the "
+              "narrowing composes: two removed-control deltas and one baseline-narrowing delta, "
+              "each a named absence because no pinned weight names a fixture control")
 
         # --- a widened baseline composes and prints as a priced delta, beside
         # the new hole it opens (ticket 38; reversals 9-10: widening is priced,
@@ -5984,8 +6064,9 @@ def selfcheck() -> None:
         assert widening[0]["amount"] is None, widening
         assert [d["control_id"] for d in doc6["deltas"] if d["kind"] == "new-hole"] == ["aa-3"]
         assert _hole(doc6, "aa-3")["status"] == "new", doc6["holes"]
-        removed_on_widen = [r for r in doc6["refusals"] if r["kind"] == "removed-control"]
-        assert removed_on_widen == [], doc6["refusals"]  # nothing left the selected set
+        removed_on_widen = [d for d in doc6["deltas"]
+                            if d["kind"] in ("removed-control", "baseline-narrowing")]
+        assert removed_on_widen == [], doc6["deltas"]  # nothing left the selected set
         print("OK baseline_widening_delta: SMALL -> BIG composes and prints one widening delta "
               "(1 control added, 0 of them named by a pinned weight, so no amount) beside the "
               "new hole it opens; nothing refuses, and a removal does not also fire")
@@ -6449,7 +6530,7 @@ def selfcheck() -> None:
         # free to write). The recorded header keys its bare ids to the first
         # controls parent that is NOT the adopter, exactly as compose() keys
         # baseline_source, so an unchanged tree re-composes clean: no
-        # removed-control refusal, no new-hole delta (the 2026-09-04 review's
+        # removed-control delta, no new-hole delta (the 2026-09-04 review's
         # blocking defect: reading the FIRST controls parent decoded every
         # bare id as the adopter's own and refused the whole baseline) ---
         first = root / "bespoke-self-first"
