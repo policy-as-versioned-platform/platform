@@ -249,6 +249,16 @@ itself needs.
   new header field, and it survives a close and a reopen — and `as_of` is the newest `published_at`
   among the pinned feeds, so the module still reads no clock. What cannot be read is named in
   `price.limits[]`, never invented. The live case is tuppence's `tuppence-reset`.
+- **The age follows the workloads** (eco-system ticket 122). `since` is the first signed tag that
+  names the namespace, or names as ungoverned another namespace that then held a workload
+  (`Kind/name`) this one holds now and that no longer holds it as an ungoverned namespace. So
+  renaming an aged ungoverned namespace keeps its ramp, and a copy beside the original starts its
+  own. Re-declaring the old name governed, with inert manifests of the same kind and name, does
+  not drop the carried age: a governed namespace pays no ramp. `price.since_by` says
+  which tag, and for a carried age which namespace and workload. A closed `ungoverned[]` entry
+  carries `closed_by`: `governed`, or `left-repo` when no manifest declares or names it any more,
+  and its delta says which. Renaming every workload as well still restarts the ramp, because a
+  workload's kind and name are the adopter's to choose too; ticket 122 records that residual.
 - **A bespoke control** is a small OSCAL catalogue the adopter publishes and pins as a `controls`
   parent of *itself*; the self-pin resolves to the adopter's own tree (the catalogue is signed by
   the same tag as the composed artefact — ADR-0017's "no separate pin"). Its hole is priced by the

@@ -235,7 +235,9 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     residual, LEF-ramped from `since` by the EOL feed's own `eol_ramp`, and
     bounded at the whole residual. `since` is READ off the first SIGNED tag
     whose header names the namespace (no new header field, and it survives a
-    close and a reopen because tag history does); `as_of` is the newest
+    close and a reopen because tag history does), or names as ungoverned a
+    namespace a workload now in this one has left (eco-system ticket 122:
+    a rename keeps its ramp); `as_of` is the newest
     `published_at` among the pinned feeds, so this module still reads no
     clock. A since no signed tag carries, or a residual no feed prices, is a
     named limit on the entry, never an invented date and never a zero.
@@ -1487,19 +1489,30 @@ def ungoverned_namespaces(adopter_dir: Path) -> list[str]:
     return sorted(n for n, governed in institution.items() if not governed)
 
 
-def compute_ungoverned(current: set[str], prev_ids: set[str] | None) -> list[dict]:
+def compute_ungoverned(current: set[str], prev_ids: set[str] | None,
+                       governed: set[str] | None = None) -> list[dict]:
     """ungoverned[] entries (new/recorded/closed) -- "the rule is the hole
     rule" (ticket 15): the exact new/recorded/closed shape compute_holes uses.
     prev_ids is None on the FIRST composition ever. Nothing here refuses any
     more (ticket 38): a new one is PRICED by price_ungoverned below and
-    printed as a delta, exactly as a new hole is."""
+    printed as a delta, exactly as a new hole is.
+
+    `governed` is the set of Namespaces the repo now declares `governed:
+    "true"`. Given it, a closed entry says why it closed (eco-system ticket
+    122): `closed_by: governed` when the Namespace is now governed, and
+    `closed_by: left-repo` when the repo no longer declares or names it. Until
+    then every close printed as governed, and a rename read as governance.
+    Without it the entry carries no `closed_by` and its delta names neither."""
     entries: list[dict] = []
     for name in sorted(current):
         status = "recorded" if prev_ids is None or name in prev_ids else "new"
         entries.append({"namespace": name, "status": status})
     if prev_ids is not None:
         for name in sorted(prev_ids - current):
-            entries.append({"namespace": name, "status": "closed"})
+            entry = {"namespace": name, "status": "closed"}
+            if governed is not None:
+                entry["closed_by"] = "governed" if name in governed else "left-repo"
+            entries.append(entry)
     return entries
 
 
@@ -1528,13 +1541,78 @@ def _signed_tags(repo: Path) -> list[tuple[str, str]]:
     return out
 
 
-def _first_signed_since(adopter_dir: Path, namespace: str) -> tuple[str | None, str | None]:
-    """The date of the FIRST signed tag whose composed header records
-    `namespace` as ungoverned -- the `since` an ungoverned namespace ramps
-    from (ticket 38, ticket 15 Q3(a)). Read off tag history, so no new header
-    field carries it and a namespace that closes and reopens keeps its
-    original since. (date, None) when found; (None, why) when no signed
-    composed artefact names it -- a fact to carry, never a date to invent."""
+def _workload_keys(docs: list[dict], into: dict[str, set[str]]) -> None:
+    """Add `Kind/name` of every workload (WORKLOAD_KINDS) in `docs` to the set
+    of the Namespace it names. The same default and kinds `_namespace_facts`
+    counts, so the keys and the counts describe one walk."""
+    for doc in docs:
+        if doc.get("kind") in WORKLOAD_KINDS:
+            md = doc.get("metadata") or {}
+            into.setdefault(str(md.get("namespace") or "default"), set()).add(
+                f"{doc['kind']}/{md.get('name')}")
+
+
+def _workloads_now(adopter_dir: Path) -> dict[str, set[str]]:
+    """Namespace -> the `Kind/name` of every workload the adopter's own tree
+    declares in it, over the same files `_namespace_facts` walks."""
+    out: dict[str, set[str]] = {}
+    root = Path(adopter_dir)
+    for path in sorted(root.rglob("*.yaml")):
+        parts = path.relative_to(root).parts
+        if ".git" in parts or "composed" in parts or ".work" in parts:
+            continue
+        try:
+            docs = [d for d in yaml.safe_load_all(path.read_text()) if isinstance(d, dict)]
+        except yaml.YAMLError:
+            continue
+        _workload_keys(docs, out)
+    return out
+
+
+def _workloads_at(adopter_dir: Path, tag: str) -> dict[str, set[str]]:
+    """Namespace -> workload keys in the tree the tag points at: the same walk
+    as `_workloads_now`, read from git objects, never from the checkout."""
+    listed = subprocess.run(["git", "-C", str(adopter_dir), "ls-tree", "-r", "-z", tag],
+                            capture_output=True)
+    blobs: list[str] = []
+    for item in listed.stdout.split(b"\0"):
+        if b"\t" not in item:
+            continue
+        meta, path = item.split(b"\t", 1)
+        parts = path.decode().split("/")
+        fields = meta.split()
+        if (len(fields) != 3 or fields[1] != b"blob" or not parts[-1].endswith(".yaml")
+                or ".git" in parts or "composed" in parts or ".work" in parts):
+            continue
+        blobs.append(fields[2].decode())
+    out: dict[str, set[str]] = {}
+    if not blobs:
+        return out
+    batch = subprocess.run(["git", "-C", str(adopter_dir), "cat-file", "--batch"],
+                           input=("\n".join(blobs) + "\n").encode(), capture_output=True).stdout
+    pos = 0
+    while pos < len(batch):
+        eol = batch.index(b"\n", pos)
+        head = batch[pos:eol].split()
+        if len(head) != 3:          # "<sha> missing"
+            pos = eol + 1
+            continue
+        size = int(head[2])
+        body = batch[eol + 1:eol + 1 + size]
+        pos = eol + 1 + size + 1
+        try:
+            docs = [d for d in yaml.safe_load_all(body.decode()) if isinstance(d, dict)]
+        except (yaml.YAMLError, UnicodeDecodeError):
+            continue
+        _workload_keys(docs, out)
+    return out
+
+
+def _ungoverned_history(adopter_dir: Path) -> list[tuple[str, str, set[str], dict[str, set[str]]]]:
+    """(tag, date, the Namespaces its composed header records as ungoverned,
+    the workload keys each of those held in the tagged tree) for every signed
+    tag, oldest first. What `_signed_since` reads; built once per composition."""
+    history = []
     for tag, date in _signed_tags(adopter_dir):
         shown = subprocess.run(["git", "-C", str(adopter_dir), "show", f"{tag}:composed/HEADER.yaml"],
                                capture_output=True, text=True)
@@ -1547,9 +1625,54 @@ def _first_signed_since(adopter_dir: Path, namespace: str) -> tuple[str | None, 
             header = yaml.safe_load(text)
         except yaml.YAMLError:
             continue
-        if isinstance(header, dict) and namespace in (header.get("ungoverned-namespaces") or []):
-            return date, None
-    return None, f"no signed composed artefact names {namespace}"
+        named = set(header.get("ungoverned-namespaces") or []) if isinstance(header, dict) else set()
+        held = {ns: keys for ns, keys in _workloads_at(adopter_dir, tag).items() if ns in named} \
+            if named else {}
+        history.append((tag, date, named, held))
+    return history
+
+
+def _signed_since(adopter_dir: Path, namespace: str, now: dict[str, set[str]] | None = None,
+                  history: list | None = None,
+                  ungoverned: set[str] | None = None) -> tuple[str | None, str | None, str | None]:
+    """The `since` an ungoverned namespace ramps from (ticket 38, ticket 15
+    Q3(a)), as (date, by, None) when a signed tag carries it and (None, None,
+    why) when none does -- a fact to carry, never a date to invent.
+
+    It is the date of the FIRST signed tag that either records `namespace`
+    itself as ungoverned, or records as ungoverned a Namespace X that held, in
+    that tag's tree, a workload (`Kind/name`) `namespace` holds now while X no
+    longer holds it (eco-system ticket 122, delegated). The first half is the
+    rule ADR-0026 point 4 wrote; read off tag history, a namespace that closes
+    and reopens keeps its original since. The second half carries the age with
+    the workloads, so renaming an aged Namespace no longer restarts its ramp.
+    "No longer holds it" keeps a copy from being a move: a new Namespace that
+    runs a workload of the same kind and name beside the aged one starts its
+    own ramp. `by` says which tag and, for a carried age, which Namespace and
+    workload, so the price shows where its date came from.
+
+    "No longer holds it" means no longer holds it as an ungoverned Namespace
+    (the ticket 122 review round, delegated). Otherwise an adopter drops the
+    carried age by re-declaring the old name governed with inert manifests of
+    the same kind and name, while the workloads keep running where they moved.
+    A governed Namespace pays no ramp, so it is not where the workload still
+    sits. `ungoverned` is the Namespaces the checkout leaves ungoverned; None
+    reads it from `_namespace_facts`."""
+    now = _workloads_now(adopter_dir) if now is None else now
+    history = _ungoverned_history(adopter_dir) if history is None else history
+    if ungoverned is None:
+        ungoverned = {ns for ns, gov in _namespace_facts(adopter_dir)[0].items() if not gov}
+    mine = now.get(namespace, set())
+    for tag, date, named, held in history:
+        if namespace in named:
+            return date, f"{tag} names {namespace}", None
+        for other in sorted(named):
+            still = now.get(other, set()) if other in ungoverned else set()
+            moved = sorted((held.get(other, set()) & mine) - still)
+            if moved:
+                return date, f"{tag} names {other} ungoverned, where {moved[0]} sat", None
+    return None, None, (f"no signed composed artefact names {namespace} or a Namespace its "
+                        f"workloads left")
 
 
 def _feeds_module():
@@ -1593,12 +1716,15 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
     Mutates `entries` in place."""
     institution, workloads = _namespace_facts(adopter_dir)
     total = sum(n for ns, n in workloads.items() if ns in institution)
+    now = _workloads_now(adopter_dir)
+    history = _ungoverned_history(adopter_dir) if any(e["status"] != "closed" for e in entries) else []
+    ungoverned = {ns for ns, gov in institution.items() if not gov}
     for entry in entries:
         if entry["status"] == "closed":
             continue
         name = entry["namespace"]
         inside = workloads.get(name, 0)
-        since, since_limit = _first_signed_since(adopter_dir, name)
+        since, since_by, since_limit = _signed_since(adopter_dir, name, now, history, ungoverned)
         limits: list[str] = []
         if since_limit:
             limits.append(f"{since_limit}: ramp held at 1.0 until a signed tag records it")
@@ -1616,7 +1742,7 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
         entry["price"] = {
             "perspective": adopter_party, "currency": currency, "amount": amount,
             "share": share, "workloads": inside, "workloads_total": total,
-            "base": base, "ramp": ramp, "since": since, "as_of": as_of,
+            "base": base, "ramp": ramp, "since": since, "since_by": since_by, "as_of": as_of,
             "bounded": bounded, "limits": limits,
         }
 
@@ -2637,6 +2763,19 @@ def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selecte
                 h["status"] = "unselected"
 
 
+def _closed_ungoverned_detail(entry: dict) -> str:
+    """Why a recorded ungoverned namespace closed, as its entry's `closed_by`
+    says (eco-system ticket 122). An entry with no `closed_by` names neither
+    reason rather than guess one."""
+    name, why = entry["namespace"], entry.get("closed_by")
+    if why == "governed":
+        return f"{name} was a recorded ungoverned namespace and now carries governed: \"true\""
+    if why == "left-repo":
+        return (f"{name} was a recorded ungoverned namespace and left the adopter's repo: no "
+                f"manifest declares it or names it; a workload that moved keeps its age where it went")
+    return f"{name} was a recorded ungoverned namespace and is no longer in the ungoverned set"
+
+
 def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
                    widening: dict | None, perspective: str, currency: str,
                    removed: list[dict] | None = None,
@@ -2686,11 +2825,13 @@ def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
                 "kind": f"{e['status']}-ungoverned-namespace", "namespace": e["namespace"],
                 "perspective": perspective, "currency": currency,
                 "amount": price.get("amount"),
-                "detail": (f"{e['namespace']} carries the institution label and not governed: "
-                           f"\"true\", and was not in the last signed composed artefact's "
-                           f"recorded ungoverned set" if e["status"] == "new" else
-                           f"{e['namespace']} was a recorded ungoverned namespace and now carries "
-                           f"governed: \"true\"")
+                "detail": (f"{e['namespace']} is declared or named in the adopter's repo without "
+                           f"governed: \"true\", and was not in the last signed composed "
+                           f"artefact's recorded ungoverned set"
+                           + (f"; ramped from since {price['since']}, when {price['since_by']}"
+                              if price.get("since_by") else "")
+                           if e["status"] == "new" else
+                           _closed_ungoverned_detail(e))
                           + (f"; priced at {price['amount']:.2f} {currency} as {price['workloads']} "
                              f"of {price['workloads_total']} institution workloads x ramp "
                              f"{price['ramp']:.4f}" if price.get("amount") is not None else
@@ -4468,7 +4609,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # -----------------------------------------------------------------
     # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
     # -----------------------------------------------------------------
-    ungoverned_entries = compute_ungoverned(set(ungoverned_namespaces(adopter_dir)), prev_ungoverned_ids)
+    ungoverned_entries = compute_ungoverned(set(ungoverned_namespaces(adopter_dir)), prev_ungoverned_ids,
+                                            governed=set(governed_namespaces(adopter_dir)))
 
     # -----------------------------------------------------------------
     # ticket 16: pricing and threat parents re-price, and never apply
@@ -6515,8 +6657,10 @@ def selfcheck() -> None:
         _write_namespace(labelled, fixture_ns, institution=True, governed=True)
         doc3, _ = compose(labelled, fixture_trees)
         assert doc3["outcome"] == "composed", doc3
-        assert doc3["ungoverned"] == [{"namespace": fixture_ns, "status": "closed"}], doc3["ungoverned"]
+        assert doc3["ungoverned"] == [{"namespace": fixture_ns, "status": "closed",
+                                       "closed_by": "governed"}], doc3["ungoverned"]
         assert [d["kind"] for d in doc3["deltas"]] == ["closed-ungoverned-namespace"], doc3["deltas"]
+        assert 'now carries governed: "true"' in doc3["deltas"][0]["detail"], doc3["deltas"]
         print("OK compute_ungoverned: a namespace that gains the label prints as closed, and as "
               "a closed-ungoverned-namespace delta")
 
@@ -6708,13 +6852,14 @@ def selfcheck() -> None:
     # signed tag whose header names it, never typed; the date below is that
     # tag's own date, so this assert is a fact about the clone, not a fixture ---
     tuppence = DEFAULT_ESTATE_CLONE / "tuppence"
-    since, since_limit = _first_signed_since(tuppence, "tuppence-reset")
+    since, _since_by, since_limit = _signed_since(tuppence, "tuppence-reset")
     signed = _signed_tags(tuppence)
     if signed:
         assert since is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", since), (since, since_limit)
         assert since in {d for _t, d in signed}, (since, signed)
-        assert _first_signed_since(tuppence, "no-such-namespace") == (
-            None, "no signed composed artefact names no-such-namespace"), "an unnamed namespace has no since"
+        assert _signed_since(tuppence, "no-such-namespace") == (
+            None, None, "no signed composed artefact names no-such-namespace or a Namespace its "
+                  "workloads left"), "an unnamed namespace has no since"
         doc_t, rendered_t = compose(tuppence, parent_trees)
         _assert_only_known_dangling(doc_t["refusals"], "real tuppence")
         reset = next(e for e in doc_t["ungoverned"] if e["namespace"] == "tuppence-reset")
@@ -6740,6 +6885,81 @@ def selfcheck() -> None:
     else:
         print("OK ungoverned[]: the tuppence clone carries no signed tag, so tuppence-reset's "
               "since could not be read here (named: %s)" % since_limit)
+
+    # --- eco-system ticket 122: a rename keeps the ramp, and a close says why.
+    # `since` was read by the Namespace's name alone, so renaming an aged one
+    # restarted its ramp at 1.0 and the old name's close printed as governance.
+    # Now the age follows the workloads, and a closed entry names governed or
+    # left-repo. A fixture repo: its git runs no hooks, and its tag carries a
+    # FIXTURE block, the shape `_signed_tags` reads, and claims no signature ---
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "renamer"
+        hooks = Path(td) / "nohooks"
+        hooks.mkdir()
+        env = {**os.environ, "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@invalid",
+               "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@invalid"}
+        git = ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+               "-c", f"core.hooksPath={hooks}"]
+
+        def _cut(tag: str, date: str, ungoverned: list[str]) -> None:
+            (repo / "composed").mkdir(exist_ok=True)
+            (repo / "composed" / "HEADER.yaml").write_text(
+                HEADER_COMMENT + yaml.safe_dump({"ungoverned-namespaces": ungoverned}))
+            dated = {**env, "GIT_COMMITTER_DATE": f"{date}T12:00:00Z", "GIT_AUTHOR_DATE": f"{date}T12:00:00Z"}
+            subprocess.run(git + ["add", "-A"], check=True, capture_output=True, env=dated)
+            subprocess.run(git + ["commit", "-q", "-m", tag], check=True, capture_output=True, env=dated)
+            subprocess.run(git + ["tag", "-a", tag, "-m", f"{tag}\n-----BEGIN FIXTURE BLOCK-----\n"],
+                           check=True, capture_output=True, env=dated)
+
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        _write_namespace(repo, "home", governed=True)
+        for i in range(3):
+            _write_workload(repo, "home", f"app-{i}")
+        _write_namespace(repo, "side")
+        _write_workload(repo, "side", "reset-a")
+        _cut("v1.0.0", "2024-09-01", ["side"])
+        # A copy is not a move: while side still holds reset-a, another Namespace
+        # running a workload of that kind and name starts its own ramp.
+        _write_workload(repo, "copy", "reset-a")
+        copied = compute_ungoverned(set(ungoverned_namespaces(repo)), {"side"},
+                                    governed=set(governed_namespaces(repo)))
+        price_ungoverned(copied, repo, "fixture", "GBP", 1000.0, "2026-09-01")
+        copy_price = next(e for e in copied if e["namespace"] == "copy")["price"]
+        assert copy_price["since"] is None and copy_price["ramp"] == 1.0, copy_price
+        for f in (repo / "gitops" / "apps").glob("*-copy-*"):
+            f.unlink()
+        for f in (repo / "gitops" / "apps").glob("*side*"):
+            f.unlink()
+        _write_namespace(repo, "side-2")
+        _write_workload(repo, "side-2", "reset-a")
+        _cut("v1.1.0", "2026-09-01", ["side-2"])
+        renamed = compute_ungoverned(set(ungoverned_namespaces(repo)), {"side"},
+                                     governed=set(governed_namespaces(repo)))
+        price_ungoverned(renamed, repo, "fixture", "GBP", 1000.0, "2026-09-01")
+        by_name = {e["namespace"]: e for e in renamed}
+        assert by_name["side"] == {"namespace": "side", "status": "closed", "closed_by": "left-repo"}, by_name
+        kept = by_name["side-2"]["price"]
+        assert kept["since"] == "2024-09-01" and kept["ramp"] == 3.0 and kept["amount"] == 750.0, kept
+        assert kept["since_by"] == "v1.0.0 names side ungoverned, where Deployment/reset-a sat", kept
+        closed = next(d for d in compute_deltas([], renamed, None, "fixture", "GBP")
+                      if d["kind"] == "closed-ungoverned-namespace")
+        assert "left the adopter's repo" in closed["detail"] and "carries governed" not in closed["detail"], closed
+        # Review round: re-declaring the old name governed, holding an inert
+        # manifest of the same kind and name, does not drop the carried age. A
+        # governed Namespace pays no ramp, so the workload does not sit there.
+        _write_namespace(repo, "side", governed=True)
+        _write_workload(repo, "side", "reset-a")
+        _cut("v1.2.0", "2026-09-02", ["side-2"])
+        shadowed = compute_ungoverned(set(ungoverned_namespaces(repo)), {"side-2"},
+                                      governed=set(governed_namespaces(repo)))
+        price_ungoverned(shadowed, repo, "fixture", "GBP", 1000.0, "2026-09-01")
+        held = next(e for e in shadowed if e["namespace"] == "side-2")["price"]
+        assert held["since"] == "2024-09-01" and held["ramp"] == 3.0, held
+    print("OK ungoverned[] (eco-system ticket 122): a renamed ungoverned Namespace keeps the ramp "
+          "its workloads carried (since 2024-09-01, ramp 3.0), the old name closes as left-repo "
+          "and not as governed, a copy beside the original starts its own ramp, and a governed "
+          "shadow of the old name does not drop the carried age")
 
     # --- (source, id): claims and holes resolve across EVERY controls parent,
     # an adopter's own catalogue included; the header encodes the source only
