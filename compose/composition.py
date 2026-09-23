@@ -212,7 +212,12 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     removed-control refusal too: a control that leaves the selected set
     prints a `removed-control` delta carrying the price its hole carried,
     and a named-baseline change that only drops controls prints one
-    `baseline-narrowing` summary beside them. Each prints as a `deltas[]` entry under the adopter's own
+    `baseline-narrowing` summary beside them. Eco-system ticket 123 tells
+    the regulator's withdrawal apart (`split_withdrawn`): a control the
+    pinned catalogue no longer defines, or the last baseline name no longer
+    includes while the last overlay did not select it, prints a
+    `withdrawn-control` delta naming the regulator's bump, never a
+    `removed-control` in the adopter's name. Each prints as a `deltas[]` entry under the adopter's own
     perspective and currency: what changed since the last signed composed
     artefact, and what a pinned instrument prices it at. A delta no pinned
     instrument names carries `amount: null` and `priced_by: null` -- a named
@@ -385,7 +390,7 @@ CONTROL_KEY_SEP = ":"
 BESPOKE_SCENARIO_PROP = "scenario"
 # The deltas[] kinds: what replaced the three refusals, plus their closings.
 DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
-               "removed-control", "baseline-narrowing",
+               "removed-control", "baseline-narrowing", "withdrawn-control",
                "new-ungoverned-namespace", "closed-ungoverned-namespace",
                "new-untagged-pin", "closed-untagged-pin", "floor-change")
 # Ticket 69: what a premium entry's `pin_signature.state` may read, and the
@@ -2314,6 +2319,109 @@ def removed_controls(selected_set: set[ControlKey],
     return sorted(prev_selected - selected_set)
 
 
+# The OSCAL prop value a catalogue marks a control it withdrew with. NIST keeps a
+# withdrawn control in its catalogue under this status and drops it from every
+# baseline, so an id still present is not proof the regulator still defines it.
+WITHDRAWN_STATUS = "withdrawn"
+
+
+def _withdrawn_from_catalogue(source: str, cid: str,
+                              catalog_props: dict[str, dict[str, dict[str, str]]]) -> bool:
+    """True where `source`'s pinned catalogue no longer defines `cid`: the id is
+    absent, or present under `status: withdrawn`. False for a source this
+    composition pins no catalogue of."""
+    if source not in catalog_props:
+        return False
+    props = catalog_props[source].get(cid)
+    return props is None or props.get("status") == WITHDRAWN_STATUS
+
+
+def split_withdrawn(removed: list[ControlKey], *, adopter_party: str,
+                    catalog_props: dict[str, dict[str, dict[str, str]]],
+                    baseline_source: str | None, prev_baseline_now: set[str],
+                    prev_overlay: set[ControlKey] | None
+                    ) -> tuple[list[ControlKey], list[tuple[ControlKey, str]]]:
+    """Tell the regulator's withdrawal apart from the adopter's own removal
+    (eco-system ticket 123; ADR-0026 Consequences: a control the regulator
+    withdraws "is not an adopter removal").
+
+    One counterfactual decides it: would the adopter's LAST inputs -- its last
+    baseline name and its last overlay -- still select the control against the
+    catalogue pinned NOW? If yes, the adopter's own inputs changed and it is
+    the adopter's removal. If no, the regulator's catalogue took it away.
+    `prev_baseline_now` is the last baseline name resolved at the current pin;
+    `prev_overlay` is the last header's `overlay-controls`, or None where that
+    header predates the field.
+
+    Returns (the adopter's removals, [(withdrawn key, reason)]). The reason is
+    `catalogue` (the pinned catalogue no longer defines it) or `baseline` (the
+    last baseline name no longer includes it at the new pin). A control of the
+    adopter's own catalogue is never a withdrawal: the adopter publishes it.
+    A source the adopter no longer pins is the adopter's act too. Where the
+    last header carries no `overlay-controls`, only a catalogue withdrawal can
+    be told apart; a same-name baseline drop stays the adopter's removal,
+    because an overlay removal would look the same."""
+    adopters: list[ControlKey] = []
+    withdrawn: list[tuple[ControlKey, str]] = []
+    for key in removed:
+        source, cid = key
+        if source == adopter_party or source not in catalog_props:
+            adopters.append(key)
+        elif _withdrawn_from_catalogue(source, cid, catalog_props):
+            withdrawn.append((key, "catalogue"))
+        elif source == baseline_source and cid in prev_baseline_now:
+            adopters.append(key)
+        elif prev_overlay is None or key in prev_overlay:
+            adopters.append(key)
+        else:
+            withdrawn.append((key, "baseline"))
+    return adopters, withdrawn
+
+
+def _catalogue_pin(parents: list[dict] | None, source: str) -> str | None:
+    """`<version>@<sha12>` of `source`'s controls parent in a parents[] list."""
+    parent = next((p for p in parents or []
+                   if p.get("party") == source and p.get("kind") == "controls"), None)
+    if parent is None:
+        return None
+    return f"{parent['version']}@{str(parent.get('sha') or '')[:12]}"
+
+
+def withdrawn_deltas(entries: list[dict], prev_parents: list[dict] | None, parents: list[dict],
+                     prev_baseline_name: str | None, perspective: str, currency: str) -> list[dict]:
+    """One `withdrawn-control` delta per control the regulator's bump took out
+    of the selected set (eco-system ticket 123). It names the regulator and its
+    catalogue on both sides of the bump, and never the adopter as the one who
+    removed it. `perspective` says whose pound the amount is, not who acted:
+    every delta carries it. `entries` are `_price_removed`'s entries with a
+    `reason` added. A pinned weight that still names the withdrawn control
+    still prices it: that is the feed's own fact to fix in its next version
+    (ADR-0026), and the amount is the one the hole carried."""
+    out: list[dict] = []
+    for r in entries:
+        source, cid = r["source"], r["control_id"]
+        pins = {"from": _catalogue_pin(prev_parents, source), "to": _catalogue_pin(parents, source)}
+        why = (f"{source}'s catalogue no longer defines it" if r["reason"] == "catalogue" else
+               f"{source}'s baseline {prev_baseline_name} no longer includes it")
+        out.append({
+            "kind": "withdrawn-control", "source": source, "control_id": cid,
+            "withdrawn_by": source, "reason": r["reason"], "catalogue": pins,
+            "perspective": perspective, "currency": currency,
+            "amount": r.get("amount"), "priced_by": r.get("priced_by"),
+            "detail": f"{source}{CONTROL_KEY_SEP}{cid} left the selected control set with "
+                      f"{source}'s catalogue bump {pins['from']} -> {pins['to']}: {why}. It is "
+                      f"{source}'s withdrawal, not a removal"
+                      + (f"; its hole carried {r['amount']:.2f} {currency} by {r['priced_by']}, "
+                         f"a weight that still names a withdrawn control, which is that feed's "
+                         f"own fact to fix in its next version"
+                         if r.get("amount") is not None and r["reason"] == "catalogue" else
+                         f"; its hole carried {r['amount']:.2f} {currency} by {r['priced_by']}"
+                         if r.get("amount") is not None else
+                         "; no pinned instrument names a price for it"),
+        })
+    return out
+
+
 def _price_removed(removed: list[ControlKey], hole_prices: dict[ControlKey, tuple[float, str]],
                    adopter_party: str, adopter_dir: Path, catalog_props: dict[str, dict[str, str]],
                    band: dict | None, reporting: str, floor: str | None) -> list[dict]:
@@ -2480,12 +2588,16 @@ def _price_bespoke_holes(hole_entries: list[dict], adopter_party: str, adopter_d
 
 
 def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selected: set[ControlKey],
-                           covered: set[ControlKey]) -> None:
+                           covered: set[ControlKey],
+                           catalog_props: dict[str, dict[str, dict[str, str]]] | None = None) -> None:
     """Every holes[] line on a regime entry gains the adopter's own status
     for that control: new / recorded / closed (this run's hole entries),
-    covered (a claim exists), or unselected (the weight names a control
-    outside this party's selected set). The partition itself is untouched:
-    the weights still sum to one and the amounts to the entry (ticket 25)."""
+    covered (a claim exists), withdrawn (the weight names a control its
+    pinned catalogue no longer defines: the feed's own fact to fix in its
+    next version, eco-system ticket 123), or unselected (the weight names a
+    control outside this party's selected set). The partition itself is
+    untouched: the weights still sum to one and the amounts to the entry
+    (ticket 25)."""
     status_by_key = {(h["source"], h["control_id"]): h["status"] for h in hole_entries}
     for e in prices:
         for h in e.get("holes") or []:
@@ -2494,6 +2606,8 @@ def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selecte
                 h["status"] = status_by_key[key]
             elif key in selected and key in covered:
                 h["status"] = "covered"
+            elif catalog_props is not None and _withdrawn_from_catalogue(key[0], key[1], catalog_props):
+                h["status"] = "withdrawn"
             else:
                 h["status"] = "unselected"
 
@@ -4291,7 +4405,11 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                    for spec in party_doc.get("overlay", {}).get("controls", []) or []]
     refusals += _unknown_control_refusals(added_specs, catalogs, f"{adopter_party} overlay.controls")
     selected_set: set[ControlKey] = {(str(baseline_source), cid) for cid in baseline_ids}
-    selected_set |= {key for _spelled, key in added_specs if key[1] in catalogs.get(key[0], set())}
+    # What the adopter's own overlay selects, recorded on the header so the NEXT
+    # run can tell its own removal from the regulator's withdrawal (ticket 123).
+    overlay_selected: set[ControlKey] = {key for _spelled, key in added_specs
+                                         if key[1] in catalogs.get(key[0], set())}
+    selected_set |= overlay_selected
 
     covered, claim_refusals = resolve_claims(claims, policy_owner, catalogs, baseline_source)
     refusals += claim_refusals
@@ -4301,6 +4419,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                   if prev_header is not None else None)
     prev_selected = ({_decode_control(c, prev_source) for c in prev_header.get("selected-controls", [])}
                      if prev_header is not None else None)
+    prev_overlay = ({_decode_control(c, prev_source) for c in prev_header["overlay-controls"]}
+                    if prev_header is not None and prev_header.get("overlay-controls") is not None
+                    else None)
     prev_baseline_name = prev_header.get("baseline") if prev_header is not None else None
     prev_baseline_ids = (
         _baseline_ids(nist_root, prev_baseline_name)
@@ -4312,7 +4433,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     )
 
     hole_entries = compute_holes(selected_set, covered, prev_holes)
-    removed = removed_controls(selected_set, prev_selected)
+    removed, withdrawn = split_withdrawn(
+        removed_controls(selected_set, prev_selected), adopter_party=adopter_party,
+        catalog_props=catalog_props, baseline_source=baseline_source,
+        prev_baseline_now=prev_baseline_ids or set(), prev_overlay=prev_overlay)
 
     # -----------------------------------------------------------------
     # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
@@ -4358,7 +4482,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     refusals += _price_bespoke_holes(hole_entries, adopter_party, adopter_dir,
                                      catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
-    _decorate_regime_holes(prices, hole_entries, selected_set, covered)
+    _decorate_regime_holes(prices, hole_entries, selected_set, covered, catalog_props)
     removed_entries = _price_removed(removed, hole_prices, adopter_party, adopter_dir,
                                      catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
@@ -4370,6 +4494,15 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         narrowing=baseline_narrowing_delta(baseline_ids, prev_baseline_ids, prev_baseline_name,
                                            baseline_name, baseline_source, removed_entries,
                                            adopter_party, reporting))
+    # Ticket 123: what the regulator's bump took out prints as its withdrawal,
+    # priced like a removal and never booked in the adopter's name.
+    withdrawn_entries = _price_removed([k for k, _ in withdrawn], hole_prices, adopter_party,
+                                       adopter_dir, {}, None, reporting, None)
+    for entry, (_key, reason) in zip(withdrawn_entries, withdrawn):
+        entry["reason"] = reason
+    deltas += withdrawn_deltas(withdrawn_entries,
+                               prev_header.get("parents") if prev_header is not None else None,
+                               parents, prev_baseline_name, adopter_party, reporting)
     # Ticket 69 (and 84, for every feed line): a pin that opened or closed as
     # an untagged-pin hole.
     deltas += untagged_pin_deltas(prices, adopter_party, reporting)
@@ -4475,6 +4608,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "floor-comparison": floor_inputs,
         "governed-namespaces": governed_namespaces(adopter_dir),
         "holes": recorded_hole_ids,
+        "overlay-controls": sorted(_encode_control(k, baseline_source) for k in overlay_selected),
         "selected-controls": sorted(_encode_control(k, baseline_source) for k in selected_set),
         "ungoverned-namespaces": recorded_ungoverned,
     }
@@ -6105,6 +6239,80 @@ def selfcheck() -> None:
         print("OK baseline_widening_delta: SMALL -> BIG composes and prints one widening delta "
               "(1 control added, 0 of them named by a pinned weight, so no amount) beside the "
               "new hole it opens; nothing refuses, and a removal does not also fire")
+
+        # --- a regulator's withdrawal is not an adopter removal (eco-system
+        # ticket 123; ADR-0026 Consequences). Each case bumps a COPY of the
+        # fixture catalogue, so the cases below keep the original ---
+        def bumped(name: str, cid: str, *, catalogue: bool) -> dict[str, Path]:
+            nist_copy = Path(td) / name
+            shutil.copytree(nist_root, nist_copy)
+            cat_dir = nist_copy / "catalog"
+            for f in ("small.json", "big.json"):
+                prof = json.loads((cat_dir / f).read_text())
+                ids = prof["profile"]["imports"][0]["include-controls"][0]["with-ids"]
+                if cid in ids:
+                    ids.remove(cid)
+                (cat_dir / f).write_text(json.dumps(prof))
+            if catalogue:
+                cat = json.loads((cat_dir / "catalog.json").read_text())
+                fam = cat["catalog"]["groups"][0]
+                fam["controls"] = [c for c in fam["controls"] if c["id"] != cid]
+                (cat_dir / "catalog.json").write_text(json.dumps(cat))
+            return {**fixture_trees, "fixture-nist": nist_copy}
+
+        wd = Path(td) / "run2-withdrawn"
+        shutil.copytree(base, wd)
+        party_bytes = (wd / "party.yaml").read_bytes()
+        doc_wd, _ = compose(wd, bumped("nist-wd-catalogue", "aa-2", catalogue=True))
+        assert (wd / "party.yaml").read_bytes() == party_bytes
+        assert doc_wd["outcome"] == "composed", doc_wd
+        assert [d["kind"] for d in doc_wd["deltas"]] == ["withdrawn-control"], doc_wd["deltas"]
+        wd_delta = doc_wd["deltas"][0]
+        assert (wd_delta["control_id"], wd_delta["reason"], wd_delta["withdrawn_by"]) == (
+            "aa-2", "catalogue", "fixture-nist"), wd_delta
+        assert wd_delta["catalogue"]["from"] != wd_delta["catalogue"]["to"], wd_delta
+        assert "fixture-adopter14" not in wd_delta["detail"], wd_delta
+        print("OK split_withdrawn: the regulator drops aa-2 from its catalogue and from SMALL; the "
+              "adopter changed nothing, and aa-2 prints one withdrawn-control delta naming "
+              "fixture-nist's bump, never a removed-control in the adopter's name")
+
+        wb = Path(td) / "run2-withdrawn-baseline"
+        shutil.copytree(base, wb)
+        doc_wb, _ = compose(wb, bumped("nist-wd-baseline", "aa-1.1", catalogue=False))
+        assert doc_wb["outcome"] == "composed", doc_wb
+        assert [(d["kind"], d.get("reason")) for d in doc_wb["deltas"]] == [
+            ("withdrawn-control", "baseline")], doc_wb["deltas"]
+        print("OK split_withdrawn: the regulator keeps aa-1.1 defined and drops it from SMALL; the "
+              "last header's overlay-controls is empty, so aa-1.1 left with the regulator's baseline")
+
+        legacy = Path(td) / "run2-withdrawn-legacy-header"
+        shutil.copytree(base, legacy)
+        legacy_header = legacy / "composed" / "HEADER.yaml"
+        legacy_doc = yaml.safe_load(legacy_header.read_text().split(HEADER_COMMENT, 1)[-1])
+        legacy_doc.pop("overlay-controls")
+        legacy_doc.pop("comparison-inputs", None)
+        legacy_header.write_text(HEADER_COMMENT + yaml.safe_dump(legacy_doc, **YAML_KWARGS))
+        doc_legacy, _ = compose(legacy, bumped("nist-wd-legacy", "aa-1.1", catalogue=False))
+        assert doc_legacy["outcome"] == "composed", doc_legacy
+        assert [d["kind"] for d in doc_legacy["deltas"]] == ["removed-control"], doc_legacy["deltas"]
+        print("OK split_withdrawn: a last header with no overlay-controls cannot tell a same-name "
+              "baseline drop from an overlay removal, so aa-1.1 stays the adopter's removal")
+
+        own = Path(td) / "run2-own-removal-beside-withdrawal"
+        _write_fixture_adopter(own, "SMALL", controls_add=["aa-3"])
+        doc_own1, rendered_own = compose(own, fixture_trees)
+        assert doc_own1["outcome"] == "composed", doc_own1
+        _commit_header(own, rendered_own)
+        doc_own_party = yaml.safe_load((own / "party.yaml").read_text())
+        doc_own_party["overlay"]["controls"] = []
+        (own / "party.yaml").write_text(yaml.safe_dump(doc_own_party, sort_keys=False))
+        doc_own, _ = compose(own, bumped("nist-wd-own", "aa-1.1", catalogue=False))
+        assert doc_own["outcome"] == "composed", doc_own
+        assert {d["control_id"]: d["kind"] for d in doc_own["deltas"] if "control_id" in d} == {
+            "aa-3": "removed-control", "aa-1.1": "withdrawn-control"}, doc_own["deltas"]
+        print("OK split_withdrawn: in one run the adopter drops aa-3 from its overlay and the "
+              "regulator drops aa-1.1 from SMALL; aa-3 is the adopter's removed-control and "
+              "aa-1.1 the regulator's withdrawn-control")
 
         # --- an adopter claim against a PARENT's policy refuses ---
         cross = Path(td) / "run2-cross-party-claim"
