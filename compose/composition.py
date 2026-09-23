@@ -135,8 +135,9 @@ shape ticket 14's holes already use, applied to a different signal:
   * A `Namespace` manifest in the adopter's own repo that carries the
     `institution` label and not `governed: "true"` is UNGOVERNED
     (`ungoverned_namespaces`) -- ADR-0014's silence hole moved up one level
-    (ADR-0018). A Namespace with no `institution` label at all is
-    infrastructure and is ignored entirely.
+    (ADR-0018). Since eco-system ticket 119 the label no longer decides it:
+    every Namespace the repo declares or a workload names is a candidate,
+    except the substrate the platform declares `infra` (`substrate_namespaces`).
   * `compute_ungoverned` compares the current ungoverned set against the
     last signed composed artefact's own recorded set
     (`_previous_header`'s `ungoverned-namespaces`): a NEW one refuses and
@@ -1402,17 +1403,48 @@ def render_is_faithful(rendered_doc: dict, source_doc: dict) -> bool:
 # --------------------------------------------------------------------------
 
 
+TIER_LABEL = "posture.acme.io/tier"
+# The substrate, as the platform declares it (ADR-0022; eco-system ticket 113): the Namespaces
+# in the platform's own engine/namespaces.yaml labelled `posture.acme.io/tier: infra`. Read from
+# the platform tree this module ships in, never from the adopter's repo, so no adopter can add a
+# Namespace to it by writing the same label (eco-system ticket 119).
+SUBSTRATE_DECLARATION = PLATFORM_DIR / "engine" / "namespaces.yaml"
+
+
+def substrate_namespaces(declaration: Path = SUBSTRATE_DECLARATION) -> set[str]:
+    """The Namespaces the platform declares `infra` in its own tree. These are the only ones an
+    adopter's walk leaves unpriced. A missing or empty declaration raises: a walk that cannot
+    tell the substrate would price kube-system as an adopter's, or worse, skip nothing silently."""
+    names = {doc["metadata"]["name"]
+             for doc in yaml.safe_load_all(Path(declaration).read_text())
+             if isinstance(doc, dict) and doc.get("kind") == "Namespace"
+             and ((doc.get("metadata") or {}).get("labels") or {}).get(TIER_LABEL) == "infra"}
+    if not names:
+        raise ValueError(f"{declaration} declares no infra Namespace; the substrate is unknown")
+    return names
+
+
 def _namespace_facts(adopter_dir: Path) -> tuple[dict[str, bool], dict[str, int]]:
     """ONE walk over the adopter's own manifests (skipping .git, composed/ and
-    other tickets' .work/): every Namespace carrying the `institution` label,
-    mapped to whether it also carries `governed: "true"`, and the number of
-    workloads (WORKLOAD_KINDS) declared in each namespace. A Namespace with no
-    `institution` label at all is infrastructure and is not a candidate; the
-    workloads in it are counted but never enter the institution denominator."""
+    other tickets' .work/, read relative to the adopter's own root): every
+    Namespace the repo declares or a workload (WORKLOAD_KINDS) names, mapped
+    to whether its declaration carries `governed: "true"`, and the number of
+    workloads declared in each namespace.
+
+    Until eco-system ticket 119 only a Namespace carrying the `institution`
+    label counted, and one without it was called infrastructure: the adopter's
+    silence kept it out of the price. Now every such Namespace counts, whatever
+    labels it carries, except the substrate the platform declares `infra`
+    (`substrate_namespaces`). Workloads in the substrate are counted but never
+    enter the institution denominator. A Namespace only a workload names has no
+    declaration and so is not governed."""
+    substrate = substrate_namespaces()
     institution: dict[str, bool] = {}
     workloads: dict[str, int] = {}
-    for path in sorted(Path(adopter_dir).rglob("*.yaml")):
-        if ".git" in path.parts or "composed" in path.parts or ".work" in path.parts:
+    root = Path(adopter_dir)
+    for path in sorted(root.rglob("*.yaml")):
+        parts = path.relative_to(root).parts
+        if ".git" in parts or "composed" in parts or ".work" in parts:
             continue
         try:
             docs = [d for d in yaml.safe_load_all(path.read_text()) if isinstance(d, dict)]
@@ -1422,11 +1454,15 @@ def _namespace_facts(adopter_dir: Path) -> tuple[dict[str, bool], dict[str, int]
             md = doc.get("metadata") or {}
             if doc.get("kind") == "Namespace":
                 labels = md.get("labels") or {}
-                if INSTITUTION_LABEL in labels:
-                    institution[md["name"]] = labels.get(GOVERNED_LABEL) == "true"
+                if md.get("name") and md["name"] not in substrate:
+                    institution[md["name"]] = institution.get(md["name"], False) or \
+                        labels.get(GOVERNED_LABEL) == "true"
             elif doc.get("kind") in WORKLOAD_KINDS:
                 ns = str(md.get("namespace") or "default")
                 workloads[ns] = workloads.get(ns, 0) + 1
+    for ns in workloads:
+        if ns not in substrate:
+            institution.setdefault(ns, False)
     return institution, workloads
 
 
@@ -1436,13 +1472,12 @@ def governed_namespaces(adopter_dir: Path) -> list[str]:
 
 
 def ungoverned_namespaces(adopter_dir: Path) -> list[str]:
-    """Every Namespace manifest in the adopter's own repo that carries the
-    `institution` label and not `governed: "true"` -- ADR-0014's silence
-    hole moved up one level (ADR-0018): such a namespace can exempt every
-    workload inside it by omission, the same way an unclaimed hole does. A
-    Namespace with no `institution` label at all is infrastructure, not a
-    candidate, and is ignored entirely -- the same walk `governed_namespaces`
-    does, over the same files, just the other label."""
+    """Every Namespace the adopter's own repo declares or names that is not
+    `governed: "true"` and is not the platform's substrate -- ADR-0014's
+    silence hole moved up one level (ADR-0018): such a namespace can exempt
+    every workload inside it by omission, the same way an unclaimed hole does.
+    Leaving a Namespace unlabelled no longer keeps it out (eco-system ticket
+    119); only the platform's own `infra` declaration does."""
     institution, _ = _namespace_facts(adopter_dir)
     return sorted(n for n, governed in institution.items() if not governed)
 
@@ -6141,16 +6176,28 @@ def selfcheck() -> None:
         _write_fixture_platform(platform_root, parent_trees["platform"], claims=[("aa-1", "member-a")])
         fixture_trees = {"fixture-nist": nist_root, "fixture-platform": platform_root}
 
-        # --- a namespace with no institution label is ignored entirely ---
-        ignored = Path(td) / "ignored"
-        _write_fixture_adopter(ignored, "SMALL")
-        _write_namespace(ignored, "infra", institution=False, governed=False)
-        assert ungoverned_namespaces(ignored) == []
-        doc0, _ = compose(ignored, fixture_trees)
+        # --- a namespace with no institution label is priced all the same (eco-system ticket
+        # 119): silence buys nothing. Only the platform's own `infra` declaration keeps a
+        # Namespace out, and an adopter's copy of that label is not the declaration ---
+        unlabelled = Path(td) / "unlabelled"
+        _write_fixture_adopter(unlabelled, "SMALL")
+        _write_namespace(unlabelled, "side", institution=False, governed=False)
+        _write_namespace(unlabelled, "kube-system", institution=False, governed=False)
+        _write_workload(unlabelled, "named-only", "job-a")
+        _write_workload(unlabelled, "flux-system", "git-server")
+        (unlabelled / "gitops" / "apps" / "namespace-mine.yaml").write_text(yaml.safe_dump(
+            {"apiVersion": "v1", "kind": "Namespace",
+             "metadata": {"name": "mine", "labels": {TIER_LABEL: "infra"}}}))
+        assert substrate_namespaces() == {"kube-system", "flux-system", "kyverno"}, substrate_namespaces()
+        assert ungoverned_namespaces(unlabelled) == ["mine", "named-only", "side"], \
+            ungoverned_namespaces(unlabelled)
+        doc0, _ = compose(unlabelled, fixture_trees)
         assert doc0["outcome"] == "composed", doc0
-        assert doc0["ungoverned"] == [], doc0["ungoverned"]
-        print("OK ungoverned_namespaces: a Namespace with no institution label is ignored "
-              "entirely, never entering the ungoverned set")
+        assert [(e["namespace"], e["status"]) for e in doc0["ungoverned"]] == [
+            ("mine", "recorded"), ("named-only", "recorded"), ("side", "recorded")], doc0["ungoverned"]
+        assert all(e["price"]["workloads_total"] == 1 for e in doc0["ungoverned"]), doc0["ungoverned"]
+        print("OK ungoverned_namespaces: a Namespace with no institution label, declared or only "
+              "named by a workload, is ungoverned and priced; the platform's infra substrate is not")
 
         # --- bootstrap: the FIRST composition (nothing committed yet)
         # records a pre-existing ungoverned namespace and refuses on none --
@@ -6211,7 +6258,7 @@ def selfcheck() -> None:
         _write_workload(new_ns, fixture_ns, "reset-a")
         for i in range(3):
             _write_workload(new_ns, "home", f"app-{i}")
-        _write_workload(new_ns, "flux-system", "infra")  # no institution label: not counted
+        _write_workload(new_ns, "flux-system", "infra")  # the platform's substrate: not counted
         doc5, _ = compose(new_ns, fixture_trees)
         assert doc5["outcome"] == "composed", doc5
         assert not [r for r in doc5["refusals"] if r["kind"] == "new-ungoverned-namespace"], doc5["refusals"]

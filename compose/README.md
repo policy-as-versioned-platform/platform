@@ -97,8 +97,10 @@ itself needs.
 
 - **The governed-namespace lint** — every `Namespace` manifest in the adopter's own repo that
   carries the `institution` label and not `governed: "true"` is **ungoverned**
-  (`ungoverned_namespaces`) — ADR-0014's silence hole moved up one level (ADR-0018). A namespace
-  with no `institution` label at all is infrastructure and is ignored entirely.
+  (`ungoverned_namespaces`) — ADR-0014's silence hole moved up one level (ADR-0018). Since
+  eco-system ticket 119 the label no longer decides it: every Namespace the repo declares or a
+  workload names is a candidate, labelled or not. Only the substrate the platform declares `infra`
+  in its own `engine/namespaces.yaml` (`substrate_namespaces`) is left out.
 - **The rule is the hole rule** (`compute_ungoverned`, the exact new/recorded/closed shape and
   bootstrap rule `compute_holes` already uses): compared against the *last signed composed
   artefact's own header*, a new one refuses and names it, a recorded one does not, one that gains
