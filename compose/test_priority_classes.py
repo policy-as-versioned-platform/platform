@@ -160,6 +160,40 @@ class PriorityClasses(unittest.TestCase):
         doc, _ = self.compose()
         self.assertEqual(self.undelivered(doc), [f"made-up@{VERSION}"])
 
+    def add_overlay_mutation(self, mutation):
+        party = yaml.safe_load((self.adopter / "party.yaml").read_text())
+        party["overlay"]["add"] = [{"version": VERSION, "manifest": {
+            "apiVersion": "policies.kyverno.io/v1alpha1", "kind": "MutatingPolicy",
+            "metadata": {"name": "own-class-4-0-0", "labels": {ct.LABEL_FAMILY: "own"}},
+            "spec": {"mutations": [mutation]},
+        }}]
+        (self.adopter / "party.yaml").write_text(yaml.safe_dump(party, sort_keys=False))
+
+    def unreadable_subjects(self, doc):
+        return [r["subject"] for r in doc["refusals"] if r["kind"] == "unreadable-priority-class"]
+
+    def test_a_jsonpatch_that_writes_the_class_refuses(self):
+        # Review round: every served cage-tier already carries a `patchType: JSONPatch`
+        # mutation, so a JSONPatch path is an ordinary spelling, not an exotic one.
+        self.add_overlay_mutation({"patchType": "JSONPatch", "jsonPatch": {
+            "expression": '[JSONPatch{op: "add", path: "/spec/priorityClassName", value: "made-up"}]'}})
+        doc, _ = self.compose()
+        self.assertEqual(doc["outcome"], "refused")
+        self.assertEqual(self.unreadable_subjects(doc), [f"own/own-class@{VERSION}"])
+
+    def test_a_patch_path_in_structured_form_refuses(self):
+        self.add_overlay_mutation({"patchType": "JSONPatch", "patches": [
+            {"op": "replace", "path": "/spec/template/spec/priorityClassName", "value": "made-up"}]})
+        doc, _ = self.compose()
+        self.assertEqual(doc["outcome"], "refused")
+        self.assertEqual(self.unreadable_subjects(doc), [f"own/own-class@{VERSION}"])
+
+    def test_reading_the_machinery_leaves_the_shared_cage_body_alone(self):
+        # Review round: only `_load_guards` may bind `cage_body`, and it puts the old one back.
+        before = sys.modules.get("cage_body")
+        ct._load_guards_from(self.platform)
+        self.assertIs(sys.modules.get("cage_body"), before)
+
     def test_machinery_that_names_a_class_it_does_not_ship_refuses(self):
         (self.platform / "distribution" / "render-bottom-rung-netpol.py").unlink()
         doc, rendered = self.compose()

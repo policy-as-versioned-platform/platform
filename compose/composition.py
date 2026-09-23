@@ -1081,7 +1081,8 @@ def named_priority_classes(doc: dict) -> tuple[set[str], list[str]]:
     side is read when it is a quoted literal, or `variables.<map>.<field>` over a map variable
     whose rows spell `'<field>': '<name>'` (the cage's dial table). Anything else is returned
     UNREAD rather than guessed at, and the caller refuses it: a class the composer cannot name is
-    a class it cannot prove it carries."""
+    a class it cannot prove it carries. So is any other mention of `priorityClassName` in a string,
+    such as a JSONPatch path: the composer cannot tell a read from a write there, so it refuses."""
     names: set[str] = set()
     unread: list[str] = []
     raw_spec = doc.get("spec")
@@ -1112,6 +1113,14 @@ def named_priority_classes(doc: dict) -> tuple[set[str], list[str]]:
                     names.update(found)
                 else:
                     unread.append(expr)
+            # Any other mention of the field is a write the two readers above cannot see: a
+            # JSONPatch `path: "/spec/priorityClassName"` (CEL string or structured patch), a
+            # classic `patchesJson6902` block. It is UNREAD, never silently passed (ticket 111
+            # review round).
+            rest = _PC_ASSIGN.sub("", node)
+            for mention in re.finditer(r"priorityClassName", rest):
+                lo, hi = max(0, mention.start() - 40), min(len(rest), mention.end() + 40)
+                unread.append(" ".join(rest[lo:hi].split()))
 
     walk(doc)
     return names, unread
@@ -1317,10 +1326,11 @@ def _load_guards_from(root: Path) -> list[dict]:
         # plugin -- the cage becoming a refusal by another name. It is the one non-policy
         # member here, and it carries the same composed-for label and provenance annotations
         # every other member carries.
+        # A private load: `_load_guards` owns the shared `cage_body` binding and puts it back,
+        # so this reader must not rebind it (ticket 111 review round).
         import importlib.util as _ilu
         _spec = _ilu.spec_from_file_location("cage_body", root / "distribution" / "cage_body.py")
         _cb = _ilu.module_from_spec(_spec)
-        sys.modules["cage_body"] = _cb
         _spec.loader.exec_module(_cb)
         pc_doc = _cb.bottom_rung_priorityclass()
         members.append(

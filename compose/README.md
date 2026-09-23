@@ -256,10 +256,11 @@ itself needs.
   counts only classes composed beside it. A missing class refuses as
   `undelivered-priority-class`, subject `<class>@<version>` (or `@machinery`). An assignment the
   composer cannot read refuses as `unreadable-priority-class`: a class it cannot name is a class
-  it cannot prove it carries.
+  it cannot prove it carries. So does any other mention of `priorityClassName` in a string, such
+  as a JSONPatch `path: "/spec/priorityClassName"`, in CEL or as a structured patch.
 - **`_load_guards` binds the parent's own `cage_body`** under that module name while it renders,
   and puts the previous binding back after. It used to leave the name pointing at whichever
-  parent composed last.
+  parent composed last. `_load_guards_from` loads its own copy privately and never rebinds it.
 
 ## Run
 
