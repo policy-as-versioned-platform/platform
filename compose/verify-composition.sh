@@ -31,7 +31,7 @@ python3 -m unittest discover -s "$HERE" -p test_comparison_history.py || fail "c
 say "0c. every PriorityClass a composed member names is carried in its own version (ticket 111)"
 python3 -m unittest discover -s "$HERE" -p test_priority_classes.py || fail "priority classes"
 
-say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal)"
+say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal, the regulator's withdrawal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 
 say "1a. the ONE pin-content rule (ticket 77 item 1): a pinned tree must carry the section the pin is used for"

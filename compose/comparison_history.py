@@ -18,6 +18,10 @@ class InvalidHistory(ValueError):
 
 
 HEADER_FIELDS = ('parents', 'baseline', 'holes', 'selected-controls', 'ungoverned-namespaces')
+# A header field carried only where the recorded header carries it (eco-system
+# ticket 123). Absent means the header predates it, which is not the same fact
+# as an empty list, so the projection never defaults it.
+OPTIONAL_HEADER_FIELDS = ('overlay-controls',)
 PRICE_FIELDS = ('kind', 'source', 'name', 'proposed_tier', 'hole')
 CAGE_FIELDS = ('party', 'rule', 'tier')
 
@@ -52,11 +56,13 @@ def _validate(before: object) -> None:
         raise InvalidHistory('invalid comparison history: incomplete before-state')
     header = before['header']
     if header is not None:
-        if not isinstance(header, dict) or set(header) != set(HEADER_FIELDS):
+        if (not isinstance(header, dict) or not set(HEADER_FIELDS) <= set(header)
+                or not set(header) <= set(HEADER_FIELDS) | set(OPTIONAL_HEADER_FIELDS)):
             raise InvalidHistory('invalid comparison history: header fields')
         if header['baseline'] is not None and not isinstance(header['baseline'], str):
             raise InvalidHistory('invalid comparison history: baseline')
-        if not all(_strings(header[k]) for k in HEADER_FIELDS[2:]):
+        if not all(_strings(header[k]) for k in HEADER_FIELDS[2:]
+                   + tuple(k for k in OPTIONAL_HEADER_FIELDS if k in header)):
             raise InvalidHistory('invalid comparison history: control/namespace lists')
         if not isinstance(header['parents'], list) or not all(
                 isinstance(p, dict) and all(isinstance(p.get(k), str) for k in ('party', 'kind', 'version', 'sha'))
@@ -78,6 +84,8 @@ def _validate(before: object) -> None:
 def project(header: dict | None, prices: list[dict], cages: list[dict]) -> dict:
     prior_header = None if header is None else {
         key: header.get(key, [] if key != 'baseline' else None) for key in HEADER_FIELDS}
+    if prior_header is not None:
+        prior_header.update({key: header[key] for key in OPTIONAL_HEADER_FIELDS if key in header})
     prior_prices = [{key: row.get(key) for key in PRICE_FIELDS} for row in prices]
     for row in prior_prices:
         if isinstance(row['hole'], dict):

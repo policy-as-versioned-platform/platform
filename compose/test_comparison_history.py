@@ -153,3 +153,29 @@ class ComparisonHistory(unittest.TestCase):
         self.assertFalse(changed['cages'][0]['changed'])
         self.save(changed, output)
         self.assertEqual(ct.verify(self.fixture.adopter, self.fixture.trees), (True, []))
+
+
+class OptionalHeaderField(unittest.TestCase):
+    """Eco-system ticket 123: `overlay-controls` is carried only where the
+    recorded header carries it. Absent means the header predates the field,
+    which is not the same fact as an empty overlay."""
+
+    HEADER = {'parents': [], 'baseline': 'SMALL', 'holes': [], 'selected-controls': ['aa-1'],
+              'ungoverned-namespaces': []}
+
+    def test_a_header_without_the_field_projects_without_it(self):
+        import comparison_history as ch
+        before = ch.project(dict(self.HEADER), [], [])
+        self.assertNotIn('overlay-controls', before['header'])
+
+    def test_a_header_with_the_field_projects_it_even_when_empty(self):
+        import comparison_history as ch
+        for overlay in ([], ['aa-3']):
+            before = ch.project({**self.HEADER, 'overlay-controls': overlay}, [], [])
+            self.assertEqual(before['header']['overlay-controls'], overlay)
+
+    def test_a_malformed_field_or_an_unknown_one_refuses(self):
+        import comparison_history as ch
+        for header in ({**self.HEADER, 'overlay-controls': [1]}, {**self.HEADER, 'other': []}):
+            with self.assertRaises(ch.InvalidHistory):
+                ch._validate({'header': header, 'prices': [], 'cages': []})
