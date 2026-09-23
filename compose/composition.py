@@ -6737,22 +6737,41 @@ def selfcheck() -> None:
             return yaml.safe_load((work / "party.yaml").read_text())["inherits"]
 
         # (a) tuppence pins threat-register@v1 while the feeds publisher's real
-        # checkout carries its signed threat-register/v2.x.y: BEHIND.
+        # checkout carries signed threat-register majors ahead of it: BEHIND.
+        # Ticket 110: the majors ahead are READ off the real clone's tags and
+        # directories, never assumed. The first cut hard-coded "exactly one
+        # supersede row, at v2" and went red the day ico v4.0.0 and
+        # threat-register/v3.0.0 were cut (2026-09-10), though the composer
+        # was right: tuppence really is behind both publishers.
         work = _adopter_copy("tuppence", root)
         doc, rendered = compose(work, trees)
         assert doc["outcome"] == "composed", doc["refusals"]
         line = next(e for e in doc["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
         assert line["superseded"]["state"] == "behind", line["superseded"]
         sups = [e for e in doc["prices"] if e["kind"] == SUPERSEDE_KIND]
-        assert len(sups) == 1, sups
-        s = sups[0]
-        assert s["source"] == "feeds" and s["name"] == "threat-register" and s["version"] == "v1", s
-        assert re.match(r"^threat-register/v2\.\d+\.\d+$", s["newer"]["tag"]), s["newer"]
-        assert s["newer"]["version"] == "v2" and s["newer"]["published_at"], s["newer"]
+        # one supersede row per feed line observed behind, and no other
+        behind = sorted((e["source"], e["name"]) for e in doc["prices"]
+                        if e["kind"] == "feed" and (e.get("superseded") or {}).get("state") == "behind")
+        assert sorted((e["source"], e["name"]) for e in sups) == behind, (sups, behind)
+        s = next(e for e in sups if e["source"] == "feeds" and e["name"] == "threat-register")
+        assert s["version"] == "v1", s
+        tag_form = re.compile(r"^threat-register/v(\d+)\.\d+\.\d+$")
+        ahead = sorted((int(m.group(1)), tag) for tag in subprocess.run(
+            ["git", "-C", str(feeds_clone), "tag", "--list", "threat-register/v*"],
+            capture_output=True, text=True, check=True).stdout.split()
+            if (m := tag_form.match(tag)) and int(m.group(1)) > 1)
+        assert ahead, "the feeds clone signs no threat-register major ahead of v1"
+        readable = [major for major, _ in ahead
+                    if (feeds_clone / "threat-register" / f"v{major}").is_dir()]
+        assert readable, ahead
+        assert s["newer"]["version"] == f"v{max(readable)}" and s["newer"]["published_at"], (s["newer"], ahead)
+        assert tag_form.match(s["newer"]["tag"]).group(1) == str(max(readable)), s["newer"]
         tagged = _tag_date(s["newer"]["tag"])
         assert tagged and s["newer"]["tagged"] == tagged, (s["newer"], tagged)
-        # since is the OLDEST signed major ahead (review F3); with one major ahead it is the same tag
-        assert s["newer"]["since_tag"] == s["newer"]["tag"] and s["since"] == tagged, s["newer"]
+        # since is the OLDEST signed major ahead (review F3), whatever the target is
+        assert tag_form.match(s["newer"]["since_tag"]).group(1) == str(ahead[0][0]), (s["newer"], ahead)
+        since = _tag_date(s["newer"]["since_tag"])
+        assert since and s["since"] == since == s["newer"]["since"], (s["newer"], since)
         assert s["as_of"] == _composition_as_of(_edges(work), trees), s["as_of"]
         assert s["perspective"] == "tuppence" and s["currency"] == "GBP", s
         assert s["base"] == line["amount"] and s["ramp"] == _ramp(s["since"], s["as_of"]), s
@@ -6763,30 +6782,37 @@ def selfcheck() -> None:
         assert abs(header["exposure"]["total"] - _sum_prices(
             [e for e in doc["prices"] if e["kind"] in EXPOSURE_KINDS], "tuppence", "GBP")) < 1e-6, \
             "the supersede line leaked into the exposure total"
-        # --as-of respected: a year past the signing day the ramp is 2.0 and the
-        # surcharge is the whole line; the day before it, zero with both dates.
-        later = (_dt.date.fromisoformat(tagged) + _dt.timedelta(days=365)).isoformat()
-        before = (_dt.date.fromisoformat(tagged) - _dt.timedelta(days=1)).isoformat()
-        s2 = next(e for e in compose(work, trees, as_of=later)[0]["prices"] if e["kind"] == SUPERSEDE_KIND)
-        assert s2["as_of"] == later and s2["since"] == tagged, s2
+        # --as-of respected: a year past the day the pin fell behind the ramp is 2.0
+        # and the surcharge is the whole line; the day before it, zero with both dates.
+        later = (_dt.date.fromisoformat(since) + _dt.timedelta(days=365)).isoformat()
+        before = (_dt.date.fromisoformat(since) - _dt.timedelta(days=1)).isoformat()
+
+        def _threat_supersede(prices: list[dict]) -> dict:
+            return next(e for e in prices if e["kind"] == SUPERSEDE_KIND
+                        and e["source"] == "feeds" and e["name"] == "threat-register")
+        s2 = _threat_supersede(compose(work, trees, as_of=later)[0]["prices"])
+        assert s2["as_of"] == later and s2["since"] == since, s2
         assert abs(s2["ramp"] - 2.0) < 1e-9 and abs(s2["amount"] - s2["base"]) < 1e-6, s2
-        s0 = next(e for e in compose(work, trees, as_of=before)[0]["prices"] if e["kind"] == SUPERSEDE_KIND)
-        assert s0["as_of"] == before and s0["since"] == tagged and s0["ramp"] == 1.0 and s0["amount"] == 0.0, s0
-        assert any(lim.startswith("zero (as_of") and before in lim and tagged in lim for lim in s0["limits"]), \
+        s0 = _threat_supersede(compose(work, trees, as_of=before)[0]["prices"])
+        assert s0["as_of"] == before and s0["since"] == since and s0["ramp"] == 1.0 and s0["amount"] == 0.0, s0
+        assert any(lim.startswith("zero (as_of") and before in lim and since in lim for lim in s0["limits"]), \
             ("a zero that is a backwards window says so, with both dates (review F2)", s0["limits"])
         assert not [lim for lim in s["limits"] if lim.startswith("zero")] or s["as_of"] < s["since"]
         print("OK supersede: tuppence's threat-register@v1 sits behind the feeds publisher's real "
-              "signed %s (cut %s); the line prices %.2f %s at the composition's own as-of %s "
-              "(ramp %.4f on a %.2f base), %.2f a year past the tag under --as-of, and 0.00 "
-              "with both dates the day before it; never summed into the exposure"
-              % (s["newer"]["tag"], tagged, s["amount"], s["currency"], s["as_of"], s["ramp"],
-                 s["base"], s2["amount"]))
+              "signed %s (cut %s), behind since %s was cut %s; the line prices %.2f %s at the "
+              "composition's own as-of %s (ramp %.4f on a %.2f base), %.2f a year past that "
+              "day under --as-of, and 0.00 with both dates the day before it; one supersede row "
+              "per feed line observed behind (%s); never summed into the exposure"
+              % (s["newer"]["tag"], tagged, s["newer"]["since_tag"], since, s["amount"],
+                 s["currency"], s["as_of"], s["ramp"], s["base"], s2["amount"],
+                 ", ".join(f"{p}/{n}" for p, n in behind)))
 
         # the same pin moved to the newest published major: no line, said so
-        _bump_feed_pin(work, "feeds", "threat-register", "v2")
+        _bump_feed_pin(work, "feeds", "threat-register", s["newer"]["version"])
         doc_cur, _ = compose(work, trees)
         assert doc_cur["outcome"] == "composed", doc_cur["refusals"]
-        assert not [e for e in doc_cur["prices"] if e["kind"] == SUPERSEDE_KIND], doc_cur["prices"]
+        assert not [e for e in doc_cur["prices"] if e["kind"] == SUPERSEDE_KIND
+                    and e["name"] == "threat-register"], doc_cur["prices"]
         cur = next(e for e in doc_cur["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
         assert cur["superseded"]["state"] == "current", cur["superseded"]
         # and a checkout that cannot show the tags, or shows only an unsigned tag
