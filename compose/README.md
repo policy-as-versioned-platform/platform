@@ -239,6 +239,28 @@ itself needs.
 - The document gains `deltas[]`. `verify/priced-holes/` in the hub grades all of this on the
   composed evidence; the superseding ADR for ADR-0013/0017/0018 point 3 is ticket 39's.
 
+## What eco-system ticket 111 changes: a version carries the classes its cage names
+
+- **PriorityClasses are members now.** Before this, `load_implementations` skipped them, so every
+  adopter's composed tree carried `cage-tier` and none of the classes it writes into
+  `priorityClassName`. The Priority admission plugin refused every pod the cage mutated. Each
+  version's classes now land one per file beside the cage, as
+  `composed/policies/v<version>/cage-isolated.yaml` and so on, rendered faithfully like any other
+  member. The version's own Kustomization applies them and prunes them when the version retires.
+  They appear in `members[]` with `kind: PriorityClass` and no action.
+- **A set that names a class it does not carry is refused.** `named_priority_classes()` reads a
+  literal `priorityClassName` field, and a CEL `priorityClassName:` assignment that is a quoted
+  literal or `variables.<map>.<field>` over a literal dial table. A dial table indexed by a
+  variable that is itself a literal (the machinery cages pin `tier` to `'isolated'`) counts only
+  that row. A versioned member counts only classes in its own version directory. The machinery
+  counts only classes composed beside it. A missing class refuses as
+  `undelivered-priority-class`, subject `<class>@<version>` (or `@machinery`). An assignment the
+  composer cannot read refuses as `unreadable-priority-class`: a class it cannot name is a class
+  it cannot prove it carries.
+- **`_load_guards` binds the parent's own `cage_body`** under that module name while it renders,
+  and puts the previous binding back after. It used to leave the name pointing at whichever
+  parent composed last.
+
 ## Run
 
 ```sh

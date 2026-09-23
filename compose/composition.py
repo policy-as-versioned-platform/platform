@@ -347,6 +347,12 @@ import comparison_history  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
+# Eco-system ticket 111. A policy version's PriorityClasses travel WITH the version: composed into
+# `composed/policies/v<version>/` beside the cage that names them, so the version's own
+# Kustomization applies them and prunes them when the version retires. They are carried, never
+# restated, and they carry no action.
+PRIORITY_CLASS = "PriorityClass"
+MEMBER_KINDS = ADMISSION_KINDS + (PRIORITY_CLASS,)
 
 # The whole strictness ladder (ADR-0016: a ValidatingPolicy concept and
 # nothing else). A restatement is accepted only when it does not decrease.
@@ -1024,8 +1030,11 @@ def load_implementations(root: Path) -> tuple[dict[str, dict[tuple[str, str], di
             if path.name in ("kustomization.yaml",):
                 continue
             for doc in yaml.safe_load_all(path.read_text()):
-                if not isinstance(doc, dict) or doc.get("kind") not in ADMISSION_KINDS:
-                    continue  # PriorityClasses are dials, not admission.
+                if not isinstance(doc, dict) or doc.get("kind") not in MEMBER_KINDS:
+                    continue
+                # Ticket 111: a PriorityClass is NOT skipped any more. Until then every adopter's
+                # composed tree dropped it while the cage beside it went on naming it, and the
+                # Priority admission plugin refused every pod the cage mutated.
                 labels = (doc.get("metadata") or {}).get("labels") or {}
                 family = labels.get(LABEL_FAMILY, "(none)")
                 base = VERSION_SUFFIX.sub("", doc["metadata"]["name"])
@@ -1039,6 +1048,134 @@ def load_implementations(root: Path) -> tuple[dict[str, dict[tuple[str, str], di
         members_by_version[version] = members
 
     return members_by_version, _load_guards(root)
+
+
+_PC_ASSIGN = re.compile(r"priorityClassName\s*:\s*([^,\n}]+)")
+_PC_VARIABLE = re.compile(r"^variables\.(\w+)\.(\w+)$")
+_ROW_SELECT = re.compile(r"\[\s*variables\.(\w+)\s*\]\s*$")
+_QUOTED = re.compile(r"""^(['"])([^'"]+)\1$""")
+
+
+def _dial_values(variables: dict[str, str], var: str, field: str) -> set[str]:
+    """Every literal `'<field>': '<value>'` in variable `var`'s expression. When that expression
+    ends by indexing its own map with another variable that is itself a string literal (the
+    machinery cages pin `tier` to `'isolated'`), only that one row is reachable, so only its value
+    counts."""
+    expr = variables.get(var, "")
+    rows = [expr]
+    select = _ROW_SELECT.search(expr)
+    if select:
+        pinned = _QUOTED.match(variables.get(select.group(1), "").strip())
+        if pinned:
+            row = re.search(rf"'{re.escape(pinned.group(2))}'\s*:\s*\{{([^}}]*)\}}", expr)
+            rows = [row.group(1)] if row else []
+    return {m.group(1) for r in rows
+            for m in re.finditer(rf"'{re.escape(field)}'\s*:\s*'([^']+)'", r)}
+
+
+def named_priority_classes(doc: dict) -> tuple[set[str], list[str]]:
+    """(every PriorityClass this member can write onto a pod, every assignment it could not read).
+
+    Eco-system ticket 111. Two spellings are read: a literal `priorityClassName` field, and a CEL
+    assignment `priorityClassName: <expr>` inside any string the member carries. The CEL right-hand
+    side is read when it is a quoted literal, or `variables.<map>.<field>` over a map variable
+    whose rows spell `'<field>': '<name>'` (the cage's dial table). Anything else is returned
+    UNREAD rather than guessed at, and the caller refuses it: a class the composer cannot name is
+    a class it cannot prove it carries."""
+    names: set[str] = set()
+    unread: list[str] = []
+    raw_spec = doc.get("spec")
+    spec: dict = raw_spec if isinstance(raw_spec, dict) else {}
+    variables = {str(v.get("name")): str(v.get("expression", ""))
+                 for v in (spec.get("variables") or []) if isinstance(v, dict)}
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "priorityClassName" and isinstance(value, str):
+                    names.add(value)
+                else:
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, str):
+            for match in _PC_ASSIGN.finditer(node):
+                expr = match.group(1).strip()
+                literal = _QUOTED.match(expr)
+                if literal:
+                    names.add(literal.group(2))
+                    continue
+                ref = _PC_VARIABLE.match(expr)
+                found = _dial_values(variables, ref.group(1), ref.group(2)) if ref else set()
+                if found:
+                    names.update(found)
+                else:
+                    unread.append(expr)
+
+    walk(doc)
+    return names, unread
+
+
+def undelivered_priority_class_refusals(merged: dict[tuple[str, str, str], dict],
+                                        guards: list[dict]) -> list[dict]:
+    """Eco-system ticket 111: a composed set that names a PriorityClass it does not carry.
+
+    The unit of delivery is one version directory: one Kustomization applies
+    `composed/policies/v<version>/` and prunes it with the version. So a versioned member counts
+    only the classes composed into its OWN version; a namesake under another version is not a
+    delivery. The platform machinery (the guards) counts only the classes composed beside it.
+
+    This is not a priced behaviour (ADR-0020): nothing is absent from the adopter's estate that a
+    price could stand for. It is an artefact that cannot do what it says, like a restated mutate
+    (ADR-0016), and every pod the cage writes the missing name onto is refused by the Priority
+    admission plugin. So it refuses, naming the class, the member and the directory."""
+    carried: dict[str | None, set[str]] = {}
+    namers: list[tuple[str | None, str, dict]] = []
+    for (version, family, base), meta in merged.items():
+        if meta["kind"] == PRIORITY_CLASS:
+            carried.setdefault(version, set()).add(str(meta["doc"]["metadata"]["name"]))
+        else:
+            namers.append((version, f"{family}/{base}@{version}", meta["doc"]))
+    for g in guards:
+        if g["kind"] == PRIORITY_CLASS:
+            carried.setdefault(None, set()).add(str(g["doc"]["metadata"]["name"]))
+        else:
+            namers.append((None, f"platform-machinery/{g['member_name']}", g["doc"]))
+    missing: dict[tuple[str | None, str], list[str]] = {}
+    unreadable: list[dict] = []
+    for at, who, doc in sorted(namers, key=lambda n: (n[0] or "", n[1])):
+        names, unread = named_priority_classes(doc)
+        for name in sorted(names - carried.get(at, set())):
+            missing.setdefault((at, name), []).append(who)
+        for expr in unread:
+            unreadable.append({
+                "kind": "unreadable-priority-class",
+                "needs_composition": True,
+                "subject": who,
+                "detail": (f"{who} assigns priorityClassName from {expr!r}, which the composer "
+                           f"cannot resolve to a class name, so it cannot prove "
+                           f"{_class_home(at)} carries the class. Spell it as a literal or "
+                           f"as variables.<map>.<field> over a literal dial table (ticket 111)."),
+            })
+    out: list[dict] = []
+    for (at, name), whos in sorted(missing.items(), key=lambda m: (m[0][0] or "", m[0][1])):
+        out.append({
+            "kind": "undelivered-priority-class",
+            "needs_composition": True,
+            "subject": f"{name}@{at if at is not None else 'machinery'}",
+            "detail": (f"{', '.join(whos)} write{'s' if len(whos) == 1 else ''} priorityClassName "
+                       f"{name!r} onto the pods {'it mutates' if len(whos) == 1 else 'they mutate'}, "
+                       f"and {_class_home(at)} carries no PriorityClass of that name. The "
+                       f"Priority admission plugin refuses every such pod: a cage that cannot "
+                       f"admit a workload is a refusal by another name (ticket 111)."),
+        })
+    return out + unreadable
+
+
+def _class_home(version: str | None) -> str:
+    return (f"composed/policies/v{version}/" if version is not None
+            else "composed/ (the platform machinery)")
 
 
 def load_overlay_add(party_doc: dict) -> dict[tuple[str, str, str], dict]:
@@ -1076,6 +1213,29 @@ def _load_module(root: Path, filename: str, module_name: str):
 
 
 def _load_guards(root: Path) -> list[dict]:
+    """`_load_guards_from`, with the parent's OWN `cage_body` bound under that shared module name
+    for the duration and the previous binding put back afterwards (ticket 111).
+
+    The renderers import `cage_body` by name. Before this, the name was rebound to whichever
+    parent tree composed last and left there, so a later composition could render its cages
+    through another tree's module, or through one whose directory no longer existed."""
+    previous = sys.modules.get("cage_body")
+    body = root / "distribution" / "cage_body.py"
+    try:
+        spec = importlib.util.spec_from_file_location("cage_body", body) if body.exists() else None
+        if spec is not None and spec.loader is not None:
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["cage_body"] = module
+            spec.loader.exec_module(module)
+        return _load_guards_from(root)
+    finally:
+        if previous is not None:
+            sys.modules["cage_body"] = previous
+        else:
+            sys.modules.pop("cage_body", None)
+
+
+def _load_guards_from(root: Path) -> list[dict]:
     """Every `platform-machinery` member: the orphan guard and its CAGE (both ranged from
     the version array), the governed-namespace cage and its paired report (static,
     ADR-0014's fifth named gap), and the bottom-rung reach cage. All load through the
@@ -3968,6 +4128,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
                                                                 parent_trees, previous_cages=comparison_before["cages"])
     refusals += restate_refusals
+    refusals += undelivered_priority_class_refusals(merged, guards)
 
     # -----------------------------------------------------------------
     # ticket 14: baseline coverage, control claims and holes
@@ -4158,8 +4319,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         doc = render_member(meta["doc"], meta["action"], adopter_party, meta["source_ref"], meta["path"])
         # The member's own identity, not its source path's basename -- an
         # overlay.add member has no real on-disk file to name (ticket 14).
-        # Equivalent for every parent-sourced member today: each is shipped
-        # at exactly "<base>.yaml".
+        # Every parent-sourced POLICY is shipped at exactly "<base>.yaml". The
+        # PriorityClasses (ticket 111) share one source file and land one per
+        # file here, as "cage-isolated.yaml" and so on.
         filename = f"{base}.yaml"
         out_path = f"composed/policies/v{version}/{filename}"
         rendered[out_path] = yaml.safe_dump(doc, **YAML_KWARGS)
@@ -4635,6 +4797,14 @@ def _write_fixture_platform(root: Path, real_platform: Path, claims: list[tuple[
                 root / "distribution" / "render-orphan-guard.py")
     shutil.copy(real_platform / "distribution" / "render-governed-namespace-guard.py",
                 root / "distribution" / "render-governed-namespace-guard.py")
+    # Ticket 111: the machinery is copied WHOLE. The orphan renderer above ships two cages that
+    # name the bottom rung's PriorityClass, and only the bottom-rung renderer ships that class.
+    # A fixture parent carrying the cages without the class is a parent the composer now refuses,
+    # exactly as it would refuse a real one.
+    for name in ("cage_body.py", "render-bottom-rung-netpol.py"):
+        shutil.copy(real_platform / "distribution" / name, root / "distribution" / name)
+    shutil.copytree(real_platform / "graded" / "policies", root / "graded" / "policies",
+                    dirs_exist_ok=True)
     _write_admission_doc(root / "distribution" / "policies" / "v1.0.0" / "member-a.yaml",
                           "ValidatingPolicy", "member-a-1-0-0", "fam-a", "1.0.0",
                           validation_actions=["Audit"])
@@ -5337,7 +5507,9 @@ def selfcheck() -> None:
     faithful_count = 0
     for version, members in members_by_version.items():
         for (family, base), meta in members.items():
-            out_path = f"composed/policies/v{version}/{Path(meta['path']).name}"
+            # Where compose() writes it: the member's own base name. Since ticket 111 that is not
+            # always its source file's name -- the PriorityClasses share one priorityclasses.yaml.
+            out_path = f"composed/policies/v{version}/{base}.yaml"
             rendered_doc = yaml.safe_load(rendered[out_path])
             assert render_is_faithful(rendered_doc, meta["doc"]), (family, base, version)
             faithful_count += 1
@@ -5359,7 +5531,10 @@ def selfcheck() -> None:
     for g in guards:
         g_rendered = yaml.safe_load(rendered[g["out_path"]])
         assert render_is_faithful(g_rendered, g["doc"]), g["member_name"]
-        g_member = next(m for m in document["members"] if m["name"] == g["member_name"])
+        # `version is None` too: the versioned cage-isolated-4-0-0 class (ticket 111) shares the
+        # machinery class's unsuffixed base name, and it is not the guard.
+        g_member = next(m for m in document["members"]
+                        if m["name"] == g["member_name"] and m["version"] is None)
         assert g_member["family"] == "platform-machinery"
         assert g_member["version"] is None
     print("OK guards: orphan guard and governed-namespace-requires-claim both compose under "
