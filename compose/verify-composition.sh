@@ -31,13 +31,13 @@ python3 -m unittest discover -s "$HERE" -p test_comparison_history.py || fail "c
 say "0c. every PriorityClass a composed member names is carried in its own version (ticket 111)"
 python3 -m unittest discover -s "$HERE" -p test_priority_classes.py || fail "priority classes"
 
-say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
+say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 
 say "1a. the ONE pin-content rule (ticket 77 item 1): a pinned tree must carry the section the pin is used for"
 python3 "$HERE/../party/pin_content.py" --selfcheck || fail "party/pin_content.py --selfcheck"
 
-say "1b. the three refusals ticket 38 deleted are gone from the source, and no new one took their place"
+say "1b. the three refusals ticket 38 deleted and the removal refusal ticket 124 deleted are gone from the source"
 python3 - "$HERE/composition.py" <<'PY' || fail "a deleted refusal kind is still emitted by composition.py"
 import re, sys
 src = open(sys.argv[1]).read().split("\ndef selfcheck()", 1)[0]
@@ -45,7 +45,7 @@ src = open(sys.argv[1]).read().split("\ndef selfcheck()", 1)[0]
 # name does not -- that is the whole point of the change.
 refusal_kinds = {m.group(1) for m in re.finditer(r'"kind":\s*"([a-z-]+)"', src)
                  if "needs_composition" in src[m.end():m.end() + 400]}
-gone = {"new-hole", "baseline-widening", "new-ungoverned-namespace"}
+gone = {"new-hole", "baseline-widening", "new-ungoverned-namespace", "removed-control"}
 still = sorted(refusal_kinds & gone)
 if still:
     print(f"still emitted as a refusal: {still}"); sys.exit(1)
