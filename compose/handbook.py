@@ -50,6 +50,9 @@ from typing import Any, Mapping
 import yaml
 
 HEADER_PATH = "composed/HEADER.yaml"
+# The machinery's delivery route (eco-system ticket 130). It is kustomize's build input, not an
+# object the cluster holds, so the page that describes what is installed does not list it.
+ROOT_KUSTOMIZATION_PATH = "composed/kustomization.yaml"
 EVIDENCE_PATH = "composed/evidence.json"
 HANDBOOK_PATH = "composed/HANDBOOK.md"
 # Kinds of prices[] entry that propose no tier by construction: a premium is a committed cost
@@ -118,7 +121,7 @@ def _policy_objects(files: Mapping[str, str]) -> list[dict]:
     for path in sorted(files):
         if not path.startswith("composed/") or not path.endswith(".yaml"):
             continue
-        if path == HEADER_PATH:
+        if path in (HEADER_PATH, ROOT_KUSTOMIZATION_PATH):
             continue
         for doc in yaml.safe_load_all(files[path]):
             if isinstance(doc, dict) and doc.get("kind"):
