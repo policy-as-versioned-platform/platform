@@ -1633,7 +1633,8 @@ def _ungoverned_history(adopter_dir: Path) -> list[tuple[str, str, set[str], dic
 
 
 def _signed_since(adopter_dir: Path, namespace: str, now: dict[str, set[str]] | None = None,
-                  history: list | None = None) -> tuple[str | None, str | None, str | None]:
+                  history: list | None = None,
+                  ungoverned: set[str] | None = None) -> tuple[str | None, str | None, str | None]:
     """The `since` an ungoverned namespace ramps from (ticket 38, ticket 15
     Q3(a)), as (date, by, None) when a signed tag carries it and (None, None,
     why) when none does -- a fact to carry, never a date to invent.
@@ -1648,25 +1649,30 @@ def _signed_since(adopter_dir: Path, namespace: str, now: dict[str, set[str]] | 
     "No longer holds it" keeps a copy from being a move: a new Namespace that
     runs a workload of the same kind and name beside the aged one starts its
     own ramp. `by` says which tag and, for a carried age, which Namespace and
-    workload, so the price shows where its date came from."""
+    workload, so the price shows where its date came from.
+
+    "No longer holds it" means no longer holds it as an ungoverned Namespace
+    (the ticket 122 review round, delegated). Otherwise an adopter drops the
+    carried age by re-declaring the old name governed with inert manifests of
+    the same kind and name, while the workloads keep running where they moved.
+    A governed Namespace pays no ramp, so it is not where the workload still
+    sits. `ungoverned` is the Namespaces the checkout leaves ungoverned; None
+    reads it from `_namespace_facts`."""
     now = _workloads_now(adopter_dir) if now is None else now
     history = _ungoverned_history(adopter_dir) if history is None else history
+    if ungoverned is None:
+        ungoverned = {ns for ns, gov in _namespace_facts(adopter_dir)[0].items() if not gov}
     mine = now.get(namespace, set())
     for tag, date, named, held in history:
         if namespace in named:
             return date, f"{tag} names {namespace}", None
         for other in sorted(named):
-            moved = sorted((held.get(other, set()) & mine) - now.get(other, set()))
+            still = now.get(other, set()) if other in ungoverned else set()
+            moved = sorted((held.get(other, set()) & mine) - still)
             if moved:
                 return date, f"{tag} names {other} ungoverned, where {moved[0]} sat", None
     return None, None, (f"no signed composed artefact names {namespace} or a Namespace its "
                         f"workloads left")
-
-
-def _first_signed_since(adopter_dir: Path, namespace: str) -> tuple[str | None, str | None]:
-    """(date, None) or (None, why): `_signed_since` without the `by`."""
-    date, _by, why = _signed_since(adopter_dir, namespace)
-    return date, why
 
 
 def _feeds_module():
@@ -1712,12 +1718,13 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
     total = sum(n for ns, n in workloads.items() if ns in institution)
     now = _workloads_now(adopter_dir)
     history = _ungoverned_history(adopter_dir) if any(e["status"] != "closed" for e in entries) else []
+    ungoverned = {ns for ns, gov in institution.items() if not gov}
     for entry in entries:
         if entry["status"] == "closed":
             continue
         name = entry["namespace"]
         inside = workloads.get(name, 0)
-        since, since_by, since_limit = _signed_since(adopter_dir, name, now, history)
+        since, since_by, since_limit = _signed_since(adopter_dir, name, now, history, ungoverned)
         limits: list[str] = []
         if since_limit:
             limits.append(f"{since_limit}: ramp held at 1.0 until a signed tag records it")
@@ -6845,13 +6852,13 @@ def selfcheck() -> None:
     # signed tag whose header names it, never typed; the date below is that
     # tag's own date, so this assert is a fact about the clone, not a fixture ---
     tuppence = DEFAULT_ESTATE_CLONE / "tuppence"
-    since, since_limit = _first_signed_since(tuppence, "tuppence-reset")
+    since, _since_by, since_limit = _signed_since(tuppence, "tuppence-reset")
     signed = _signed_tags(tuppence)
     if signed:
         assert since is not None and re.match(r"^\d{4}-\d{2}-\d{2}$", since), (since, since_limit)
         assert since in {d for _t, d in signed}, (since, signed)
-        assert _first_signed_since(tuppence, "no-such-namespace") == (
-            None, "no signed composed artefact names no-such-namespace or a Namespace its "
+        assert _signed_since(tuppence, "no-such-namespace") == (
+            None, None, "no signed composed artefact names no-such-namespace or a Namespace its "
                   "workloads left"), "an unnamed namespace has no since"
         doc_t, rendered_t = compose(tuppence, parent_trees)
         _assert_only_known_dangling(doc_t["refusals"], "real tuppence")
@@ -6938,9 +6945,21 @@ def selfcheck() -> None:
         closed = next(d for d in compute_deltas([], renamed, None, "fixture", "GBP")
                       if d["kind"] == "closed-ungoverned-namespace")
         assert "left the adopter's repo" in closed["detail"] and "carries governed" not in closed["detail"], closed
+        # Review round: re-declaring the old name governed, holding an inert
+        # manifest of the same kind and name, does not drop the carried age. A
+        # governed Namespace pays no ramp, so the workload does not sit there.
+        _write_namespace(repo, "side", governed=True)
+        _write_workload(repo, "side", "reset-a")
+        _cut("v1.2.0", "2026-09-02", ["side-2"])
+        shadowed = compute_ungoverned(set(ungoverned_namespaces(repo)), {"side-2"},
+                                      governed=set(governed_namespaces(repo)))
+        price_ungoverned(shadowed, repo, "fixture", "GBP", 1000.0, "2026-09-01")
+        held = next(e for e in shadowed if e["namespace"] == "side-2")["price"]
+        assert held["since"] == "2024-09-01" and held["ramp"] == 3.0, held
     print("OK ungoverned[] (eco-system ticket 122): a renamed ungoverned Namespace keeps the ramp "
           "its workloads carried (since 2024-09-01, ramp 3.0), the old name closes as left-repo "
-          "and not as governed, and a copy beside the original starts its own ramp")
+          "and not as governed, a copy beside the original starts its own ramp, and a governed "
+          "shadow of the old name does not drop the carried age")
 
     # --- (source, id): claims and holes resolve across EVERY controls parent,
     # an adopter's own catalogue included; the header encodes the source only

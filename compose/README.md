@@ -251,8 +251,10 @@ itself needs.
   `price.limits[]`, never invented. The live case is tuppence's `tuppence-reset`.
 - **The age follows the workloads** (eco-system ticket 122). `since` is the first signed tag that
   names the namespace, or names as ungoverned another namespace that then held a workload
-  (`Kind/name`) this one holds now and that no longer holds it. So renaming an aged ungoverned
-  namespace keeps its ramp, and a copy beside the original starts its own. `price.since_by` says
+  (`Kind/name`) this one holds now and that no longer holds it as an ungoverned namespace. So
+  renaming an aged ungoverned namespace keeps its ramp, and a copy beside the original starts its
+  own. Re-declaring the old name governed, with inert manifests of the same kind and name, does
+  not drop the carried age: a governed namespace pays no ramp. `price.since_by` says
   which tag, and for a carried age which namespace and workload. A closed `ungoverned[]` entry
   carries `closed_by`: `governed`, or `left-repo` when no manifest declares or names it any more,
   and its delta says which. Renaming every workload as well still restarts the ramp, because a
