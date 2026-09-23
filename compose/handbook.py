@@ -351,7 +351,7 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
             if p.get("kind") == "supersede":
                 a(f"- **{p.get('source')}/{p.get('name')} supersede** — "
                   f"clock starts {p.get('since')}; priced as of {p.get('as_of')}. "
-                  + " ".join(p.get("limits") or []))
+                  + "; ".join(p.get("limits") or []))
             if p.get("lef_basis"):
                 a(f"- **{p.get('source')}/{p.get('name')}** — basis: {p['lef_basis']}")
             elif p.get("basis"):

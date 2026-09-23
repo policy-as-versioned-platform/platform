@@ -104,6 +104,60 @@ class PortableObservations(unittest.TestCase):
         self.assertEqual(latest["since"], "2026-09-10")
         self.assertIn("does not establish the publisher's current newest major", signed["composed/HANDBOOK.md"])
 
+    def test_behind_a_major_the_checkout_cannot_read_is_priced_and_replays(self):
+        # Ticket 128: the adopters check a publisher out at their pinned commit, so a
+        # newer major tagged on a later commit has no directory here. The signed tags
+        # still say the pin is behind, and being behind is never free.
+        for major in (2, 3):
+            shutil.rmtree(self.publisher / "cve" / f"v{major}")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the pinned commit carries only v1")
+        self.tag("v3.0.0", "2026-09-11")
+        doc, first = self.composed(as_of="2027-09-10")
+        line = next(p for p in doc["prices"] if p["kind"] == "feed")
+        self.assertEqual(line["superseded"]["state"], "behind", line["superseded"])
+        self.assertIn("carries no directory", line["superseded"]["detail"])
+        sups = [p for p in doc["prices"] if p["kind"] == "supersede"]
+        self.assertEqual(len(sups), 1, doc["prices"])
+        sup = sups[0]
+        self.assertEqual(sup["newer"]["version"], "v3")
+        self.assertEqual(sup["newer"]["tag"], "cve/v3.0.0")
+        self.assertIs(sup["newer"]["readable"], False)
+        self.assertIsNone(sup["newer"]["published_at"])
+        self.assertEqual(sup["newer"]["since_tag"], "cve/v2.0.0")
+        self.assertEqual(sup["since"], "2026-09-10")
+        self.assertGreater(sup["amount"], 0)
+        self.assertAlmostEqual(sup["amount"], sup["base"] * (sup["ramp"] - 1.0))
+        self.assertTrue(any("no directory" in lim for lim in sup["limits"]), sup["limits"])
+        self.save(first)
+        _, present = self.composed(as_of="2027-09-10")
+        without = {k: v for k, v in self.trees.items() if k != "fixture-publisher"}
+        _, absent = self.composed(without, as_of="2027-09-10")
+        self.assertEqual(present, absent)
+        self.assertEqual(first, present)
+        self.assertEqual(ct.verify(self.adopter, self.trees), (True, []))
+        self.assertEqual(ct.verify(self.adopter, without), (True, []))
+
+    def test_an_unreadable_target_must_say_so_consistently(self):
+        for major in (2, 3):
+            shutil.rmtree(self.publisher / "cve" / f"v{major}")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the pinned commit carries only v1")
+        _, signed = self.composed()
+        self.save(signed)
+        provenance = self.adopter / "composed/feeds/fixture-publisher/v1/PROVENANCE.json"
+        original = provenance.read_text()
+        without = {k: v for k, v in self.trees.items() if k != "fixture-publisher"}
+        for key, value in (("readable", True), ("readable", "no"), ("published_at", "2026-09-10")):
+            with self.subTest(key=key, value=value):
+                record = json.loads(original)
+                record["publisher_observation"]["newer"][key] = value
+                provenance.write_text(json.dumps(record))
+                doc, _ = ct.compose(self.adopter, without)
+                self.assertEqual(doc["outcome"], "refused")
+                self.assertIn("no valid recorded publisher observation",
+                              str(doc["party_artefact_errors"]))
+
     def test_legacy_provenance_requires_refresh_and_does_not_invent_history(self):
         _, signed = self.composed()
         self.save(signed)
