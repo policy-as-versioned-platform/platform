@@ -4527,6 +4527,11 @@ def main(argv: list[str]) -> int:
         if missing:
             print(f"SKIP: .estate-clone/{{{','.join(missing)}}} absent. Run ./clone-estate.sh first.")
             return 0
+        stale = _selfcheck_missing_machinery(DEFAULT_ESTATE_CLONE / "platform")
+        if stale:
+            print(f"SKIP: .estate-clone/platform lacks {', '.join(stale)}. It predates the "
+                  "machinery the fixtures copy; refresh that clone.")
+            return 0
         selfcheck()
         return 0
 
@@ -4796,6 +4801,22 @@ def _write_fixture_catalog(nist_root: Path) -> None:
     }}))
 
 
+# The platform machinery `_write_fixture_platform` copies from a real platform tree. The selfcheck
+# names any that tree lacks and SKIPs (ticket 111 review round 2): a platform checkout from
+# before the machinery existed is a stale estate, not a composer fault.
+FIXTURE_MACHINERY = (
+    "distribution/render-orphan-guard.py",
+    "distribution/render-governed-namespace-guard.py",
+    "distribution/cage_body.py",
+    "distribution/render-bottom-rung-netpol.py",
+    "graded/policies",
+)
+
+
+def _selfcheck_missing_machinery(real_platform: Path) -> list[str]:
+    return [rel for rel in FIXTURE_MACHINERY if not (real_platform / rel).exists()]
+
+
 def _write_fixture_platform(root: Path, real_platform: Path, claims: list[tuple[str, str]]) -> None:
     """One clean ValidatingPolicy member, "member-a", plus whatever
     (control_id, policy_name) claims the caller wants in its own
@@ -4803,18 +4824,16 @@ def _write_fixture_platform(root: Path, real_platform: Path, claims: list[tuple[
     platform's own two dangling claims, so a hole/claim test here isn't
     muddied by an unrelated, already-covered defect."""
     _write_versions_yaml(root, [{"version": "1.0.0", "tag": "policy/v1.0.0", "commit": "e" * 40}])
-    shutil.copy(real_platform / "distribution" / "render-orphan-guard.py",
-                root / "distribution" / "render-orphan-guard.py")
-    shutil.copy(real_platform / "distribution" / "render-governed-namespace-guard.py",
-                root / "distribution" / "render-governed-namespace-guard.py")
-    # Ticket 111: the machinery is copied WHOLE. The orphan renderer above ships two cages that
-    # name the bottom rung's PriorityClass, and only the bottom-rung renderer ships that class.
-    # A fixture parent carrying the cages without the class is a parent the composer now refuses,
+    # Ticket 111: the machinery is copied WHOLE. The orphan renderer ships two cages that name
+    # the bottom rung's PriorityClass, and only the bottom-rung renderer ships that class. A
+    # fixture parent carrying the cages without the class is a parent the composer now refuses,
     # exactly as it would refuse a real one.
-    for name in ("cage_body.py", "render-bottom-rung-netpol.py"):
-        shutil.copy(real_platform / "distribution" / name, root / "distribution" / name)
-    shutil.copytree(real_platform / "graded" / "policies", root / "graded" / "policies",
-                    dirs_exist_ok=True)
+    for rel in FIXTURE_MACHINERY:
+        src, dest = real_platform / rel, root / rel
+        if src.is_dir():
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+        else:
+            shutil.copy(src, dest)
     _write_admission_doc(root / "distribution" / "policies" / "v1.0.0" / "member-a.yaml",
                           "ValidatingPolicy", "member-a-1-0-0", "fam-a", "1.0.0",
                           validation_actions=["Audit"])

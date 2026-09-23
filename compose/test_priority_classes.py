@@ -202,5 +202,41 @@ class PriorityClasses(unittest.TestCase):
         self.assertEqual(self.undelivered(doc), ["cage-isolated@machinery"])
 
 
+class SelfcheckAgainstAStaleEstate(unittest.TestCase):
+    """Review round 2: the selfcheck's fixture parent copies the machinery from the estate's
+    platform. An estate platform that predates the machinery gets a named SKIP, not a traceback."""
+
+    def stale_estate(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        estate = Path(tmp.name)
+        for name in ("driftwood", "nist", "ico", "feeds"):
+            (estate / name).mkdir()
+        # A platform from before ticket 111: the guards, no cage_body, no bottom rung, no graded/.
+        (estate / "platform" / "distribution").mkdir(parents=True)
+        for name in ("render-orphan-guard.py", "render-governed-namespace-guard.py"):
+            shutil.copy(REAL / "distribution" / name, estate / "platform" / "distribution" / name)
+        return estate
+
+    def test_the_missing_machinery_is_named(self):
+        self.assertEqual(ct._selfcheck_missing_machinery(self.stale_estate() / "platform"),
+                         ["distribution/cage_body.py", "distribution/render-bottom-rung-netpol.py",
+                          "graded/policies"])
+
+    def test_the_real_platform_misses_nothing(self):
+        self.assertEqual(ct._selfcheck_missing_machinery(REAL), [])
+
+    def test_a_stale_estate_skips_by_name_without_a_traceback(self):
+        import os
+        import subprocess
+        env = dict(os.environ, PAVC_ESTATE_CLONE=str(self.stale_estate()))
+        run = subprocess.run([sys.executable, str(Path(ct.__file__)), "--selfcheck"],
+                             env=env, capture_output=True, text=True, timeout=300)
+        self.assertNotIn("Traceback", run.stderr)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("SKIP:", run.stdout)
+        self.assertIn("distribution/cage_body.py", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

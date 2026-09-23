@@ -261,13 +261,16 @@ itself needs.
 - **`_load_guards` binds the parent's own `cage_body`** under that module name while it renders,
   and puts the previous binding back after. It used to leave the name pointing at whichever
   parent composed last. `_load_guards_from` loads its own copy privately and never rebinds it.
+- **The selfcheck's fixture parent copies the machinery whole** (`FIXTURE_MACHINERY`), so a fixture
+  parent stays a coherent parent under the new refusal. An estate platform clone that predates
+  that machinery now gets a named SKIP listing the missing paths, not a traceback.
 
 ## Run
 
 ```sh
 python3 composition.py compose ../../driftwood [--estate-clone ../../.. /.estate-clone] [--out DIR]
 python3 composition.py verify ../../driftwood
-python3 composition.py --selfcheck      # runnable asserts; SKIPs (exit 0) if the estate clone is absent
+python3 composition.py --selfcheck      # runnable asserts; SKIPs (exit 0) if the estate clone is absent or stale
 ./verify-composition.sh                  # the beat
 ```
 
