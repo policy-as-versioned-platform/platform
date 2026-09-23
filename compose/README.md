@@ -219,7 +219,10 @@ itself needs.
   Consequences). A control that left the selected set is the regulator's withdrawal when the
   adopter's last inputs would not select it against the catalogue pinned now: the catalogue no
   longer defines it (absent, or `status: withdrawn` as NIST marks it), or the last baseline name
-  no longer includes it and the adopter's last overlay did not select it. It prints a
+  no longer includes it and the adopter's last overlay did not select it. A withdrawal needs a
+  bump: where the source's controls pin did not move, the regulator withdrew nothing. An id the
+  last overlay named that the catalogue still carries, even under `status: withdrawn`, is still
+  selected by the last inputs, so its removal stays the adopter's. It prints a
   `withdrawn-control` delta, not a `removed-control` one. The delta names the regulator
   (`withdrawn_by`), the `reason` (`catalogue` or `baseline`) and the catalogue on both sides of
   the bump (`catalogue.from`, `catalogue.to`, each `<version>@<sha12>`). It carries the amount
@@ -228,7 +231,8 @@ itself needs.
   can tell the two apart. A last header without that field can tell only a catalogue withdrawal
   apart; a same-name baseline drop then stays the adopter's removal. A weights feed that still
   names a withdrawn control keeps its price: the regime entry does not move, and that line
-  reads `withdrawn`. It is the feed's own fact to fix in its next version.
+  reads `withdrawn` whether or not the adopter selected the control. It is the feed's own fact
+  to fix in its next version.
 - **Every hole is `(source, id)`** across every `controls` parent, an adopter's own catalogue
   included. A claim's source is its component-definition's `source` href (`../nist/...` → `nist`);
   a bare `overlay.controls` id is the baseline's catalogue's, `party:id` names another controls

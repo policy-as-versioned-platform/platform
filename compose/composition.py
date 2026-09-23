@@ -2339,7 +2339,7 @@ def _withdrawn_from_catalogue(source: str, cid: str,
 def split_withdrawn(removed: list[ControlKey], *, adopter_party: str,
                     catalog_props: dict[str, dict[str, dict[str, str]]],
                     baseline_source: str | None, prev_baseline_now: set[str],
-                    prev_overlay: set[ControlKey] | None
+                    prev_overlay: set[ControlKey] | None, pins_moved: set[str]
                     ) -> tuple[list[ControlKey], list[tuple[ControlKey, str]]]:
     """Tell the regulator's withdrawal apart from the adopter's own removal
     (eco-system ticket 123; ADR-0026 Consequences: a control the regulator
@@ -2360,18 +2360,29 @@ def split_withdrawn(removed: list[ControlKey], *, adopter_party: str,
     A source the adopter no longer pins is the adopter's act too. Where the
     last header carries no `overlay-controls`, only a catalogue withdrawal can
     be told apart; a same-name baseline drop stays the adopter's removal,
-    because an overlay removal would look the same."""
+    because an overlay removal would look the same.
+
+    Two guards come first (ticket 123 review round). A withdrawal needs a bump:
+    a source whose controls pin did not move (`pins_moved` names those that
+    did) withdrew nothing. And "still select" uses the selection rule compose
+    itself uses: an overlay selects any id the catalogue carries, so an id the
+    last overlay named that the catalogue still carries under `status:
+    withdrawn` is still selected by the last inputs, and its removal is the
+    adopter's."""
     adopters: list[ControlKey] = []
     withdrawn: list[tuple[ControlKey, str]] = []
     for key in removed:
         source, cid = key
-        if source == adopter_party or source not in catalog_props:
+        if source == adopter_party or source not in catalog_props or source not in pins_moved:
+            adopters.append(key)
+        elif prev_overlay is not None and key in prev_overlay and cid in catalog_props[source]:
             adopters.append(key)
         elif _withdrawn_from_catalogue(source, cid, catalog_props):
             withdrawn.append((key, "catalogue"))
-        elif source == baseline_source and cid in prev_baseline_now:
-            adopters.append(key)
-        elif prev_overlay is None or key in prev_overlay:
+        elif (source != baseline_source or cid in prev_baseline_now
+              or prev_overlay is None or key in prev_overlay):
+            # Only the baseline's own source can narrow a baseline, so the
+            # `baseline` reason always names the baseline the control left.
             adopters.append(key)
         else:
             withdrawn.append((key, "baseline"))
@@ -2385,6 +2396,20 @@ def _catalogue_pin(parents: list[dict] | None, source: str) -> str | None:
     if parent is None:
         return None
     return f"{parent['version']}@{str(parent.get('sha') or '')[:12]}"
+
+
+def _controls_pins_moved(prev_parents: list[dict] | None, parents: list[dict]) -> set[str]:
+    """The sources whose controls pin moved since the last header: both pins are
+    known and they differ. A source with no known last pin moved nothing that a
+    withdrawal could name (ticket 123 review round)."""
+    moved: set[str] = set()
+    for p in parents:
+        if p.get("kind") != "controls":
+            continue
+        before = _catalogue_pin(prev_parents, str(p["party"]))
+        if before is not None and before != _catalogue_pin(parents, str(p["party"])):
+            moved.add(str(p["party"]))
+    return moved
 
 
 def withdrawn_deltas(entries: list[dict], prev_parents: list[dict] | None, parents: list[dict],
@@ -4436,7 +4461,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     removed, withdrawn = split_withdrawn(
         removed_controls(selected_set, prev_selected), adopter_party=adopter_party,
         catalog_props=catalog_props, baseline_source=baseline_source,
-        prev_baseline_now=prev_baseline_ids or set(), prev_overlay=prev_overlay)
+        prev_baseline_now=prev_baseline_ids or set(), prev_overlay=prev_overlay,
+        pins_moved=_controls_pins_moved(prev_header.get("parents") if prev_header is not None else None,
+                                        parents))
 
     # -----------------------------------------------------------------
     # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
@@ -6313,6 +6340,49 @@ def selfcheck() -> None:
         print("OK split_withdrawn: in one run the adopter drops aa-3 from its overlay and the "
               "regulator drops aa-1.1 from SMALL; aa-3 is the adopter's removed-control and "
               "aa-1.1 the regulator's withdrawn-control")
+
+        # Ticket 123, review round: NIST keeps a withdrawn control in its catalogue under
+        # `status: withdrawn`, and an overlay still selects it. The adopter's own removal of
+        # such a control is the adopter's, with or without a real bump in the same run.
+        def marked(name: str, cid: str, base_tree: Path) -> Path:
+            nist_copy = Path(td) / name
+            shutil.copytree(base_tree, nist_copy)
+            cat_path = nist_copy / "catalog" / "catalog.json"
+            cat = json.loads(cat_path.read_text())
+            for c in cat["catalog"]["groups"][0]["controls"]:
+                if c["id"] == cid:
+                    c["props"] = [pr for pr in c.get("props", []) if pr.get("name") != "status"]
+                    c["props"].append({"name": "status", "value": WITHDRAWN_STATUS})
+            cat_path.write_text(json.dumps(cat))
+            return nist_copy
+
+        nist_marked = marked("nist-aa3-withdrawn-status", "aa-3", Path(fixture_trees["fixture-nist"]))
+        for label, bump in (("no bump", False), ("a real bump", True)):
+            ownw = Path(td) / f"run2-own-withdrawn-status-{int(bump)}"
+            _write_fixture_adopter(ownw, "SMALL", controls_add=["aa-3"])
+            doc_ownw1, rendered_ownw = compose(ownw, {**fixture_trees, "fixture-nist": nist_marked})
+            assert doc_ownw1["outcome"] == "composed", doc_ownw1
+            assert ("aa-3" in yaml.safe_load(rendered_ownw["composed/HEADER.yaml"])["selected-controls"])
+            _commit_header(ownw, rendered_ownw)
+            ownw_party = yaml.safe_load((ownw / "party.yaml").read_text())
+            ownw_party["overlay"]["controls"] = []
+            (ownw / "party.yaml").write_text(yaml.safe_dump(ownw_party, sort_keys=False))
+            tree2 = nist_marked
+            if bump:
+                tree2 = Path(td) / "nist-aa3-withdrawn-status-bumped"
+                shutil.copytree(nist_marked, tree2)
+                prof_path = tree2 / "catalog" / "small.json"
+                prof = json.loads(prof_path.read_text())
+                prof["profile"]["imports"][0]["include-controls"][0]["with-ids"].remove("aa-1.1")
+                prof_path.write_text(json.dumps(prof))
+            doc_ownw, _ = compose(ownw, {**fixture_trees, "fixture-nist": tree2})
+            assert doc_ownw["outcome"] == "composed", doc_ownw
+            want = {"aa-3": "removed-control", **({"aa-1.1": "withdrawn-control"} if bump else {})}
+            assert {d["control_id"]: d["kind"] for d in doc_ownw["deltas"] if "control_id" in d} == want, \
+                doc_ownw["deltas"]
+            print(f"OK split_withdrawn: the adopter drops aa-3, which the pinned catalogue keeps under "
+                  f"status: withdrawn, from its overlay with {label}; aa-3 is the adopter's "
+                  f"removed-control, never a withdrawal naming a bump that did not take it")
 
         # --- an adopter claim against a PARENT's policy refuses ---
         cross = Path(td) / "run2-cross-party-claim"
