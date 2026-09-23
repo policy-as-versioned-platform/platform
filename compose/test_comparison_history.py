@@ -176,6 +176,17 @@ class OptionalHeaderField(unittest.TestCase):
 
     def test_a_malformed_field_or_an_unknown_one_refuses(self):
         import comparison_history as ch
-        for header in ({**self.HEADER, 'overlay-controls': [1]}, {**self.HEADER, 'other': []}):
+        for header in ({**self.HEADER, 'overlay-controls': [1]}, {**self.HEADER, 'other': []},
+                       {**self.HEADER, 'withdrawn-selectable': 'false'},
+                       {**self.HEADER, 'withdrawn-selectable': []}):
             with self.assertRaises(ch.InvalidHistory):
                 ch._validate({'header': header, 'prices': [], 'cages': []})
+
+    def test_withdrawn_selectable_is_a_boolean_carried_only_where_recorded(self):
+        """Eco-system ticket 126: `withdrawn-selectable: false` says the header's
+        selection admitted only ids its catalogue defines. Absent means an older
+        composer, which is not the same fact as false."""
+        import comparison_history as ch
+        self.assertNotIn('withdrawn-selectable', ch.project(dict(self.HEADER), [], [])['header'])
+        before = ch.project({**self.HEADER, 'withdrawn-selectable': False}, [], [])
+        self.assertIs(before['header']['withdrawn-selectable'], False)
