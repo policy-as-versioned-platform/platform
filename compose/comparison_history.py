@@ -19,9 +19,11 @@ class InvalidHistory(ValueError):
 
 HEADER_FIELDS = ('parents', 'baseline', 'holes', 'selected-controls', 'ungoverned-namespaces')
 # A header field carried only where the recorded header carries it (eco-system
-# ticket 123). Absent means the header predates it, which is not the same fact
-# as an empty list, so the projection never defaults it.
-OPTIONAL_HEADER_FIELDS = ('overlay-controls',)
+# tickets 123 and 126). Absent means the header predates it, which is not the
+# same fact as an empty list or false, so the projection never defaults it.
+# `overlay-controls` is a list of ids; `withdrawn-selectable` is a boolean.
+OPTIONAL_HEADER_FIELDS = ('overlay-controls', 'withdrawn-selectable')
+OPTIONAL_BOOLEAN_FIELDS = ('withdrawn-selectable',)
 PRICE_FIELDS = ('kind', 'source', 'name', 'proposed_tier', 'hole')
 CAGE_FIELDS = ('party', 'rule', 'tier')
 
@@ -62,8 +64,11 @@ def _validate(before: object) -> None:
         if header['baseline'] is not None and not isinstance(header['baseline'], str):
             raise InvalidHistory('invalid comparison history: baseline')
         if not all(_strings(header[k]) for k in HEADER_FIELDS[2:]
-                   + tuple(k for k in OPTIONAL_HEADER_FIELDS if k in header)):
+                   + tuple(k for k in OPTIONAL_HEADER_FIELDS
+                           if k in header and k not in OPTIONAL_BOOLEAN_FIELDS)):
             raise InvalidHistory('invalid comparison history: control/namespace lists')
+        if not all(isinstance(header[k], bool) for k in OPTIONAL_BOOLEAN_FIELDS if k in header):
+            raise InvalidHistory('invalid comparison history: boolean header fields')
         if not isinstance(header['parents'], list) or not all(
                 isinstance(p, dict) and all(isinstance(p.get(k), str) for k in ('party', 'kind', 'version', 'sha'))
                 for p in header['parents']):

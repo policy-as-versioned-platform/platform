@@ -100,6 +100,9 @@ this same compose():
     id absent from the catalogue -- a claimed control-id, or an adopter's
     `overlay.controls` addition -- is a HARD FAILURE (`unknown-control-id`),
     never a hole; exact-string, no case-fold, no prefix-strip (ADR-0013).
+    Eco-system ticket 126: so is an id the catalogue keeps under `status:
+    withdrawn` (`_defines`), and the header records `withdrawn-selectable:
+    false` to say its selection followed that rule.
   * CONTROL CLAIMS merge over every party that ships a member: every
     `implementations` parent's own `oscal/component-definition.json`, and
     -- new this ticket -- the adopter's own, next to the party artefact it
@@ -217,7 +220,8 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     pinned catalogue no longer defines, or the last baseline name no longer
     includes while the last overlay did not select it, prints a
     `withdrawn-control` delta naming the regulator's bump, never a
-    `removed-control` in the adopter's name. Each prints as a `deltas[]` entry under the adopter's own
+    `removed-control` in the adopter's name. Ticket 126 makes it ask the
+    last overlay with the selection rule itself (`_defines`). Each prints as a `deltas[]` entry under the adopter's own
     perspective and currency: what changed since the last signed composed
     artefact, and what a pinned instrument prices it at. A delta no pinned
     instrument names carries `amount: null` and `priced_by: null` -- a named
@@ -2332,43 +2336,57 @@ def _header_controls_source(header: dict | None, adopter_party: str | None = Non
                  if p.get("kind") == "controls" and p.get("party") != adopter_party), None)
 
 
-def _unknown_control_refusals(specs: list[tuple[str, ControlKey]], catalogs: dict[str, set[str]],
+def _unknown_control_refusals(specs: list[tuple[str, ControlKey]],
+                              catalog_props: dict[str, dict[str, dict[str, str]]],
                               subject_prefix: str) -> list[dict]:
-    """A (source, id) absent from that source's catalogue, exact-string -- no
-    case-fold, no prefix-strip (ADR-0013): a hard failure, never a hole. A
-    plain lint of the id against the catalogue would also catch this, so
-    needs_composition is False (spec.md: "a prefixed id... are lint
-    findings"). `specs` pairs each key with the spelling the party wrote."""
+    """A (source, id) that source's pinned catalogue does not define, exact-
+    string -- no case-fold, no prefix-strip (ADR-0013): a hard failure, never
+    a hole. "Defines" is `_defines`: the id is present and not under `status:
+    withdrawn` (eco-system ticket 126; ADR-0026 Consequences: an adopter still
+    naming a withdrawn control meets `unknown-control-id`). A plain lint of the
+    id against the catalogue would also catch this, so needs_composition is
+    False (spec.md: "a prefixed id... are lint findings"). `specs` pairs each
+    key with the spelling the party wrote."""
     out: list[dict] = []
     seen: set[str] = set()
     for spelled, (source, cid) in specs:
         if spelled in seen:
             continue
         seen.add(spelled)
-        if cid in catalogs.get(source, set()):
+        props = catalog_props.get(source)
+        if props is not None and _defines(props, cid):
             continue
-        where = (f"{source}'s catalogue" if source in catalogs
-                 else f"any pinned controls parent ({', '.join(sorted(catalogs)) or 'none'})")
+        if props is not None and cid in props:
+            detail = (f"{spelled!r} is in {source}'s catalogue under status: {WITHDRAWN_STATUS} -- "
+                      f"the regulator no longer defines it, so nothing pinned can select or price "
+                      f"it, and naming it is the unknown-id hard failure, not a hole "
+                      f"(ADR-0026 Consequences; eco-system ticket 126)")
+        else:
+            where = (f"{source}'s catalogue" if props is not None
+                     else f"any pinned controls parent ({', '.join(sorted(catalog_props)) or 'none'})")
+            detail = (f"{spelled!r} is absent from {where} -- exact-string resolution finds no "
+                      f"case-folded or prefix-stripped match, and an unknown id is a hard failure, "
+                      f"not a hole (ADR-0013)")
         out.append({
             "kind": "unknown-control-id",
             "subject": f"{subject_prefix}: {spelled}",
-            "detail": f"{spelled!r} is absent from {where} -- exact-string resolution finds no "
-                      f"case-folded or prefix-stripped match, and an unknown id is a hard failure, "
-                      f"not a hole (ADR-0013)",
+            "detail": detail,
             "needs_composition": False,
         })
     return out
 
 
 def resolve_claims(all_claims: list[tuple[str | None, str, str, str]], policy_owner: dict[str, str],
-                    catalogs: dict[str, set[str]], baseline_source: str | None
+                    catalog_props: dict[str, dict[str, dict[str, str]]], baseline_source: str | None
                     ) -> tuple[set[ControlKey], list[dict]]:
     """Every (source href, control_id, policy_name, claiming_party) claim,
     resolved three ways:
 
       * its control key is (source, id): the href names the catalogue
         (ADR-0013's enclosing block), the id must be in THAT catalogue, else
-        an unknown-control-id -- a lint finding, needs_composition False;
+        an unknown-control-id -- a lint finding, needs_composition False.
+        An id the catalogue keeps under `status: withdrawn` is not in it
+        (`_defines`, eco-system ticket 126);
       * the claimed policy must be shipped by SOME composed party, else a
         DANGLING claim -- a lint finding a per-party check would also catch
         (oscal/lint_claims.py already does, for platform's);
@@ -2383,10 +2401,10 @@ def resolve_claims(all_claims: list[tuple[str | None, str, str, str]], policy_ow
     covered: set[ControlKey] = set()
     refusals: list[dict] = []
     for href, control_id, policy_name, claiming_party in all_claims:
-        source = _claim_source(href, claiming_party, set(catalogs), baseline_source)
+        source = _claim_source(href, claiming_party, set(catalog_props), baseline_source)
         key = (str(source), control_id)
         covered.add(key)
-        unknown = _unknown_control_refusals([(control_id, key)], catalogs,
+        unknown = _unknown_control_refusals([(control_id, key)], catalog_props,
                                             f"{claiming_party} component-definition")
         if unknown:
             refusals += unknown
@@ -2451,21 +2469,35 @@ def removed_controls(selected_set: set[ControlKey],
 WITHDRAWN_STATUS = "withdrawn"
 
 
+def _defines(props: dict[str, dict[str, str]], cid: str) -> bool:
+    """The one selection rule (eco-system ticket 126): a catalogue defines `cid`
+    when the id is present and not under `status: withdrawn`. An adopter's
+    overlay and any party's claim may name only an id the catalogue defines;
+    anything else is `unknown-control-id`. `split_withdrawn` asks the same
+    question of the last overlay, so a removal and a withdrawal cannot
+    disagree about who acted."""
+    return cid in props and props[cid].get("status") != WITHDRAWN_STATUS
+
+
 def _withdrawn_from_catalogue(source: str, cid: str,
                               catalog_props: dict[str, dict[str, dict[str, str]]]) -> bool:
     """True where `source`'s pinned catalogue no longer defines `cid`: the id is
     absent, or present under `status: withdrawn`. False for a source this
     composition pins no catalogue of."""
-    if source not in catalog_props:
-        return False
-    props = catalog_props[source].get(cid)
-    return props is None or props.get("status") == WITHDRAWN_STATUS
+    return source in catalog_props and not _defines(catalog_props[source], cid)
+
+
+# The header field that says its selection followed `_defines` (eco-system
+# ticket 126). A header without it came from an older composer, whose overlay
+# could select an id already under `status: withdrawn`.
+WITHDRAWN_SELECTABLE_FIELD = "withdrawn-selectable"
 
 
 def split_withdrawn(removed: list[ControlKey], *, adopter_party: str,
                     catalog_props: dict[str, dict[str, dict[str, str]]],
                     baseline_source: str | None, prev_baseline_now: set[str],
-                    prev_overlay: set[ControlKey] | None, pins_moved: set[str]
+                    prev_overlay: set[ControlKey] | None, pins_moved: set[str],
+                    prev_defined_only: bool = False
                     ) -> tuple[list[ControlKey], list[tuple[ControlKey, str]]]:
     """Tell the regulator's withdrawal apart from the adopter's own removal
     (eco-system ticket 123; ADR-0026 Consequences: a control the regulator
@@ -2477,41 +2509,62 @@ def split_withdrawn(removed: list[ControlKey], *, adopter_party: str,
     the adopter's removal. If no, the regulator's catalogue took it away.
     `prev_baseline_now` is the last baseline name resolved at the current pin;
     `prev_overlay` is the last header's `overlay-controls`, or None where that
-    header predates the field.
+    header predates the field. The last overlay "still selects" an id only
+    where the catalogue pinned now defines it (`_defines`), the rule compose
+    selects by (eco-system ticket 126).
 
     Returns (the adopter's removals, [(withdrawn key, reason)]). The reason is
     `catalogue` (the pinned catalogue no longer defines it) or `baseline` (the
     last baseline name no longer includes it at the new pin). A control of the
     adopter's own catalogue is never a withdrawal: the adopter publishes it.
-    A source the adopter no longer pins is the adopter's act too. Where the
-    last header carries no `overlay-controls`, only a catalogue withdrawal can
-    be told apart; a same-name baseline drop stays the adopter's removal,
-    because an overlay removal would look the same.
+    A source the adopter no longer pins is the adopter's act too. A withdrawal
+    needs a bump: a source whose controls pin did not move (`pins_moved` names
+    those that did) withdrew nothing (ticket 123 review round).
 
-    Two guards come first (ticket 123 review round). A withdrawal needs a bump:
-    a source whose controls pin did not move (`pins_moved` names those that
-    did) withdrew nothing. And "still select" uses the selection rule compose
-    itself uses: an overlay selects any id the catalogue carries, so an id the
-    last overlay named that the catalogue still carries under `status:
-    withdrawn` is still selected by the last inputs, and its removal is the
-    adopter's."""
+    What the last header can prove decides the rest. An id absent from the
+    catalogue now was present when it was selected, under any composer, so its
+    loss is the regulator's. An id the catalogue now keeps under `status:
+    withdrawn` is the regulator's only where the header proves it was defined
+    when selected: it carries `withdrawn-selectable: false`
+    (`prev_defined_only`), or the id came from the last baseline rather than
+    the last overlay. Otherwise an older composer's overlay may have selected
+    it already withdrawn, and its removal stays the adopter's. Where the last
+    header carries no `overlay-controls`, a same-name baseline drop stays the
+    adopter's too (ticket 123 decision 4): each default keeps an adopter's act
+    from being booked as the regulator's, at the cost of one run's
+    attribution."""
     adopters: list[ControlKey] = []
     withdrawn: list[tuple[ControlKey, str]] = []
     for key in removed:
         source, cid = key
         if source == adopter_party or source not in catalog_props or source not in pins_moved:
             adopters.append(key)
-        elif prev_overlay is not None and key in prev_overlay and cid in catalog_props[source]:
+            continue
+        props = catalog_props[source]
+        defined, absent = _defines(props, cid), cid not in props
+        from_baseline = source == baseline_source and cid in prev_baseline_now
+        if from_baseline:
+            # The last baseline name still includes it at the new pin: the
+            # adopter changed its baseline.
             adopters.append(key)
-        elif _withdrawn_from_catalogue(source, cid, catalog_props):
-            withdrawn.append((key, "catalogue"))
-        elif (source != baseline_source or cid in prev_baseline_now
-              or prev_overlay is None or key in prev_overlay):
+        elif prev_overlay is not None and key in prev_overlay:
+            if defined:
+                adopters.append(key)   # the last overlay still selects it
+            elif absent or prev_defined_only:
+                withdrawn.append((key, "catalogue"))
+            else:
+                adopters.append(key)   # an older overlay may have selected it withdrawn
+        elif prev_overlay is None:
+            if absent:
+                withdrawn.append((key, "catalogue"))
+            else:
+                adopters.append(key)   # overlay or baseline: the header cannot say
+        elif source != baseline_source:
             # Only the baseline's own source can narrow a baseline, so the
             # `baseline` reason always names the baseline the control left.
             adopters.append(key)
         else:
-            withdrawn.append((key, "baseline"))
+            withdrawn.append((key, "baseline" if defined else "catalogue"))
     return adopters, withdrawn
 
 
@@ -4568,12 +4621,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # -- the regulator's, ADR-0013's one authority for a bare id.
     controls_edges = [e for e in edges if e["kind"] == "controls"]
     controls_edge = next((e for e in controls_edges if e["party"] != adopter_party), None)
-    catalogs: dict[str, set[str]] = {}
     catalog_props: dict[str, dict[str, dict[str, str]]] = {}
     for e in controls_edges:
-        controls = _catalog_controls(Path(parent_trees[e["party"]]))
-        catalog_props[e["party"]] = controls
-        catalogs[e["party"]] = set(controls)
+        catalog_props[e["party"]] = _catalog_controls(Path(parent_trees[e["party"]]))
     nist_root: Path | None = None
     baseline_source: str | None = controls_edge["party"] if controls_edge else None
     baseline_ids: set[str] = set()
@@ -4600,15 +4650,16 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
 
     added_specs = [(str(spec), _control_spec(str(spec), baseline_source))
                    for spec in party_doc.get("overlay", {}).get("controls", []) or []]
-    refusals += _unknown_control_refusals(added_specs, catalogs, f"{adopter_party} overlay.controls")
+    refusals += _unknown_control_refusals(added_specs, catalog_props, f"{adopter_party} overlay.controls")
     selected_set: set[ControlKey] = {(str(baseline_source), cid) for cid in baseline_ids}
     # What the adopter's own overlay selects, recorded on the header so the NEXT
     # run can tell its own removal from the regulator's withdrawal (ticket 123).
+    # Only an id the pinned catalogue defines is selected (`_defines`, ticket 126).
     overlay_selected: set[ControlKey] = {key for _spelled, key in added_specs
-                                         if key[1] in catalogs.get(key[0], set())}
+                                         if _defines(catalog_props.get(key[0], {}), key[1])}
     selected_set |= overlay_selected
 
-    covered, claim_refusals = resolve_claims(claims, policy_owner, catalogs, baseline_source)
+    covered, claim_refusals = resolve_claims(claims, policy_owner, catalog_props, baseline_source)
     refusals += claim_refusals
 
     prev_source = _header_controls_source(prev_header, adopter_party) or baseline_source
@@ -4635,7 +4686,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         catalog_props=catalog_props, baseline_source=baseline_source,
         prev_baseline_now=prev_baseline_ids or set(), prev_overlay=prev_overlay,
         pins_moved=_controls_pins_moved(prev_header.get("parents") if prev_header is not None else None,
-                                        parents))
+                                        parents),
+        prev_defined_only=(prev_header is not None
+                           and prev_header.get(WITHDRAWN_SELECTABLE_FIELD) is False))
 
     # -----------------------------------------------------------------
     # ticket 15: the governed namespace lint (priced, not refused: ticket 38)
@@ -4815,6 +4868,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "overlay-controls": sorted(_encode_control(k, baseline_source) for k in overlay_selected),
         "selected-controls": sorted(_encode_control(k, baseline_source) for k in selected_set),
         "ungoverned-namespaces": recorded_ungoverned,
+        # Every selected id above passed `_defines` (ticket 126), so the NEXT
+        # run may book a now-withdrawn one as the regulator's.
+        WITHDRAWN_SELECTABLE_FIELD: False,
     }
     # Legacy verification preserves the old comparison contract byte-for-byte.
     # Fresh composition always records history; present invalid history never falls back.
@@ -6542,10 +6598,11 @@ def selfcheck() -> None:
               "regulator drops aa-1.1 from SMALL; aa-3 is the adopter's removed-control and "
               "aa-1.1 the regulator's withdrawn-control")
 
-        # Ticket 123, review round: NIST keeps a withdrawn control in its catalogue under
-        # `status: withdrawn`, and an overlay still selects it. The adopter's own removal of
-        # such a control is the adopter's, with or without a real bump in the same run.
-        def marked(name: str, cid: str, base_tree: Path) -> Path:
+        # Eco-system ticket 126: one selection rule for an id the catalogue keeps under
+        # `status: withdrawn`, as NIST keeps 182 of its 1196. An overlay naming one refuses
+        # `unknown-control-id`; the header records `withdrawn-selectable: false`; and
+        # `split_withdrawn` asks the last overlay the same question.
+        def marked(name: str, cid: str, base_tree: Path, *, drop_from: tuple[str, ...] = ()) -> Path:
             nist_copy = Path(td) / name
             shutil.copytree(base_tree, nist_copy)
             cat_path = nist_copy / "catalog" / "catalog.json"
@@ -6555,35 +6612,125 @@ def selfcheck() -> None:
                     c["props"] = [pr for pr in c.get("props", []) if pr.get("name") != "status"]
                     c["props"].append({"name": "status", "value": WITHDRAWN_STATUS})
             cat_path.write_text(json.dumps(cat))
+            for f in drop_from:
+                prof_path = nist_copy / "catalog" / f
+                prof = json.loads(prof_path.read_text())
+                prof["profile"]["imports"][0]["include-controls"][0]["with-ids"].remove(cid)
+                prof_path.write_text(json.dumps(prof))
             return nist_copy
 
+        def with_party_controls(work: Path, controls: list[str]) -> None:
+            doc = yaml.safe_load((work / "party.yaml").read_text())
+            doc["overlay"]["controls"] = controls
+            (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+        def old_rule_header(work: Path, rendered: dict[str, str], cid: str, *, legacy: bool) -> None:
+            """What a composer from before ticket 126 signed with `cid` in the overlay:
+            `cid` selected while already withdrawn, and no `withdrawn-selectable`."""
+            doc = yaml.safe_load(rendered["composed/HEADER.yaml"].split(HEADER_COMMENT, 1)[-1])
+            doc["selected-controls"] = sorted(set(doc["selected-controls"]) | {cid})
+            doc["holes"] = sorted(set(doc["holes"]) | {cid})
+            doc.pop(WITHDRAWN_SELECTABLE_FIELD)
+            doc.pop("comparison-inputs", None)
+            if legacy:
+                doc.pop("overlay-controls")
+            else:
+                doc["overlay-controls"] = sorted(set(doc["overlay-controls"]) | {cid})
+            (work / "composed").mkdir(exist_ok=True)
+            (work / "composed" / "HEADER.yaml").write_text(HEADER_COMMENT + yaml.safe_dump(doc, **YAML_KWARGS))
+
         nist_marked = marked("nist-aa3-withdrawn-status", "aa-3", Path(fixture_trees["fixture-nist"]))
-        for label, bump in (("no bump", False), ("a real bump", True)):
-            ownw = Path(td) / f"run2-own-withdrawn-status-{int(bump)}"
-            _write_fixture_adopter(ownw, "SMALL", controls_add=["aa-3"])
-            doc_ownw1, rendered_ownw = compose(ownw, {**fixture_trees, "fixture-nist": nist_marked})
-            assert doc_ownw1["outcome"] == "composed", doc_ownw1
-            assert ("aa-3" in yaml.safe_load(rendered_ownw["composed/HEADER.yaml"])["selected-controls"])
-            _commit_header(ownw, rendered_ownw)
-            ownw_party = yaml.safe_load((ownw / "party.yaml").read_text())
-            ownw_party["overlay"]["controls"] = []
-            (ownw / "party.yaml").write_text(yaml.safe_dump(ownw_party, sort_keys=False))
-            tree2 = nist_marked
-            if bump:
-                tree2 = Path(td) / "nist-aa3-withdrawn-status-bumped"
-                shutil.copytree(nist_marked, tree2)
-                prof_path = tree2 / "catalog" / "small.json"
-                prof = json.loads(prof_path.read_text())
-                prof["profile"]["imports"][0]["include-controls"][0]["with-ids"].remove("aa-1.1")
-                prof_path.write_text(json.dumps(prof))
-            doc_ownw, _ = compose(ownw, {**fixture_trees, "fixture-nist": tree2})
-            assert doc_ownw["outcome"] == "composed", doc_ownw
-            want = {"aa-3": "removed-control", **({"aa-1.1": "withdrawn-control"} if bump else {})}
-            assert {d["control_id"]: d["kind"] for d in doc_ownw["deltas"] if "control_id" in d} == want, \
-                doc_ownw["deltas"]
-            print(f"OK split_withdrawn: the adopter drops aa-3, which the pinned catalogue keeps under "
-                  f"status: withdrawn, from its overlay with {label}; aa-3 is the adopter's "
-                  f"removed-control, never a withdrawal naming a bump that did not take it")
+        marked_trees = {**fixture_trees, "fixture-nist": nist_marked}
+        sel = Path(td) / "run2-select-withdrawn-status"
+        _write_fixture_adopter(sel, "SMALL", controls_add=["aa-3"])
+        doc_sel, _ = compose(sel, marked_trees)
+        assert doc_sel["outcome"] == "refused", doc_sel
+        assert [(r["kind"], r["subject"]) for r in doc_sel["refusals"]] == [
+            ("unknown-control-id", "fixture-adopter14 overlay.controls: aa-3")], doc_sel["refusals"]
+        assert "status: withdrawn" in doc_sel["refusals"][0]["detail"], doc_sel["refusals"]
+        claim_sel = Path(td) / "run2-claim-withdrawn-status"
+        _write_fixture_adopter(claim_sel, "SMALL", own_claims=[("aa-3", "member-a")])
+        doc_claim_sel, _ = compose(claim_sel, marked_trees)
+        assert [r["kind"] for r in doc_claim_sel["refusals"]] == ["unknown-control-id"], doc_claim_sel["refusals"]
+        print("OK _defines: aa-3 is in fixture-nist's catalogue under status: withdrawn; an overlay "
+              "naming it and a claim on it each refuse unknown-control-id, and neither selects it")
+
+        # A header signed before ticket 126 selected aa-3 while it was already withdrawn. It
+        # cannot prove aa-3 was defined then, so dropping it is the adopter's removal with or
+        # without a real bump, and with or without overlay-controls (the review's legacy case).
+        for legacy in (False, True):
+            for label, bump in (("no bump", False), ("a real bump", True)):
+                ownw = Path(td) / f"run2-own-withdrawn-status-{int(legacy)}-{int(bump)}"
+                _write_fixture_adopter(ownw, "SMALL")
+                doc_ownw1, rendered_ownw = compose(ownw, marked_trees)
+                assert doc_ownw1["outcome"] == "composed", doc_ownw1
+                assert yaml.safe_load(rendered_ownw["composed/HEADER.yaml"].split(HEADER_COMMENT, 1)[-1])[
+                    WITHDRAWN_SELECTABLE_FIELD] is False
+                old_rule_header(ownw, rendered_ownw, "aa-3", legacy=legacy)
+                tree2 = nist_marked
+                if bump:
+                    tree2 = Path(td) / f"nist-aa3-withdrawn-status-bumped-{int(legacy)}"
+                    shutil.copytree(nist_marked, tree2)
+                    prof_path = tree2 / "catalog" / "small.json"
+                    prof = json.loads(prof_path.read_text())
+                    prof["profile"]["imports"][0]["include-controls"][0]["with-ids"].remove("aa-1.1")
+                    prof_path.write_text(json.dumps(prof))
+                doc_ownw, _ = compose(ownw, {**fixture_trees, "fixture-nist": tree2})
+                assert doc_ownw["outcome"] == "composed", doc_ownw
+                # aa-1.1 stays defined and leaves SMALL: the regulator's where the header
+                # records the overlay, the adopter's where it cannot (ticket 123 decision 4).
+                want = {"aa-3": "removed-control",
+                        **({"aa-1.1": "removed-control" if legacy else "withdrawn-control"} if bump else {})}
+                assert {d["control_id"]: d["kind"] for d in doc_ownw["deltas"] if "control_id" in d} == want, \
+                    doc_ownw["deltas"]
+                print(f"OK split_withdrawn: a header from before ticket 126 "
+                      f"{'with no overlay-controls ' if legacy else ''}selected aa-3 while already "
+                      f"withdrawn; the adopter drops it with {label}, and aa-3 is the adopter's "
+                      f"removed-control, never a withdrawal naming a bump that did not take it")
+
+        # A legacy header still tells a catalogue that DROPS an id apart: under any composer
+        # an id had to be present to be selected.
+        legacy_absent = Path(td) / "run2-withdrawn-legacy-absent"
+        shutil.copytree(base, legacy_absent)
+        la_header = legacy_absent / "composed" / "HEADER.yaml"
+        la_doc = yaml.safe_load(la_header.read_text().split(HEADER_COMMENT, 1)[-1])
+        for field in ("overlay-controls", WITHDRAWN_SELECTABLE_FIELD, "comparison-inputs"):
+            la_doc.pop(field, None)
+        la_header.write_text(HEADER_COMMENT + yaml.safe_dump(la_doc, **YAML_KWARGS))
+        doc_la, _ = compose(legacy_absent, bumped("nist-wd-legacy-absent", "aa-2", catalogue=True))
+        assert [(d["kind"], d.get("reason")) for d in doc_la["deltas"]] == [
+            ("withdrawn-control", "catalogue")], doc_la["deltas"]
+        # ...but not one it keeps under `status: withdrawn`: that header cannot say whether an
+        # older overlay selected it already withdrawn.
+        legacy_status = Path(td) / "run2-withdrawn-legacy-status"
+        shutil.copytree(base, legacy_status)
+        (legacy_status / "composed" / "HEADER.yaml").write_text(la_header.read_text())
+        doc_ls, _ = compose(legacy_status, {**fixture_trees, "fixture-nist": marked(
+            "nist-aa2-withdrawn-status", "aa-2", Path(fixture_trees["fixture-nist"]),
+            drop_from=("small.json", "big.json"))})
+        assert [d["kind"] for d in doc_ls["deltas"]] == ["removed-control"], doc_ls["deltas"]
+        print("OK split_withdrawn: a last header with no overlay-controls and no withdrawn-selectable "
+              "books aa-2 as the regulator's when the catalogue drops it, and as the adopter's "
+              "removal for one run when the catalogue keeps it under status: withdrawn")
+
+        # Under the new rule the header proves aa-3 was defined when selected. The regulator
+        # then marks it withdrawn: keeping it refuses, and dropping it is the regulator's.
+        fresh = Path(td) / "run2-overlay-then-withdrawn"
+        _write_fixture_adopter(fresh, "SMALL", controls_add=["aa-3"])
+        doc_fresh1, rendered_fresh = compose(fresh, fixture_trees)
+        assert doc_fresh1["outcome"] == "composed", doc_fresh1
+        _commit_header(fresh, rendered_fresh)
+        doc_kept, _ = compose(fresh, marked_trees)
+        assert [(r["kind"], r["subject"]) for r in doc_kept["refusals"]] == [
+            ("unknown-control-id", "fixture-adopter14 overlay.controls: aa-3")], doc_kept["refusals"]
+        with_party_controls(fresh, [])
+        doc_fresh, _ = compose(fresh, marked_trees)
+        assert doc_fresh["outcome"] == "composed", doc_fresh
+        assert [(d["kind"], d.get("control_id"), d.get("reason")) for d in doc_fresh["deltas"]] == [
+            ("withdrawn-control", "aa-3", "catalogue")], doc_fresh["deltas"]
+        print("OK split_withdrawn: the adopter's overlay selected aa-3 under the new rule, and the "
+              "regulator then marks it withdrawn; keeping it refuses unknown-control-id, and "
+              "dropping it prints the regulator's withdrawn-control")
 
         # --- an adopter claim against a PARENT's policy refuses ---
         cross = Path(td) / "run2-cross-party-claim"

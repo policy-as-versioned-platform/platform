@@ -220,24 +220,33 @@ itself needs.
   a named absence. Its line on the regime partition reads `unselected` with its amount unchanged.
   A named-baseline change that only drops controls prints one `baseline-narrowing` delta beside
   them: how many left the selected set, how many carry an amount, and the sum.
-- **A regulator's withdrawal is not the adopter's removal** (eco-system ticket 123, ADR-0026
-  Consequences). A control that left the selected set is the regulator's withdrawal when the
-  adopter's last inputs would not select it against the catalogue pinned now: the catalogue no
-  longer defines it (absent, or `status: withdrawn` as NIST marks it), or the last baseline name
-  no longer includes it and the adopter's last overlay did not select it. A withdrawal needs a
-  bump: where the source's controls pin did not move, the regulator withdrew nothing. An id the
-  last overlay named that the catalogue still carries, even under `status: withdrawn`, is still
-  selected by the last inputs, so its removal stays the adopter's. It prints a
-  `withdrawn-control` delta, not a `removed-control` one. The delta names the regulator
-  (`withdrawn_by`), the `reason` (`catalogue` or `baseline`) and the catalogue on both sides of
-  the bump (`catalogue.from`, `catalogue.to`, each `<version>@<sha12>`). It carries the amount
-  the hole carried and the adopter's perspective, which says whose pound it is, not who acted.
-  The header records `overlay-controls`, what the adopter's own overlay selected, so the next run
-  can tell the two apart. A last header without that field can tell only a catalogue withdrawal
-  apart; a same-name baseline drop then stays the adopter's removal. A weights feed that still
-  names a withdrawn control keeps its price: the regime entry does not move, and that line
-  reads `withdrawn` whether or not the adopter selected the control. It is the feed's own fact
-  to fix in its next version.
+- **A withdrawn control cannot be selected** (eco-system ticket 126, ADR-0026 Consequences). A
+  catalogue defines an id when the id is present and not under `status: withdrawn`. NIST keeps
+  182 of its 1196 ids under that status. An `overlay.controls` entry or a control claim that
+  names an id its catalogue does not define refuses `unknown-control-id`, whose detail says when
+  the id is there under `status: withdrawn`. The regulator's baseline is read as signed. The
+  header records `withdrawn-selectable: false`, so the next run knows every id it selected was
+  defined at its pin. A header without the field came from an older composer.
+- **A regulator's withdrawal is not the adopter's removal** (eco-system tickets 123 and 126,
+  ADR-0026 Consequences). A control that left the selected set is the regulator's withdrawal when
+  the adopter's last inputs would not select it against the catalogue pinned now. The last
+  overlay still selects an id only where the catalogue defines it now, the same rule as above. A
+  withdrawal needs a bump: where the source's controls pin did not move, the regulator withdrew
+  nothing. An id the catalogue has dropped was present when selected, so its loss is the
+  regulator's. An id the catalogue now keeps under `status: withdrawn` is the regulator's only
+  where the last header proves it was defined when selected: the header carries
+  `withdrawn-selectable: false`, or the id came from the last baseline and not the last overlay.
+  Otherwise an older composer may have selected it already withdrawn, and its removal stays the
+  adopter's. It prints a `withdrawn-control` delta, not a `removed-control` one. The delta names
+  the regulator (`withdrawn_by`), the `reason` (`catalogue` or `baseline`) and the catalogue on
+  both sides of the bump (`catalogue.from`, `catalogue.to`, each `<version>@<sha12>`). It carries
+  the amount the hole carried and the adopter's perspective, which says whose pound it is, not
+  who acted. The header records `overlay-controls`, what the adopter's own overlay selected, so
+  the next run can tell the two apart. A last header without that field can tell only a dropped
+  id apart; a same-name baseline drop, or an id now under `status: withdrawn`, stays the
+  adopter's removal for that one run. A weights feed that still names a withdrawn control keeps
+  its price: the regime entry does not move, and that line reads `withdrawn` whether or not the
+  adopter selected the control. It is the feed's own fact to fix in its next version.
 - **Every hole is `(source, id)`** across every `controls` parent, an adopter's own catalogue
   included. A claim's source is its component-definition's `source` href (`../nist/...` → `nist`);
   a bare `overlay.controls` id is the baseline's catalogue's, `party:id` names another controls
