@@ -28,6 +28,9 @@ python3 -m unittest discover -s "$HERE" -p test_floor_change.py || fail "floor-c
 say "0b. durable transition comparisons (saved evidence and replay)"
 python3 -m unittest discover -s "$HERE" -p test_comparison_history.py || fail "comparison history"
 
+say "0c. every PriorityClass a composed member names is carried in its own version (ticket 111)"
+python3 -m unittest discover -s "$HERE" -p test_priority_classes.py || fail "priority classes"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the one remaining refusal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

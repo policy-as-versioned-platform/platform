@@ -35,7 +35,7 @@ class PortableObservations(unittest.TestCase):
         ct._write_fixture_platform(self.trees["fixture-platform"], ct.PLATFORM_DIR, [])
         shutil.copy(ct.PLATFORM_DIR / "distribution/cage_body.py",
                     self.trees["fixture-platform"] / "distribution/cage_body.py")
-        (self.trees["fixture-platform"] / "graded/policies").mkdir(parents=True)
+        (self.trees["fixture-platform"] / "graded/policies").mkdir(parents=True, exist_ok=True)
         shutil.copy(ct.PLATFORM_DIR / "graded/policies/cage-tier.yaml",
                     self.trees["fixture-platform"] / "graded/policies/cage-tier.yaml")
         ct._write_fixture_adopter(self.adopter, "SMALL", extra_inherits=[{

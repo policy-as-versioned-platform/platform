@@ -239,12 +239,38 @@ itself needs.
 - The document gains `deltas[]`. `verify/priced-holes/` in the hub grades all of this on the
   composed evidence; the superseding ADR for ADR-0013/0017/0018 point 3 is ticket 39's.
 
+## What eco-system ticket 111 changes: a version carries the classes its cage names
+
+- **PriorityClasses are members now.** Before this, `load_implementations` skipped them, so every
+  adopter's composed tree carried `cage-tier` and none of the classes it writes into
+  `priorityClassName`. The Priority admission plugin refused every pod the cage mutated. Each
+  version's classes now land one per file beside the cage, as
+  `composed/policies/v<version>/cage-isolated.yaml` and so on, rendered faithfully like any other
+  member. The version's own Kustomization applies them and prunes them when the version retires.
+  They appear in `members[]` with `kind: PriorityClass` and no action.
+- **A set that names a class it does not carry is refused.** `named_priority_classes()` reads a
+  literal `priorityClassName` field, and a CEL `priorityClassName:` assignment that is a quoted
+  literal or `variables.<map>.<field>` over a literal dial table. A dial table indexed by a
+  variable that is itself a literal (the machinery cages pin `tier` to `'isolated'`) counts only
+  that row. A versioned member counts only classes in its own version directory. The machinery
+  counts only classes composed beside it. A missing class refuses as
+  `undelivered-priority-class`, subject `<class>@<version>` (or `@machinery`). An assignment the
+  composer cannot read refuses as `unreadable-priority-class`: a class it cannot name is a class
+  it cannot prove it carries. So does any other mention of `priorityClassName` in a string, such
+  as a JSONPatch `path: "/spec/priorityClassName"`, in CEL or as a structured patch.
+- **`_load_guards` binds the parent's own `cage_body`** under that module name while it renders,
+  and puts the previous binding back after. It used to leave the name pointing at whichever
+  parent composed last. `_load_guards_from` loads its own copy privately and never rebinds it.
+- **The selfcheck's fixture parent copies the machinery whole** (`FIXTURE_MACHINERY`), so a fixture
+  parent stays a coherent parent under the new refusal. An estate platform clone that predates
+  that machinery now gets a named SKIP listing the missing paths, not a traceback.
+
 ## Run
 
 ```sh
 python3 composition.py compose ../../driftwood [--estate-clone ../../.. /.estate-clone] [--out DIR]
 python3 composition.py verify ../../driftwood
-python3 composition.py --selfcheck      # runnable asserts; SKIPs (exit 0) if the estate clone is absent
+python3 composition.py --selfcheck      # runnable asserts; SKIPs (exit 0) if the estate clone is absent or stale
 ./verify-composition.sh                  # the beat
 ```
 
