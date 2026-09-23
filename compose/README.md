@@ -132,8 +132,13 @@ itself needs.
   `per_customer` restatement** (ticket 25; ADR-0020, ADR-0021). No sum crosses a perspective or a
   currency: the one summing helper is `fair.sum_prices`, and it raises on a mixed list. A regime
   entry also carries `holes[]` — the regulator's own published control weights, each with its own
-  amount — and a `total` those amounts sum to, which IS the entry amount, because a hole partitions
-  the regime exposure rather than adding to it. An adopter whose own repo publishes a
+  amount — and a `total` those amounts sum to, because a hole partitions the regime exposure rather
+  than adding to it. The entry's `amount` is the sum of the lines the adopter has not implemented
+  (eco-system ticket 121). A line is implemented when the adopter selects that control and a claim
+  covers it, the lines that read `covered` or `closed`. Both tiers are selected against the same
+  open share of the residual, so implementing a control reduces the price and can move the tier.
+  An unselected or withdrawn line stays on the price. With nothing implemented the amount equals
+  `total`, as before. An adopter whose own repo publishes a
   `twin/forward-intel/v<major>/feed.json` gets one further entry, `source: twin`, annualised
   through `fair.py` and carrying the adopter's selection-policy version, the curve hash and
   `fair.summarize()`'s own `tail`; no such feed simply means no such entry. A missing instrument —

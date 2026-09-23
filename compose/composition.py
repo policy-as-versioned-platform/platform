@@ -3005,12 +3005,11 @@ def _regime_holes(payload: dict, amount: float, perspective: str, currency: str)
     A pinned feed version that publishes no weights has no breakdown -- an
     empty list, never an invented one.
 
-    Every published weight becomes a hole, whether or not this adopter has that
-    control open: the list is the PARTITION of the exposure, not the adopter's
-    open holes. ponytail ceiling: pricing a hole by its status (so implementing
-    pl-2 actually shrinks the regime entry) needs the adopter's open hole ids,
-    which compose() computes elsewhere -- that is ticket 15's build, not this
-    schema pass."""
+    Every published weight becomes a line, whether or not this adopter has that
+    control open: the list is the PARTITION of the exposure, and `total` is its
+    sum. What the entry PRICES is the lines still open, `_open_lines` below
+    (eco-system ticket 121): implementing a control takes its line off the
+    entry's amount and off the residual the tier is selected against."""
     weights = (payload.get("control_weights", {}).get(ICO_REGIME, {}) or {}
                 ).get(ICO_VIOLATION_TYPE, [])
     if not weights:
@@ -3023,6 +3022,19 @@ def _regime_holes(payload: dict, amount: float, perspective: str, currency: str)
             f"partition, and the share it leaves out has no published price")
     return [{"source": w["source"], "id": w["id"], "weight": w["weight"],
              "amount": amount * float(w["weight"])} for w in weights]
+
+
+def _open_lines(holes: list[dict], implemented: set[ControlKey] | None) -> list[dict]:
+    """The partition lines the adopter has NOT implemented (eco-system ticket
+    121; ADR-0026 point 2, ticket 15 item 2). A line is implemented when the
+    adopter selects that (source, id) and a claim covers it: exactly the lines
+    `_decorate_regime_holes` marks `covered` or `closed`. Everything else stays
+    on the price: an open hole, a control the adopter does not select (the
+    regulator prices it whether or not it is selected, so a removal hides
+    nothing), and a control the catalogue withdrew (the feed's own fact to fix,
+    ticket 123)."""
+    done = implemented or set()
+    return [h for h in holes if (str(h["source"]), str(h["id"])) not in done]
 
 
 # A signed size fact older than this many MONTHS, measured against the date the
@@ -3082,7 +3094,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
                   floor: str | None, parent_trees: dict[str, Path] | None = None,
                   composition_as_of: str | None = None,
                   prev_prices: list[dict] | None = None,
-                  observation: dict | None = None) -> dict:
+                  observation: dict | None = None,
+                  implemented: set[ControlKey] | None = None) -> dict:
     """One prices[] entry for one feed edge, in the one schema every price in
     this estate shares: perspective, currency, source, kind, amount and a
     per-customer restatement (ticket 25). Priced at the OLD version (the last
@@ -3090,8 +3103,10 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     own version, an honest "no move") and at the NEW version, both through the
     estate's own £ engine and the adopter's own signed appetite band, never a
     second one. A regime entry also carries its per-hole breakdown and the
-    total those holes sum to; the entry's amount IS that total, so the entry
-    and its own per-customer restatement never disagree. The band converts into
+    total those holes sum to. Its amount is the sum of the lines the adopter
+    has not implemented (`implemented`, eco-system ticket 121), and both tiers
+    are selected against that same open share of each residual, so
+    implementing a control reduces the price and can move the tier. The band converts into
     the publisher's currency before anything is compared -- it never refuses
     for want of a conversion nobody asked the fx feed for."""
     party, kind, new_version = edge["party"], edge["kind"], edge["version"]
@@ -3146,7 +3161,19 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     # disagreeing.
     holes = _regime_holes(payload, new_price, adopter_party, reporting_currency)
     total = _sum_prices(holes, adopter_party, reporting_currency) if holes else None
-    amount = total if holes else new_price
+    amount = new_price
+    old_tier, new_tier = old["tier"], new["tier"]
+    if holes:
+        # Eco-system ticket 121: the partition stays whole on `holes` and
+        # `total`; the entry prices the lines still open. The same open share
+        # of each residual picks each tier, through the engine's own pure
+        # selection, so the price and the tier cannot disagree.
+        still_open = _open_lines(holes, implemented)
+        amount = _sum_prices(still_open, adopter_party, reporting_currency) if still_open else 0.0
+        share = sum(float(h["weight"]) for h in still_open)
+        old_price *= share
+        old_tier = cage.select_tier(old["uncaged_residual"] * share, band_native, floor)
+        new_tier = cage.select_tier(new["uncaged_residual"] * share, band_native, floor)
 
     # Every figure on this entry is an ANNUALISED loss, and the frequency that annualised it is
     # editorial: ico's converter carries `DEFAULT_WARN_LEF = (1, 2, 4)` because the penalty schema
@@ -3161,8 +3188,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         **({"name": name} if name else {}),
         old_version=old_version, new_version=new_version,
         old_price=old_price, new_price=amount,
-        old_tier=old["tier"], proposed_tier=new["tier"],
-        changed=old["tier"] != new["tier"],
+        old_tier=old_tier, proposed_tier=new_tier,
+        changed=old_tier != new_tier,
         lef=(new_sc.get("warn") or {}).get("lef"),
         lef_basis=str(new_sc.get("note") or "") or None,
         proposed_as=PROPOSED_AS_LABEL,
@@ -4079,7 +4106,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        band_currency: str | None, floor: str | None,
                        prev_prices: list[dict] | None, full_prices: list[dict],
                        as_of: str | None = None,
-                       observations: dict | None = None) -> list[dict]:
+                       observations: dict | None = None,
+                       implemented: set[ControlKey] | None = None) -> list[dict]:
     """One `switching` entry per substitutable parent edge, under the adopter's
     own perspective and in the adopter's own reporting currency.
 
@@ -4160,7 +4188,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 [e for e in edges if e not in dropped], adopter_party, tolerance, parent_trees,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-                include_switching=False, as_of=as_of_override, observations=observations)
+                include_switching=False, as_of=as_of_override, observations=observations,
+                implemented=implemented)
         except Refused as e:
             could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
@@ -4211,7 +4240,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                     band_currency: str | None = None, floor: str | None = None,
                     prev_prices: list[dict] | None = None,
                     include_switching: bool = True, as_of: str | None = None,
-                    observations: dict | None = None) -> list[dict]:
+                    observations: dict | None = None,
+                    implemented: set[ControlKey] | None = None) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -4246,7 +4276,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
             perspective_doc=perspective_doc, reporting_currency=reporting,
             band_currency=band_currency, floor=floor, parent_trees=parent_trees,
-            composition_as_of=comp_as_of, prev_prices=prev_prices, observation=observation)
+            composition_as_of=comp_as_of, prev_prices=prev_prices, observation=observation,
+            implemented=implemented)
         prices.append(entry)
         # Ticket 84: is this pin behind a newer major its publisher has signed?
         # A quote (above) is a cost, not an exposure, and is not surcharged.
@@ -4277,7 +4308,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             edges, adopter_party, tolerance, parent_trees, prev_header,
             adopter_dir=adopter_dir, perspective_doc=perspective_doc,
             band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-            full_prices=prices, as_of=as_of, observations=observations)
+            full_prices=prices, as_of=as_of, observations=observations, implemented=implemented)
     return prices
 
 
@@ -4617,6 +4648,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # -----------------------------------------------------------------
     # The adopter's own signed facts: its appetite band, its reporting currency
     # and its tighten-only cage floor. No fixture prices a party (ticket 25).
+    # What it implements -- a selected control a claim covers -- comes off the
+    # regime entry it prices (eco-system ticket 121).
+    implemented = selected_set & covered
     band = None
     try:
         band = _appetite(adopter_party, adopter_dir, parent_trees)
@@ -4625,7 +4659,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             adopter_dir=adopter_dir, perspective_doc=party_doc,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
-            prev_prices=prev_prices, as_of=as_of, observations=observations)
+            prev_prices=prev_prices, as_of=as_of, observations=observations,
+            implemented=implemented)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -4688,7 +4723,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                 adopter_dir=adopter_dir, perspective_doc=party_doc,
                 band_currency=band.get("currency"), floor=floor_inputs["before"]["value"],
                 prev_prices=prev_prices, as_of=as_of,
-                observations=observations, include_switching=False)
+                observations=observations, include_switching=False, implemented=implemented)
         floor_change = floor_change_evidence(floor_inputs, before_prices, prices)
     except Refused as e:
         return _refused([str(e)]), {}
@@ -5864,6 +5899,30 @@ def selfcheck() -> None:
               "breakdown -- %d holes, weights sum to 1.0, and the entry amount IS the sum of "
               "the hole amounts (a hole partitions the regime, it never adds to it)"
               % len(regime["holes"]))
+
+        # --- eco-system ticket 121: implementing a weighted control takes its
+        # line off the entry. The partition stays whole on holes[] and total;
+        # the amount is the sum of the lines still open ---
+        line = next(h for h in regime["holes"] if h["status"] != "unselected")
+        doc_w = yaml.safe_load((work / "party.yaml").read_text())
+        doc_w.setdefault("overlay", {}).setdefault("add", []).append({"version": "1.0.0", "manifest": {
+            "apiVersion": "policies.kyverno.io/v1alpha1", "kind": "ValidatingPolicy",
+            "metadata": {"name": "own-weighted-1-0-0", "labels": {LABEL_FAMILY: "own-weighted"}},
+            "spec": {"validationActions": ["Audit"]}}})
+        (work / "party.yaml").write_text(yaml.safe_dump(doc_w, sort_keys=False))
+        _write_component_definition(work / ADOPTER_CLAIMS_FILE, [(line["id"], "own-weighted")],
+                                    source=f"../{line['source']}/catalog/catalog.json")
+        doc_impl, _ = compose(work, parent_trees)
+        implemented = next(e for e in doc_impl["prices"] if _parent_key(e) == "penalty-schema")
+        assert {h["id"]: h["status"] for h in implemented["holes"]}[line["id"]] == "covered", implemented
+        assert abs(implemented["total"] - regime["total"]) < 1e-6, implemented
+        assert abs(implemented["amount"] - (regime["total"] - line["amount"])) < 1e-6, implemented
+        assert abs(implemented["amount"] - sum(h["amount"] for h in implemented["holes"]
+                                               if h["status"] not in ("covered", "closed"))) < 1e-6
+        print("OK prices[]: implementing the weighted control %s takes its %.2f line off the regime "
+              "entry, %.2f -> %.2f; the partition still sums to %.2f (eco-system ticket 121)"
+              % (line["id"], line["amount"], regime["total"], implemented["amount"],
+                 implemented["total"]))
 
     # --- ADR-0020: a party that declares no appetite is a MISSING INSTRUMENT.
     # It refuses, naming what is missing, and emits no price at all ---
