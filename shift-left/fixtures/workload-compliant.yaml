@@ -1,13 +1,16 @@
+# REPINNED 2026-09-24: 4.0.0 is retired from distribution/versions.yaml
+# (owner-instructed), so 5.0.0 is the only version a fixture may claim.
+#
 # REPINNED 2026-08-29: the whole 2.x/3.x fan-out is retired from
 # distribution/versions.yaml -- every one of those lines could not admit a pod,
 # and every one read the tier from the pod's own label. 4.0.0 is the only
 # version the array declares now, so it is the only version a fixture may
 # claim: ci-check.py refuses an orphan target, by design.
 #
-# An institution dev's workload PR, pinned to policy-version 4.0.0 and
+# An institution dev's workload PR, pinned to policy-version 5.0.0 and
 # compliant with its whole (currently single-line) +/-1 window.
 #
-# It carries posture.acme.io/tier=restricted on purpose. Under 4.0.0 the tier
+# It carries posture.acme.io/tier=restricted on purpose. Under 5.0.0 the tier
 # is declared on the governed Namespace and this label is an OUTPUT the cage
 # writes (ADR-0022) -- but `kyverno apply` offline has no Namespace object to
 # read, so the cage falls closed to `isolated` and the label here is what makes
@@ -18,7 +21,7 @@ kind: Pod
 metadata:
   name: checkout-svc
   labels:
-    policy-as-versioned.dev/policy-version: "4.0.0"
+    policy-as-versioned.dev/policy-version: "5.0.0"
     posture.acme.io/tier: restricted
 spec:
   securityContext: { runAsNonRoot: true }

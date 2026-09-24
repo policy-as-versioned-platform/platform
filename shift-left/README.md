@@ -23,9 +23,18 @@ promotion is editorial, never a timer) — this check catches that flip pre-merg
 
 ```sh
 python3 ci-check.py --resource fixtures/workload-compliant.yaml   # exit 0
-python3 ci-check.py --resource fixtures/workload-flip.yaml        # exit 1 -- the flip
+python3 ci-check.py --resource fixtures/workload-flip.yaml \
+  --versions-file "$(python3 flip_window.py)"                      # exit 1 -- the flip
 ./verify-shift-left.sh                                            # all offline proofs
 ```
+
+With one declared major line there is no served neighbour to flip onto.
+[`flip_window.py`](flip_window.py) then prints NOTHING-TO-FLIP on stderr and
+hands back the planted two-line window
+[`fixtures/flip-window.yaml`](fixtures/flip-window.yaml) instead of
+`distribution/versions.yaml`. `verify-shift-left.sh` also requires the flip
+fixture to pass its own target and fail a neighbour. A fixture that fails its
+own target is a plain failure, not a caught flip.
 
 [`ci-workflow.example.yml`](ci-workflow.example.yml) shows the shape an
 institution repo's own `.github/workflows/` wires this into — each

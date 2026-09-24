@@ -59,24 +59,29 @@ spec:
         # released tree is frozen and history is not rewritten. The 2.0.2 and
         # 3.0.1 backport trees were never cut and are gone. See README.md.
         #
-        # 4.0.0 -- the cage release (ticket 26, ADR-0022): the tier moves to the
-        # governed Namespace and is read through namespaceObject, the pod label
-        # becomes an output, the cage is tighten-only, the `isolated` rung and
-        # its PriorityClass land, reach is generated per tier, and the mutation
-        # writes the priority PAIR (priorityClassName + the class's own integer)
-        # without which the API server's Priority admission plugin refuses the
-        # pod. `commit` is deliberately absent: the ResourceSet template makes it
-        # optional, and it is filled in when cut-release.yml cuts the signed tag.
-        # `bump` is the DECLARED bump (ticket 43, ticket 18 Answer 5): the
-        # reviewed array element is where the publisher declares what kind of
-        # change this release is, and cut-release-gate.py reads it and refuses
-        # if the number the tag steps disagrees. Before this field the "declared"
-        # bump was derived from the tag arithmetic, so it could never disagree
-        # with itself. major: the cage tier moved to the governed Namespace and
-        # the pod label became an output -- every 3.0.0 consumer must act.
-        # Ticket 71: exact CLI fixture evidence, NOT a runtime support range.
-        # The gate reads actual policy tags and preserves their frozen bodies.
-        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major", tested_engines: { scope: published-cage-fixtures-v1, kyverno: ["1.18.2"] } }
+        # RETIRED 2026-09-24 -- 4.0.0 (policy/v4.0.0, commit 64635dfd), the cage
+        # release (ticket 26, ADR-0022). Owner-instructed 2026-09-24: every
+        # institution already accepts 5.0.0, so 4.0.0 leaves the array. The
+        # owner was told this leaves ONE live policy line, against ticket 75
+        # Q3's three-line coexistence rule, and said "do that".
+        #
+        # Why it goes: under 4.0.0 a pod that CLAIMS a policy version in an
+        # ungoverned Namespace falls to `baseline`, the loosest rung, and the
+        # platform substrate (kube-system, flux-system, kyverno) is ungoverned
+        # by design. Eco-system ticket 113 measured it, and
+        # verify-infra-declaration.sh proof 4 FAILS while any delivered body
+        # does it. A signed body cannot be edited, and a second mutating
+        # policy over the same pods is the incoherence ADR-0022 measured. So
+        # the repair is retirement (ticket 113 decision 3).
+        #
+        # Same mechanism as 2026-08-29: only the element is deleted. Flux
+        # prunes policy-v4-0-0 and the orphan pair stops allowing 4.0.0, so a
+        # straggler still claiming it is reported and caged on the bottom rung.
+        # The released tree distribution/policies/v4.0.0 stays on disk behind
+        # its signed tag, unedited. For an adopter the retirement is a MAJOR
+        # (computed-semver comparison_window: a version in the before-window
+        # and absent from the after-window forces major), so each adopter moves
+        # its claims to 5.0.0 before this array drops 4.0.0.
         #
         # 5.0.0 -- the isolated-default release (ticket 63, ADR-0022). Two
         # things move, and only the first is why it is a major:
@@ -96,7 +101,8 @@ spec:
         #     guarded nothing, because no body reads `infra` and an unclaimed
         #     pod is skipped either way. The check now guards the claim gate
         #     and the substrate's ungoverned state, and FAILS while any served
-        #     line (4.0.0 today) cages a claiming substrate pod at `baseline`.
+        #     line cages a claiming substrate pod at `baseline`. 4.0.0 did, and
+        #     is retired above for it (2026-09-24).
         #
         #     Every 4.0.0 consumer must act -- a namespace that was ungoverned
         #     and running normally is now caged to the bottom rung, so this
@@ -116,11 +122,12 @@ spec:
         # This is also the SECOND DECLARED LINE (ticket 58 Q1a). Since the
         # 2026-08-29 retirement the array has declared exactly one version, so
         # coexistence, retirement and the +/-1 window had no live subject at all
-        # -- verify-coexistence.sh could only read could-not-look. 4.0.0 stays
-        # declared beside it: that is the point. Ticket 84 supplies the third
-        # line (ticket 75 Q3: at least three coexisting versions, forward and
-        # back by one, in the owner's own 2022 words) and the supersede pricing
-        # that makes an older line cost something.
+        # -- verify-coexistence.sh could only read could-not-look. 4.0.0 stayed
+        # declared beside it until 2026-09-24. Since that retirement this is
+        # the ONLY declared line again, so coexistence, retirement and the +/-1
+        # window read could-not-look once more, by name. That is the known cost
+        # the owner accepted (ticket 75 Q3 asks for at least three coexisting
+        # versions, forward and back by one, in the owner's own 2022 words).
         #
         # `commit` is deliberately absent, as 4.0.0's was before its release:
         # the ResourceSet template makes it optional and cut-release.yml fills

@@ -49,7 +49,10 @@ say "the PR carries the version cross-check gate: $(basename "$workflow_gate")"
 if command -v kyverno >/dev/null 2>&1; then
   # The gate catches an Audit->Deny flip pre-merge: a violating workload that
   # today only Audits would be DENIED once this PR lands. Prove it fires.
-  if python3 "$workflow_gate" --resource "$platform/shift-left/fixtures/workload-flip.yaml" >/dev/null 2>&1; then
+  # flip_window.py picks the window: the served array while it declares two
+  # majors, else the planted two-line window, with NOTHING-TO-FLIP on stderr.
+  flip_versions="$(python3 "$platform/shift-left/flip_window.py")"
+  if python3 "$workflow_gate" --resource "$platform/shift-left/fixtures/workload-flip.yaml" --versions-file "$flip_versions" >/dev/null 2>&1; then
     echo "unexpected: the gate passed a workload that should trip the flip" >&2; exit 1
   fi
   echo "ok  gate runs (kyverno): a workload compliant-under-Audit is caught pre-merge by the +/-1 cross-check"

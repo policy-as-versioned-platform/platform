@@ -1,0 +1,29 @@
+# A PLANTED two-line window for the Audit->Deny flip beat. NOT a served array.
+#
+# Nothing reconciles this file. It has the shape of distribution/versions.yaml
+# only so that ci-check.py can read it with --versions-file, through the same
+# render-orphan-guard.py `versions()` parser the served array goes through.
+#
+# Why it exists (2026-09-24): 4.0.0 retired from distribution/versions.yaml
+# (owner-instructed), so the served array declares one major line, 5.0.0. With
+# one line a target has no +/-1 neighbour, and the flip beat had nothing to
+# observe in the served array. The release gate runs verify-shift-left.sh, so
+# a could-not-look there failed every release. The beat still has something
+# real to prove: that ci-check.py's window, with the real kyverno CLI and the
+# real signed bodies, catches a workload that passes its own target and fails
+# a neighbour. This window supplies the neighbour.
+#
+# Both elements are copied from distribution/versions.yaml as it stood before
+# the retirement. Both bodies are still on disk, unedited:
+# distribution/policies/v4.0.0 and v5.0.0 each diff empty against their signed
+# tags policy/v4.0.0 and policy/v5.0.0. If a body leaves the disk, ci-check.py
+# stops with "no policy files", and the beat fails loudly.
+#
+# shift-left/flip_window.py picks this file only while the served array
+# declares fewer than two major lines, and prints NOTHING-TO-FLIP when it does.
+# verify-shift-left.sh and wargamer/propose-policy-pr.sh both ask it.
+spec:
+  inputs:
+    - versions:
+        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major" }
+        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major" }

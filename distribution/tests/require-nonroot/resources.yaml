@@ -8,6 +8,9 @@
 # now asserts that the `policies:` list next door is exactly the declared array,
 # so this fixture cannot drift back onto frozen trees unnoticed.
 #
+# 2026-09-24: 4.0.0 is retired from the array. pod-4-* stay as stragglers that
+# still claim it; the one served require-nonroot (5.0.0) must skip both.
+#
 # 5.0.0 re-carries the root-if-attested conditional arm (ticket 58 Q2a), so the
 # two pods that arm exists for are here: the attested one it admits and the
 # identically-hardened UNattested one it still fails. An arm that widens for a
@@ -26,7 +29,7 @@ spec:
   containers: [{ name: c, image: nginx }]
 ---
 # Compliant under 5.0.0 the plain way (non-root AND a read-only root fs). It
-# claims 5.0.0, so 4.0.0 must SKIP it -- that is coexistence, not collision.
+# claims 5.0.0, so a policy scoped to any other version must SKIP it.
 apiVersion: v1
 kind: Pod
 metadata: { name: pod-5-compliant, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
