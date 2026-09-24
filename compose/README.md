@@ -467,8 +467,21 @@ not contain rendered deltas or money to copy into the new answer. Current pinned
 instruments still compute all amounts, selections and transition evidence.
 
 The after-state is a SHA-256 identity over the adopter's non-hidden source files
-(excluding `composed/` and Python caches), resolved parent records, publisher
+(excluding `composed/`, Python caches and the observation lane described below),
+the list of declared lane paths, resolved parent records, publisher
 observations, effective composition date and parsed namespace/workload facts.
+
+The observation lane (eco-system ticket 134) is what the adopter's own clocks
+append to. It is read from `.github/workflows/*.yml` exactly as the hub's
+`verify/schedules/lane.py` grades it: the `OBSERVATION_LANE` value in the
+top-level and job `env:` of a workflow with a `schedule:` trigger. A dispatched
+or pushed job and a step's own `env:` declare nothing. Every declared path must
+sit inside ADR-0024's observation list (`talk/truth.log`, `drift/samples.jsonl`,
+`talk/captures`, `observations`), or composition refuses and names the path.
+A `.yaml` or `.yml` file inside a lane stays in the identity, because the
+namespace scanner reads every `*.yaml` file. The list is a copy of the hub's
+`schedules.py` `ALLOW_LIST`; the hub's lane check compares the two on platform
+`main` and fails when they differ.
 Including parsed namespace facts covers manifests in hidden source directories
 that the namespace scanner also reads. Paths are relative: relocating a checkout
 or substituting a verified vendored publisher does not start a new transition.

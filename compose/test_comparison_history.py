@@ -1,6 +1,7 @@
 """Transition comparisons survive the public compose/save/verify boundary."""
 import json
 import unittest
+import comparison_history as ch
 import composition as ct
 import test_portable_observations as fixtures
 
@@ -192,6 +193,11 @@ class OptionalHeaderField(unittest.TestCase):
         self.assertIs(before['header']['withdrawn-selectable'], False)
 
 
+SCHEDULED = 'on: {schedule: [{cron: "7 5 * * *"}]}\n'
+# A top-level env is a lane only for the jobs that run under it.
+JOB = 'jobs:\n  sample:\n    steps: [{run: "true"}]\n'
+
+
 def _after(rendered):
     import yaml
     header = yaml.safe_load(rendered['composed/HEADER.yaml'].split(ct.HEADER_COMMENT)[-1])
@@ -268,19 +274,87 @@ class ObservationLane(unittest.TestCase):
     def test_a_changed_lane_declaration_starts_a_new_comparison(self):
         _, rendered = self.fixture.composed()
         workflow = self.adopter / '.github/workflows/drift-sample.yml'
-        workflow.write_text(workflow.read_text().replace('drift/samples.jsonl', 'drift'))
+        workflow.write_text(workflow.read_text().replace(
+            'drift/samples.jsonl', 'drift/samples.jsonl talk/truth.log'))
         _, rerender = self.fixture.composed()
         self.assertNotEqual(_after(rendered), _after(rerender))
 
     def test_a_lane_path_outside_the_repository_refuses_by_name(self):
         workflow = self.adopter / '.github/workflows/drift-sample.yml'
-        for bad in ('../elsewhere', '/etc', 'composed'):
+        for bad in ('../elsewhere', '/etc', 'composed', 'observations/../party.yaml'):
             with self.subTest(lane=bad):
-                workflow.write_text(f'env:\n  OBSERVATION_LANE: "{bad}"\n')
+                workflow.write_text(f'{SCHEDULED}env:\n  OBSERVATION_LANE: "{bad}"\n{JOB}')
                 result, rendered = ct.compose(self.adopter, self.fixture.trees)
                 self.assertEqual(result['outcome'], 'refused')
                 self.assertIn('OBSERVATION_LANE', str(result))
                 self.assertEqual(rendered, {})
+
+    def test_a_scheduled_lane_outside_the_adr_0024_list_refuses_by_name(self):
+        # The hub grades a clock's lane inside ADR-0024 point 3's list only
+        # (verify/schedules/schedules.py ALLOW_LIST). A scheduled declaration
+        # outside it would exclude a declaration from the identity.
+        (self.adopter / 'notes.txt').write_text('a source note\n')
+        workflow = self.adopter / '.github/workflows/drift-sample.yml'
+        cases = {
+            'top level': (f'{SCHEDULED}env:\n  OBSERVATION_LANE: "drift/samples.jsonl party.yaml"\n'
+                          f'{JOB}'),
+            'job env': (f'{SCHEDULED}jobs:\n  sample:\n    env:\n'
+                        '      OBSERVATION_LANE: notes.txt\n'),
+            'a prefix that is not a directory': (
+                f'{SCHEDULED}env:\n  OBSERVATION_LANE: "observations-of-mine/x.jsonl"\n{JOB}'),
+        }
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                workflow.write_text(text)
+                result, rendered = ct.compose(self.adopter, self.fixture.trees)
+                self.assertEqual(result['outcome'], 'refused')
+                refusal = str(result)
+                self.assertIn('ADR-0024', refusal)
+                self.assertIn('drift-sample.yml', refusal)
+                bad = text.split('OBSERVATION_LANE: ')[1].splitlines()[0].strip('"').split()[-1]
+                self.assertIn(repr(bad), refusal)
+                self.assertEqual(rendered, {})
+
+    def test_every_path_inside_the_adr_0024_list_is_a_lane(self):
+        workflow = self.adopter / '.github/workflows/drift-sample.yml'
+        workflow.write_text(f'{SCHEDULED}env:\n  OBSERVATION_LANE: "talk/truth.log '
+                            'talk/captures/ observations/twin-sweep.jsonl drift/samples.jsonl"\n' + JOB)
+        self.assertEqual(ch.observation_lanes(self.adopter),
+                         ['drift/samples.jsonl', 'observations', 'observations/twin-sweep.jsonl',
+                          'talk/captures', 'talk/truth.log'])
+
+    def test_a_declaration_the_hub_does_not_grade_excludes_nothing(self):
+        # Only a scheduled job's top-level and job env are a clock's lane, as
+        # the hub's verify/schedules/lane.py reads them. A dispatched job or a
+        # step env is not, so it cannot take a source file out of the identity.
+        (self.adopter / 'notes.txt').write_text('a source note\n')
+        _, baseline = self.fixture.composed()
+        workflows = self.adopter / '.github/workflows'
+        cases = {
+            'a dispatched job': (
+                'on: {workflow_dispatch: {}}\n'
+                'env:\n  OBSERVATION_LANE: "party.yaml notes.txt"\n'
+                'jobs:\n  cut:\n    env:\n      OBSERVATION_LANE: "party.yaml notes.txt"\n'),
+            'a push job': (
+                'on: {push: {branches: [main]}}\n'
+                'jobs:\n  build:\n    env:\n      OBSERVATION_LANE: notes.txt\n'),
+            'a step env in a scheduled job': (
+                f'{SCHEDULED}jobs:\n  sample:\n    steps:\n'
+                '      - env: {OBSERVATION_LANE: "party.yaml notes.txt"}\n        run: "true"\n'),
+        }
+        for case, text in cases.items():
+            with self.subTest(case=case):
+                (workflows / 'extra.yml').write_text(text)
+                result, rendered = ct.compose(self.adopter, self.fixture.trees)
+                self.assertNotEqual(result['outcome'], 'refused', result)
+                self.assertEqual(_after(baseline), _after(rendered))
+                for relative in ('notes.txt', 'party.yaml'):
+                    edited = self.adopter / relative
+                    kept = edited.read_text()
+                    edited.write_text(kept + '\n# an edit\n')
+                    _, rerender = self.fixture.composed()
+                    self.assertNotEqual(_after(rendered), _after(rerender), relative)
+                    edited.write_text(kept)
 
 
 class GitAdopter(unittest.TestCase):
@@ -408,7 +482,8 @@ class FormulaMigration(GitAdopter):
         from unittest import mock
         workflows = self.adopter / '.github/workflows'
         workflows.mkdir(parents=True)
-        (workflows / 'drift-sample.yml').write_text('env:\n  OBSERVATION_LANE: "drift/samples.jsonl"\n')
+        (workflows / 'drift-sample.yml').write_text(
+            f'{SCHEDULED}env:\n  OBSERVATION_LANE: "drift/samples.jsonl"\n{JOB}')
         lane = self.adopter / 'drift/samples.jsonl'
         lane.parent.mkdir()
         lane.write_text('{"day": 1}\n')

@@ -46,35 +46,71 @@ def _digest(value: object) -> str:
 # declaration is the one statement of what a clock may write, and those files
 # are observations, not source. Hashing them made every daily lane commit
 # start a new comparison and turned compose-check and the pre-tag verify red.
+#
+# This reader reads exactly what the hub grades, and no more: the env of a
+# workflow that has a `schedule:` trigger, at top level and job level, merged
+# as the job sees it (verify/schedules/schedules.py `scheduled_jobs` and
+# `_env`). A dispatched or pushed job, or a step's own env, is not a clock's
+# lane, so it takes nothing out of the identity.
 LANE_KEY = 'OBSERVATION_LANE'
 WORKFLOWS = ('.github', 'workflows')
-# The composer walks every YAML file in the adopter's tree for Namespaces and
-# workloads (composition._namespace_facts). A YAML file inside a lane is read as
-# a declaration, so it stays in the identity whatever the lane says.
+# ADR-0024 point 3 (D1): the complete list of paths a scheduled run may ever
+# commit. A copy of the hub's verify/schedules/schedules.py ALLOW_LIST, carried
+# here because the composer runs in the adopter's CI with no hub checkout. The
+# hub's verify/schedules/lane.py compares the two on platform main on every run
+# and fails when they differ, so neither copy can drift alone.
+OBSERVATION_PATHS = ('talk/truth.log', 'drift/samples.jsonl', 'talk/captures', 'observations')
+# The composer walks every `*.yaml` file in the adopter's tree for Namespaces
+# and workloads (composition._namespace_facts, which globs `*.yaml` only). A
+# YAML file inside a lane is read as a declaration, so it stays in the identity
+# whatever the lane says. `.yml` is kept too: the composer does not read it,
+# but nothing a clock appends is YAML, so keeping it costs nothing and a
+# future reader of `.yml` cannot turn a lane file into unhashed source.
 COMPOSER_READS = ('.yaml', '.yml')
 
 
+def _scheduled(doc: dict) -> bool:
+    # YAML 1.1 reads a bare `on` key as the boolean True, so both keys.
+    on = doc.get('on', doc.get(True))
+    schedule = on.get('schedule') if isinstance(on, dict) else None
+    return isinstance(schedule, list) and any(
+        isinstance(entry, dict) and 'cron' in entry for entry in schedule)
+
+
 def _lane_envs(doc: object) -> list[dict]:
-    """Every `env:` mapping a workflow carries: top level, job and step."""
-    if not isinstance(doc, dict):
+    """The env each scheduled job runs with: top level, then job level over it.
+    Nothing for a workflow with no `schedule:` trigger, and never a step env."""
+    if not isinstance(doc, dict) or not _scheduled(doc):
         return []
-    envs = [doc.get('env')]
+    top = doc.get('env') if isinstance(doc.get('env'), dict) else {}
     jobs = doc.get('jobs')
+    envs = []
     for job in (jobs.values() if isinstance(jobs, dict) else []):
-        if isinstance(job, dict):
-            envs.append(job.get('env'))
-            steps = job.get('steps')
-            envs.extend(step.get('env') for step in (steps if isinstance(steps, list) else [])
-                        if isinstance(step, dict))
-    return [env for env in envs if isinstance(env, dict)]
+        job_env = job.get('env') if isinstance(job, dict) else None
+        envs.append({**top, **(job_env if isinstance(job_env, dict) else {})})
+    return envs
+
+
+def _observation_path(lane: str) -> str | None:
+    """The lane path, normalised, when it sits inside ADR-0024's list; else None."""
+    lane = lane.strip('"\'').rstrip('/')
+    pure = PurePosixPath(lane)
+    parts = pure.parts
+    if not parts or pure.is_absolute() or '..' in parts or '.' in lane.split('/'):
+        return None
+    normal = '/'.join(parts)
+    if not any(normal == allowed or normal.startswith(allowed + '/')
+               for allowed in OBSERVATION_PATHS):
+        return None
+    return normal
 
 
 def observation_lanes(adopter: Path) -> list[str]:
-    """The lane paths the adopter's own workflows declare, read from the tree
-    under composition. Quoted and unquoted values both count, and a value may
-    name several space-separated paths, as the workflows' shell loops read it.
-    A declaration that cannot be read, or that names a path outside the
-    repository or inside `composed/`, refuses by name rather than guessing."""
+    """The lane paths the adopter's own scheduled jobs declare, read from the
+    tree under composition. Quoted and unquoted values both count, and a value
+    may name several space-separated paths, as the workflows' shell loops read
+    it. A declaration that cannot be read, or that names a path outside
+    ADR-0024's observation list, refuses by name rather than guessing."""
     lanes: set[str] = set()
     workflows = adopter.joinpath(*WORKFLOWS)
     if not workflows.is_dir():
@@ -96,13 +132,13 @@ def observation_lanes(adopter: Path) -> list[str]:
                 raise InvalidHistory(f'invalid comparison history: {LANE_KEY} in {where} '
                                      'is not a string of paths')
             for lane in value.split():
-                parts = PurePosixPath(lane).parts
-                if (PurePosixPath(lane).is_absolute() or not parts or '..' in parts
-                        or parts[0] == 'composed'):
-                    raise InvalidHistory(f'invalid comparison history: {LANE_KEY} in {where} '
-                                         f'names {lane!r}, which is not an observation path '
-                                         'inside this repository')
-                lanes.add(str(PurePosixPath(*parts)))
+                normal = _observation_path(lane)
+                if normal is None:
+                    raise InvalidHistory(
+                        f'invalid comparison history: {LANE_KEY} in {where} names {lane!r}, '
+                        f'which is not inside the ADR-0024 observation list '
+                        f'({", ".join(OBSERVATION_PATHS)})')
+                lanes.add(normal)
     return sorted(lanes)
 
 
@@ -113,11 +149,12 @@ def _in_lane(relative: Path, lanes: list[str]) -> bool:
 
 def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object) -> str:
     # Source bytes, not checkout paths, Git HEAD, generated artefacts or Python
-    # caches. Include all non-hidden source files: a source edit deliberately
+    # caches. Include every non-hidden source file: a source edit deliberately
     # starts a new comparison, even if it does not change the selected tier.
     # A clock's observation is not a source edit (ticket 134): files under a
-    # declared lane are left out, except the YAML the composer reads. The lane
-    # list itself is hashed, so a changed declaration starts a new comparison.
+    # lane a scheduled job declares, inside ADR-0024's list, are left out,
+    # except the YAML the composer reads. The lane list itself is hashed, so a
+    # changed declaration starts a new comparison.
     lanes = observation_lanes(adopter)
     sources = {}
     for path in sorted(adopter.rglob('*')):
