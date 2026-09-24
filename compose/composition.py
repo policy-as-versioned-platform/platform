@@ -4529,13 +4529,20 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         return _refused(missing), {}
 
     try:
-        recorded_header, recorded_prices, recorded_cages = comparison_history.read_recorded(adopter_dir)
+        # Verification replays the artefact on disk. A fresh composition compares
+        # against the artefact as last committed (eco-system ticket 133): a pass
+        # that left its own output in the working tree is not the next "before".
+        recorded = None if replay_observations else comparison_history.read_committed(adopter_dir)
+        recorded_header, recorded_prices, recorded_cages = (
+            recorded if recorded is not None else comparison_history.read_recorded(adopter_dir))
+        identity_inputs = (adopter_dir, parents, list(observations.values()),
+                           _composition_as_of(edges, parent_trees, as_of),
+                           _namespace_facts(adopter_dir))
         comparison = comparison_history.resolve(
-            comparison_history.identity(adopter_dir, parents, list(observations.values()),
-                                        _composition_as_of(edges, parent_trees, as_of),
-                                        _namespace_facts(adopter_dir)),
+            comparison_history.identity(*identity_inputs),
             recorded_header, recorded_prices, recorded_cages,
-            replay=replay_observations)
+            replay=replay_observations,
+            legacy=lambda: comparison_history.v330_identity(*identity_inputs))
     except comparison_history.InvalidHistory as error:
         return _refused([str(error)]), {}
     comparison_before = comparison["before"]
