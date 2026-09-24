@@ -300,7 +300,7 @@ COMPUTED IN COMPOSITION -- AND THE TREE THAT MAKES IT PAYABLE.
   * A `premium` is a cost, not exposure, so dropping an insurer moves the
     priceable exposure by nothing. The premium that goes with it is named
     on `unpriceable[]` beside the figure and never folded into it.
-  * VENDORING. `composed/feeds/<party>/<version>/` carries the adopter's
+  * VENDORING. `composed/feeds/<party>/<name>/<version>/` carries the adopter's
     own copy of every payload it was priced from, the publisher's party
     artefact where it has one, and the converter that priced it -- each at
     the publisher's OWN relative path, so feed_file(), _converter() and
@@ -497,10 +497,10 @@ MONTHS_PER_YEAR = 12
 # the converter that priced it, under the adopter's OWN signature. Without it
 # the adopter cannot restate its own signed history at all once a publisher's
 # repository is unreachable: the payload lives in the publisher's tree and the
-# converter is a script in somebody else's repo. `<party>/<version>/` is the
-# ticket's own layout; inside, the publisher's OWN relative paths are
-# reproduced, so feed_file(), _converter() and pin_content read a vendored tree
-# with no special case at all.
+# converter is a script in somebody else's repo. `<party>/<name>/<version>/` is
+# the layout (ticket 45's, keyed on the feed name since ticket 136); inside,
+# the publisher's OWN relative paths are reproduced, so feed_file(),
+# _converter() and pin_content read a vendored tree with no special case.
 VENDORED_DIR = ("composed", "feeds")
 VENDORED_PROVENANCE = "PROVENANCE.json"
 VENDORED_LIMIT = "publisher-clone-absent"
@@ -796,9 +796,13 @@ def _converter(name: str, tree_path: Path) -> Path:
 # --------------------------------------------------------------------------
 
 
-def vendored_rel(party: str, version: str) -> str:
-    """`composed/feeds/<party>/<version>` -- the ticket's own layout."""
-    return "/".join((*VENDORED_DIR, party, str(version)))
+def vendored_rel(party: str, name: str | None, version: str) -> str:
+    """`composed/feeds/<party>/<name>/<version>`. A feed is a (party, name,
+    version), so its vendored copy is keyed the same way. Ticket 45's layout
+    left the name out, and two feeds of one publisher at one major (tuppence's
+    cve@v2 beside a threat-register@v2 bump) landed on one directory and
+    refused (eco-system ticket 136)."""
+    return "/".join((*VENDORED_DIR, party, *((name,) if name else ()), str(version)))
 
 
 def _digest(text: str) -> str:
@@ -883,7 +887,7 @@ def vendor_feed(edge: dict, tree: Path, sha: str, *,
     record["publisher_observation"] = (observation if observation is not None else
                                        publisher_observation(edge, tree, sha))
     files[VENDORED_PROVENANCE] = json.dumps(record, indent=2, sort_keys=True) + "\n"
-    return vendored_rel(edge["party"], version), files, record
+    return vendored_rel(edge["party"], name, version), files, record
 
 
 # The snapshot is an adopter-signed observation, not a second publisher
@@ -981,13 +985,13 @@ def publisher_observation(edge: dict, tree: Path, sha: str, *, replay: bool = Fa
             "newer": newer, "superseded": observed}
 
 
-def vendored_tree(adopter_dir: Path, party: str, version: str) -> Path | None:
+def vendored_tree(adopter_dir: Path, party: str, name: str | None, version: str) -> Path | None:
     """The adopter's own vendored copy of a publisher's tree, if it carries one
     for this exact pin AND every file in it still digests to what the adopter's
     own signature recorded. A tampered copy is a MISSING instrument, not a
     cheaper one: it refuses (ADR-0020) rather than pricing from bytes nobody
     signed."""
-    base = Path(adopter_dir) / vendored_rel(party, version)
+    base = Path(adopter_dir) / vendored_rel(party, name, version)
     provenance = base / VENDORED_PROVENANCE
     if not provenance.exists():
         return None
@@ -4478,7 +4482,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         if tree is not None and Path(tree).is_dir():
             continue
         try:
-            vendored = vendored_tree(adopter_dir, edge["party"], str(edge["version"]))
+            vendored = vendored_tree(adopter_dir, edge["party"], _feed_name(edge), str(edge["version"]))
         except Refused as e:
             missing.append(f"{edge['party']}/{edge['kind']}@{edge['version']}: {e}")
             continue
@@ -4514,11 +4518,11 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         parents.append(parent)
         if kind in FEED_KINDS:
             try:
-                observation_tree = (adopter_dir / vendored_rel(party, str(version))
+                observation_tree = (adopter_dir / vendored_rel(party, _feed_name(edge), str(version))
                                     if replay_observations else Path(tree))
                 if replay_observations:
                     # Validate the copied payloads before trusting their observation.
-                    if vendored_tree(adopter_dir, party, str(version)) is None:
+                    if vendored_tree(adopter_dir, party, _feed_name(edge), str(version)) is None:
                         raise Refused(f"missing instrument: {party}@{version} has no vendored "
                                       "publisher observation; re-compose from its publisher")
                 observations[_observation_key(edge)] = publisher_observation(
@@ -4838,10 +4842,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # reader with this repository and nothing else can re-derive these prices.
     vendored_records: list[dict] = []
     for edge in feed_edges:
-        base = vendored_rel(edge["party"], str(edge["version"]))
+        base = vendored_rel(edge["party"], _feed_name(edge), str(edge["version"]))
         if any(r["path"] == base for r in vendored_records):
-            # Two feeds from one party at one version would land on one another
-            # in `composed/feeds/<party>/<version>/`. Refuse rather than
+            # Only the same feed pinned twice lands here now that the directory
+            # carries the feed's name (ticket 136). Refuse rather than
             # overwrite: a silently clobbered payload re-derives the wrong price
             # and looks fine doing it.
             refusals.append({"kind": "missing-instrument", "subject": edge["party"],
@@ -5225,10 +5229,15 @@ def _fixture_publisher(dest: Path, *, dirs: tuple[str, ...], tags: dict[str, str
 
 
 def _add_feed_pin(work: Path, party: str, name: str, version: str, since: str) -> None:
-    """Add ONE feed edge to an adopter copy -- the edit a subscription is."""
+    """Pin ONE feed on an adopter copy -- the edit a subscription is. A copy of a
+    real adopter that already subscribes (tuppence to cve@v2 and ludlow to eol@v2
+    since ticket 84) gets its one edge restated, never a second edge beside it:
+    two edges for one feed are one feed pinned twice, and that refuses (ticket 136)."""
     doc = yaml.safe_load((work / "party.yaml").read_text())
-    doc["inherits"].append({"party": party, "kind": "feed", "name": name,
-                            "version": version, "since": since})
+    edge = {"party": party, "kind": "feed", "name": name, "version": version, "since": since}
+    doc["inherits"] = [e for e in doc["inherits"]
+                       if (e.get("party"), e.get("kind"), e.get("name")) != (party, "feed", name)]
+    doc["inherits"].append(edge)
     (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
@@ -5303,6 +5312,14 @@ def _bump_parent_version(work: Path, party: str, kind: str, version: str) -> Non
     for edge in doc["inherits"]:
         if _parent_key(edge) == _parent_key({"kind": kind}):
             edge["version"] = version
+    (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+
+def _drop_edges_signed_after(work: Path, day: str) -> None:
+    """Keep only the edges whose `since` is on or before `day`: the party as it
+    stood that day, for a leg that composes as of an earlier date (ticket 136)."""
+    doc = yaml.safe_load((work / "party.yaml").read_text())
+    doc["inherits"] = [e for e in doc["inherits"] if str(e.get("since") or "") <= day]
     (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
@@ -7611,7 +7628,7 @@ def selfcheck() -> None:
     # payload and the converter that priced it, under its own signature ---
     vendored = {p: c for p, c in rendered45.items() if p.startswith("composed/feeds/")}
     for edge in feed_edges:
-        base = f"composed/feeds/{edge['party']}/{edge['version']}"
+        base = vendored_rel(edge["party"], edge["name"], str(edge["version"]))
         assert f"{base}/party.yaml" in vendored, sorted(vendored)
         assert f"{base}/PROVENANCE.json" in vendored, sorted(vendored)
         record = json.loads(vendored[f"{base}/PROVENANCE.json"])
@@ -7636,18 +7653,20 @@ def selfcheck() -> None:
     # and the record must say `feeds`; one from before the move falls back to
     # platform's and the record must say `platform`. Either way the record and the
     # disk agree, which is the property that matters.
-    _tr_record = json.loads(vendored["composed/feeds/feeds/v2/PROVENANCE.json"])
+    _tr_path = f"{vendored_rel('feeds', 'threat-register', 'v2')}/{VENDORED_PROVENANCE}"
+    _tr_record = json.loads(vendored[_tr_path])
     _tr_publisher_ships = (Path(parent_trees["feeds"]) / "threat-register"
                             / "to_fair_scenario.py").exists()
     assert _tr_record["converter_from"] == ("feeds" if _tr_publisher_ships else "platform"), (
         _tr_record["converter_from"], _tr_publisher_ships,
-        vendored["composed/feeds/feeds/v2/PROVENANCE.json"])
+        vendored[_tr_path])
     # A quote feed is priced without a converter at all, so none is vendored --
     # a named absence, never an empty file that pretends to be one.
-    assert json.loads(vendored["composed/feeds/insurer/v1/PROVENANCE.json"])["converter"] is None
+    assert json.loads(vendored[f"{vendored_rel('insurer', 'quote-driftwood', 'v1')}/{VENDORED_PROVENANCE}"]
+                      )["converter"] is None
     header_doc = yaml.safe_load(rendered45["composed/HEADER.yaml"])
     assert sorted(v["path"] for v in header_doc["vendored-feeds"]) == \
-        sorted(f"composed/feeds/{e['party']}/{e['version']}" for e in feed_edges), header_doc
+        sorted(vendored_rel(e["party"], e["name"], str(e["version"])) for e in feed_edges), header_doc
     print("OK composed/feeds/: every priced payload, the publisher's own party artefact and the "
           "converter that priced it are vendored under the adopter's own signature, digested "
           "into a PROVENANCE.json the header names, with the converter's real source party "
@@ -7691,7 +7710,7 @@ def selfcheck() -> None:
         assert limit["status"] == "open" and "ico" in limit["detail"], limit
         # ...and a TAMPERED vendored payload is refused, not priced: the digest
         # the adopter's own tag signs is what the re-derivation is held to.
-        payload = work / "composed" / "feeds" / "ico" / "v3" / "penalty-schema" / "v3" / "feed.json"
+        payload = work / vendored_rel("ico", "penalty-schema", "v3") / "penalty-schema" / "v3" / "feed.json"
         payload.write_text(payload.read_text().replace("uk-gdpr", "uk-gdpr ", 1))
         doc_tampered, _ = compose(work, without_ico)
         assert doc_tampered["outcome"] == "refused", doc_tampered["prices"]
@@ -7719,7 +7738,7 @@ def selfcheck() -> None:
             continue
         assert isinstance(record["invocation"], list) and record["invocation"], record
         assert record["payload_version_key"], record
-        base = f"composed/feeds/{record['party']}/{record['version']}"
+        base = vendored_rel(record["party"], record["name"], record["version"])
         with tempfile.TemporaryDirectory() as bare:
             script = Path(bare) / Path(record["converter"]).name
             script.write_text(rendered45[f"{base}/{record['converter']}"])
@@ -7888,7 +7907,13 @@ def selfcheck() -> None:
         s2 = _threat_supersede(compose(work, trees, as_of=later)[0]["prices"])
         assert s2["as_of"] == later and s2["since"] == since, s2
         assert abs(s2["ramp"] - 2.0) < 1e-9 and abs(s2["amount"] - s2["base"]) < 1e-6, s2
-        s0 = _threat_supersede(compose(work, trees, as_of=before)[0]["prices"])
+        # The day before, only the pins signed by then exist. Ticket 136: tuppence's
+        # feeds/cve@v2 is signed since 2026-09-08, and composing it as of an earlier
+        # day refuses as a backwards window, which is right and not what this leg asks.
+        work_before = root / "tuppence-before"
+        shutil.copytree(work, work_before)
+        _drop_edges_signed_after(work_before, before)
+        s0 = _threat_supersede(compose(work_before, trees, as_of=before)[0]["prices"])
         assert s0["as_of"] == before and s0["since"] == since and s0["ramp"] == 1.0 and s0["amount"] == 0.0, s0
         assert any(lim.startswith("zero (as_of") and before in lim and since in lim for lim in s0["limits"]), \
             ("a zero that is a backwards window says so, with both dates (review F2)", s0["limits"])
@@ -8142,7 +8167,7 @@ def selfcheck() -> None:
         "refusal and no amount; a premium that stops being computable is named beside the "
         "figure and never folded into it; an edge with no `since` refuses as a missing "
         "instrument; every priced payload, its publisher's party artefact and the converter "
-        "that priced it are vendored under composed/feeds/<party>/<version>/ and digested into "
+        "that priced it are vendored under composed/feeds/<party>/<name>/<version>/ and digested into "
         "the header the adopter's own tag signs; and with a publisher's clone ABSENT the "
         "adopter re-derives every price it signed from that vendored copy, printing the "
         "substitution as an open limit, while a tampered copy refuses against its own signed "
@@ -8167,7 +8192,7 @@ def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str,
     promise about pricing, and the byte comparison that proves it.
 
     Narrowed 2026-09-06 (eco-system ticket 45). The adopter now vendors the
-    payload it was priced from under `composed/feeds/<party>/<version>/`, so a
+    payload it was priced from under `composed/feeds/<party>/<name>/<version>/`, so a
     bump DOES add its new version's copy and drop the old one's. That is the
     whole point of vendoring and not a leak of a price into an applied file:
     nothing under composed/feeds/ is a Kubernetes object, no Kustomization path
