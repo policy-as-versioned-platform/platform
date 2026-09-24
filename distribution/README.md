@@ -143,6 +143,40 @@ rather than papered over:
   declared tree's cage-tier dial equals its own `priorityclasses.yaml` `value`
   and `preemptionPolicy` — the check whose absence let the original defect ship.
 
+## 2026-09-24 — 4.0.0 retires, 5.0.0 is the one declared line
+
+Owner-instructed. Every institution already accepts 5.0.0 (an
+`accepted-majors/platform-5.0.0.yaml` record in each adopter). The owner was
+told this leaves one live policy line, against ticket 75 Q3's rule of at least
+three coexisting lines, and said "do that".
+
+The reason is eco-system ticket 113's fact 2. Under 4.0.0 a pod that claims a
+policy version in an ungoverned Namespace is caged at `baseline`, the loosest
+rung. The platform substrate (kube-system, flux-system, kyverno) is ungoverned
+by design, so a claiming pod there got the loosest cage.
+`verify-infra-declaration.sh` proof 4 fails while any delivered body does that.
+A signed body cannot be edited, so the repair is retirement.
+
+Same mechanism as 2026-08-29. Only the array element is deleted. The released
+tree `policies/v4.0.0` stays on disk behind `policy/v4.0.0`, unedited. A pod
+still claiming 4.0.0 is reported by the orphan guard and caged on the bottom
+rung by the orphan cage. Nothing refuses it.
+
+For an adopter this is a major. A version that leaves the window is a forced
+major in `computed-semver/comparison_window.py`, and each adopter gate refuses
+a retirement outright. So the adopters move their workload claims to 5.0.0
+first, and this array drops 4.0.0 after.
+
+What reads differently with one declared line:
+
+- `verify-retirement.sh` could-not-looks (exit 3). Retiring the only cut line
+  would leave an empty allow-list.
+- `verify-coexistence.sh` could-not-looks on its beat. `tests/require-nonroot`
+  loads 5.0.0 alone. The 4.0.0 pods stay in it as stragglers 5.0.0 must skip.
+- `shift-left/verify-shift-left.sh` could-not-looks on the flip beat, as it did
+  from 2026-08-29 to 2026-09-04. Its fixtures claim 5.0.0.
+- `verify-infra-declaration.sh` proof 4 passes on this repository's own bodies.
+
 
 ## Self-scoping — `matchConditions`, not `objectSelector`
 
