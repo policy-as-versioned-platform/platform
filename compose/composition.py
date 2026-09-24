@@ -245,7 +245,10 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     the newest signed input (every pinned envelope's `published_at` and,
     since ticket 84, every edge's own `since`; `_composition_as_of`), so
     this module still reads no clock. A since no signed tag carries, or a residual no feed prices, is a
-    named limit on the entry, never an invented date and never a zero.
+    named limit on the entry, never an invented date and never a zero. A
+    since later than as_of (a tag cut after the newest signed input; a tag
+    date is history, not an input) holds the ramp at its start and names both
+    dates in a limit (eco-system ticket 139).
   * A BESPOKE CONTROL is one the adopter defines in a small OSCAL catalogue
     it publishes as a `controls` parent of ITSELF (the self-pin resolves to
     the adopter's own tree: the catalogue is signed by the same tag as the
@@ -1740,10 +1743,15 @@ def _feeds_module():
 def _ramp(since: str | None, as_of: str | None) -> float:
     """The LEF multiplier for how far `as_of` sits past `since`: the EOL feed's
     own eol_ramp, +1x per year past, capped at +4x. 1.0 where either date is
-    unknown -- an unramped share, with the missing date named beside it."""
+    unknown -- an unramped share, with the missing date named beside it.
+
+    An `as_of` before `since` holds the ramp at its value on the since day
+    (eco-system ticket 139, delegated): the window runs from `since` to
+    `max(since, as_of)`, never backwards. Today eol_ramp is 1.0 there anyway;
+    this keeps it so if the ramp ever stops being flat at its start."""
     if not since or not as_of:
         return 1.0
-    return float(_feeds_module().eol_ramp(since, as_of))
+    return float(_feeds_module().eol_ramp(since, max(since, as_of)))
 
 
 def ungoverned_price(base: float, workloads: int, total_workloads: int, ramp: float) -> tuple[float, bool]:
@@ -1782,6 +1790,16 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
             limits.append(f"{since_limit}: ramp held at 1.0 until a signed tag records it")
         if as_of is None and since is not None:
             limits.append("no pinned feed carries a published_at and no edge carries a since, so there is no as_of to ramp to")
+        elif as_of is not None and since is not None and as_of < since:
+            # Eco-system ticket 139 (delegated). as_of is the newest signed input
+            # the tree carries; the tag that first names a Namespace is history,
+            # not an input, and it can be cut after that date. Counting it would
+            # move every price on the artefact whenever the adopter tags. So the
+            # ramp holds at its start and both dates are printed, as a supersede
+            # line does when its tag day is later than as_of (review F2).
+            limits.append(f"as_of {as_of} precedes since {since}: the composition's as-of is its "
+                          f"newest signed input and a tag date is not one, so the ramp holds at its "
+                          f"start until a composition as of a later day")
         ramp = _ramp(since, as_of)
         share = inside / total if total else 0.0
         amount: float | None = None
@@ -7282,6 +7300,44 @@ def selfcheck() -> None:
           "its workloads carried (since 2024-09-01, ramp 3.0), the old name closes as left-repo "
           "and not as governed, a copy beside the original starts its own ramp, and a governed "
           "shadow of the old name does not drop the carried age")
+
+    # --- eco-system ticket 139: a since later than as_of holds the ramp at its
+    # start and says so. tuppence's `openbao` is first named by a tag cut after
+    # the newest signed input its tree carries. as_of stays that input's date;
+    # the price names both dates and never ramps over a backwards window ---
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td) / "late"
+        hooks = Path(td) / "nohooks"
+        hooks.mkdir()
+        dated = {**os.environ, "GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@invalid",
+                 "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@invalid",
+                 "GIT_COMMITTER_DATE": "2026-09-24T12:00:00Z", "GIT_AUTHOR_DATE": "2026-09-24T12:00:00Z"}
+        git = ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false",
+               "-c", f"core.hooksPath={hooks}"]
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        _write_namespace(repo, "home", governed=True)
+        _write_workload(repo, "home", "app-0")
+        _write_workload(repo, "late", "app-1")
+        (repo / "composed").mkdir()
+        (repo / "composed" / "HEADER.yaml").write_text(
+            HEADER_COMMENT + yaml.safe_dump({"ungoverned-namespaces": ["late"]}))
+        for step in (["add", "-A"], ["commit", "-q", "-m", "v1.0.0"],
+                     ["tag", "-a", "v1.0.0", "-m", "v1.0.0\n-----BEGIN FIXTURE BLOCK-----\n"]):
+            subprocess.run(git + step, check=True, capture_output=True, env=dated)
+        late = [{"namespace": "late", "status": "recorded"}]
+        price_ungoverned(late, repo, "fixture", "GBP", 1000.0, "2026-09-08")
+        p = late[0]["price"]
+        assert p["since"] == "2026-09-24" and p["as_of"] == "2026-09-08", p
+        assert p["ramp"] == 1.0 and p["amount"] == 500.0, p
+        held = [lim for lim in p["limits"] if "precedes since" in lim]
+        assert len(held) == 1 and "2026-09-08" in held[0] and "2026-09-24" in held[0], p["limits"]
+        assert _ramp("2026-09-24", "2026-09-08") == _ramp("2026-09-24", "2026-09-24") == 1.0
+        on_time = [{"namespace": "late", "status": "recorded"}]
+        price_ungoverned(on_time, repo, "fixture", "GBP", 1000.0, "2026-09-24")
+        assert not [lim for lim in on_time[0]["price"]["limits"] if "precedes since" in lim], on_time
+    print("OK ungoverned[] (eco-system ticket 139): a since later than as_of holds the ramp at its "
+          "start (1.0), keeps as_of the newest signed input, and names both dates in a limit")
 
     # --- (source, id): claims and holes resolve across EVERY controls parent,
     # an adopter's own catalogue included; the header encodes the source only
