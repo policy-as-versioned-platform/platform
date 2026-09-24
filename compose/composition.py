@@ -1013,6 +1013,32 @@ def vendored_tree(adopter_dir: Path, party: str, name: str | None, version: str)
     return base
 
 
+class ParentTrees(dict[str, Path]):
+    """party -> that party's tree, plus the tree each FEED edge reads.
+
+    A publisher's clone serves every feed it publishes. Its vendored copies do
+    not: each is one (party, name, version), and with the clone absent a second
+    feed of the same publisher read the first feed's copy and refused
+    (eco-system ticket 137). `feeds` holds the per-edge tree, keyed as the
+    observation is; the party key still names one tree for party-level reads
+    (its party.yaml, an FX converter, a refusal's portable path)."""
+
+    def __init__(self, trees: dict[str, Path] | None = None) -> None:
+        super().__init__(trees or {})
+        self.feeds: dict[tuple[str, str, str], Path] = dict(getattr(trees, "feeds", {}))
+
+
+def edge_tree(edge: dict, parent_trees: dict[str, Path] | None) -> Path | None:
+    """The tree ONE parent edge reads: its own vendored copy where compose()
+    substituted one for an absent publisher, the party's tree otherwise."""
+    if edge.get("kind") in FEED_KINDS:
+        tree = getattr(parent_trees, "feeds", {}).get(_observation_key(edge))
+        if tree is not None:
+            return Path(tree)
+    tree = (parent_trees or {}).get(edge["party"])
+    return None if tree is None else Path(tree)
+
+
 def _feed_publishers(adopter_dir: Path, parent_trees: dict[str, Path]) -> dict[str, list[str]]:
     """feed name -> every party this composition can see that DECLARES it
     publishes that name on its own signed party.yaml. `publishes[]` is the only
@@ -2126,7 +2152,7 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
     adopter_party = party_doc["party"]
     threat_edge = next((p for p in parents if _feed_name(p) == "threat-register"), None)
     threat_pin = threat_edge["version"] if threat_edge else None
-    threat_tree = Path((parent_trees or {}).get(threat_edge["party"], PLATFORM_DIR)) \
+    threat_tree = (edge_tree(threat_edge, parent_trees) or PLATFORM_DIR) \
         if threat_edge else PLATFORM_DIR
     if previous_cages is None:
         previous_cages = _previous_cages(adopter_dir)
@@ -3011,7 +3037,7 @@ def _composition_as_of_source(edges: list[dict], parent_trees: dict[str, Path],
     for edge in edges:
         if edge["kind"] not in FEED_KINDS:
             continue
-        tree = parent_trees.get(edge["party"])
+        tree = edge_tree(edge, parent_trees)
         name = _feed_name(edge)
         if tree is None or not name:
             continue
@@ -4187,7 +4213,9 @@ def _portable_reason(text: str, adopter_dir: Path, parent_trees: dict[str, Path]
     the name the estate knows it by."""
     for prefix, label in sorted(
             ([(str(Path(adopter_dir).resolve()), "")]
-             + [(str(Path(t).resolve()), f"<{party}>/") for party, t in parent_trees.items()]),
+             + [(str(Path(t).resolve()), f"<{party}>/") for party, t in parent_trees.items()]
+             + [(str(Path(t).resolve()), f"<{key[0]}>/")
+                for key, t in getattr(parent_trees, "feeds", {}).items()]),
             key=lambda pair: -len(pair[0])):
         text = text.replace(prefix + os.sep, label).replace(prefix, label.rstrip("/"))
     return text
@@ -4360,13 +4388,13 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             # An insurance quote is not priced through a converter: the premium
             # is a contract cost the insurer already priced and signed.
             prices.append(price_quote(
-                edge, adopter_party, parent_trees.get(edge["party"]),
+                edge, adopter_party, edge_tree(edge, parent_trees),
                 perspective_doc=perspective_doc, reporting_currency=reporting,
                 prev_version=prev_version, parent_trees=parent_trees,
                 prev_prices=prev_prices, observation=observation))
             continue
         entry = price_parent(
-            edge, adopter_party, tolerance, parent_trees.get(edge["party"]), prev_version,
+            edge, adopter_party, tolerance, edge_tree(edge, parent_trees), prev_version,
             perspective_doc=perspective_doc, reporting_currency=reporting,
             band_currency=band_currency, floor=floor, parent_trees=parent_trees,
             composition_as_of=comp_as_of, prev_prices=prev_prices, observation=observation,
@@ -4375,13 +4403,13 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
         # Ticket 84: is this pin behind a newer major its publisher has signed?
         # A quote (above) is a cost, not an exposure, and is not surcharged.
         supersede = price_supersede(
-            edge, entry, parent_trees.get(edge["party"]), comp_as_of,
+            edge, entry, edge_tree(edge, parent_trees), comp_as_of,
             adopter_party=adopter_party, reporting_currency=reporting,
             perspective_doc=perspective_doc, observation=observation)
         if supersede is not None:
             prices.append(supersede)
         if _feed_name(edge) == "threat-register":
-            tree = Path(parent_trees.get(edge["party"], PLATFORM_DIR))
+            tree = edge_tree(edge, parent_trees) or PLATFORM_DIR
             scenario = _threat_scenario(edge["version"], adopter_party, tree)
             lef_by_feed["threat-register"] = {
                 "lef": scenario["warn"]["lef"],
@@ -4460,7 +4488,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
     missing: list[str] = []
-    parent_trees = dict(parent_trees)
+    parent_trees = ParentTrees(parent_trees)
     if any(e.get("party") == adopter_party for e in edges):
         # A SELF-PIN (ticket 38): the adopter pins its own bespoke controls
         # catalogue as a parent. The tree is the tree under composition --
@@ -4474,12 +4502,17 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # of vendoring: an adopter that cannot reach a publisher can still restate
     # its own signed history. The substitution is never silent -- every party
     # read this way is named on an open limits[] entry below.
+    #
+    # Ticket 137: the copy is per FEED EDGE, not per party. Each feed of an absent
+    # publisher reads its own copy (`parent_trees.feeds`), so a second feed never
+    # reads the first feed's payload, SHA or observation. The party key keeps the
+    # first copy for party-level reads, as before.
     from_vendor: list[str] = []
+    live = {party for party, tree in parent_trees.items() if Path(tree).is_dir()}
     for edge in edges:
         if edge["kind"] not in FEED_KINDS or edge["party"] == adopter_party:
             continue
-        tree = parent_trees.get(edge["party"])
-        if tree is not None and Path(tree).is_dir():
+        if edge["party"] in live:
             continue
         try:
             vendored = vendored_tree(adopter_dir, edge["party"], _feed_name(edge), str(edge["version"]))
@@ -4487,12 +4520,13 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             missing.append(f"{edge['party']}/{edge['kind']}@{edge['version']}: {e}")
             continue
         if vendored is not None:
-            parent_trees[edge["party"]] = vendored
+            parent_trees.feeds[_observation_key(edge)] = vendored
             if edge["party"] not in from_vendor:
+                parent_trees[edge["party"]] = vendored
                 from_vendor.append(edge["party"])
     for edge in edges:
         party, kind, version = edge["party"], edge["kind"], edge["version"]
-        tree = parent_trees.get(party)
+        tree = edge_tree(edge, parent_trees)
         if tree is None or not Path(tree).is_dir():
             missing.append(f"{party}/{kind}@{version}: no parent tree provided")
             continue
@@ -4855,8 +4889,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                               "needs_composition": True})
             continue
         try:
+            feed_tree = edge_tree(edge, parent_trees)
+            if feed_tree is None:
+                raise Refused(f"missing instrument: no tree for {edge['party']}/"
+                              f"{_feed_name(edge)}@{edge['version']} to vendor from")
             _, files, record = vendor_feed(
-                edge, parent_trees[edge["party"]],
+                edge, feed_tree,
                 next(p["sha"] for p in parents if p["party"] == edge["party"]
                       and p.get("name") == edge.get("name")),
                 observation=observations.get(_observation_key(edge)))

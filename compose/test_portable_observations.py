@@ -275,3 +275,54 @@ class TwoFeedsOfOnePublisherAtOneMajor(PublisherFixture):
                           "composed/feeds/fixture-publisher/eol/v1"])
         self.save(rendered)
         self.assertEqual(ct.verify(self.adopter, self.trees), (True, []))
+
+
+class TwoFeedsOfOnePublisherAtTwoMajors(PublisherFixture):
+    """Ticket 137: compose() kept one parent tree per party, so with the publisher absent
+    the second feed read the first feed's vendored tree and refused. tuppence pins
+    feeds/threat-register@v1 and feeds/cve@v2, the same shape as cve@v1 and eol@v2 here."""
+
+    def setUp(self):
+        super().setUp()
+        dest = self.publisher / "eol" / "v2"
+        dest.mkdir(parents=True)
+        (dest / "feed.json").write_text(json.dumps({
+            "kind": "feed", "name": "eol", "version": "2.0.0",
+            "published_by": "fixture-publisher", "published_at": "2026-09-01T00:00:00Z",
+            "payload_schema": "eol/payload.schema.json",
+            "payload": {"feed_version": "v2", "currency": "GBP", "components": {
+                "fixture": {"eol_date": "2026-01-01", "source": "fixture",
+                            "base_lef": [1, 3, 6], "base_lm_gbp": [2000, 10000, 40000]}}}}))
+        self.git("add", "eol")
+        self.git("commit", "-qm", "a second feed at another major")
+        doc = ct.yaml.safe_load((self.adopter / "party.yaml").read_text())
+        doc["inherits"].append({"party": "fixture-publisher", "kind": "feed", "name": "eol",
+                                "version": "v2", "since": "2026-09-01"})
+        (self.adopter / "party.yaml").write_text(ct.yaml.safe_dump(doc, sort_keys=False))
+        self.without = {k: v for k, v in self.trees.items() if k != "fixture-publisher"}
+
+    def test_each_feed_reads_its_own_vendored_tree_with_the_publisher_absent(self):
+        doc, signed = self.composed(as_of="2026-09-20")
+        self.assertEqual(sorted((p["name"], p["version"]) for p in doc["parents"]
+                                if p["kind"] == "feed"), [("cve", "v1"), ("eol", "v2")])
+        self.save(signed)
+        _, present = self.composed(as_of="2026-09-20")
+        doc_absent, absent = self.composed(self.without, as_of="2026-09-20")
+        self.assertEqual(present, absent)
+        self.assertEqual(signed, present)
+        self.assertEqual([p for p in doc_absent["parents"] if p["kind"] == "feed"],
+                         [p for p in doc["parents"] if p["kind"] == "feed"])
+        self.assertEqual(ct.verify(self.adopter, self.trees), (True, []))
+        self.assertEqual(ct.verify(self.adopter, self.without), (True, []))
+
+    def test_a_tampered_second_feed_still_refuses_by_its_own_name(self):
+        _, signed = self.composed(as_of="2026-09-20")
+        self.save(signed)
+        feed = (self.adopter / ct.vendored_rel("fixture-publisher", "eol", "v2")
+                / "eol" / "v2" / "feed.json")
+        feed.write_text(feed.read_text().replace("40000", "40001"))
+        doc, _ = ct.compose(self.adopter, self.without, as_of="2026-09-20")
+        self.assertEqual(doc["outcome"], "refused")
+        errors = str(doc["party_artefact_errors"])
+        self.assertIn("fixture-publisher/feed@v2", errors)
+        self.assertIn("does not match the digest", errors)
