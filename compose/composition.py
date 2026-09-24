@@ -241,9 +241,10 @@ ADR-0013/0017/0018 point 3 is ticket 39's): A HOLE IS PRICED, NOT COUNTED.
     whose header names the namespace (no new header field, and it survives a
     close and a reopen because tag history does), or names as ungoverned a
     namespace a workload now in this one has left (eco-system ticket 122:
-    a rename keeps its ramp); `as_of` is the newest
-    `published_at` among the pinned feeds, so this module still reads no
-    clock. A since no signed tag carries, or a residual no feed prices, is a
+    a rename keeps its ramp); `as_of` is the composition's own as-of,
+    the newest signed input (every pinned envelope's `published_at` and,
+    since ticket 84, every edge's own `since`; `_composition_as_of`), so
+    this module still reads no clock. A since no signed tag carries, or a residual no feed prices, is a
     named limit on the entry, never an invented date and never a zero.
   * A BESPOKE CONTROL is one the adopter defines in a small OSCAL catalogue
     it publishes as a `controls` parent of ITSELF (the self-pin resolves to
@@ -1761,7 +1762,8 @@ def price_ungoverned(entries: list[dict], adopter_dir: Path, adopter_party: str,
     """Attach a `price` to every OPEN ungoverned entry (new or recorded).
     Everything on it is a fact the composition read or a limit it names:
     the workload counts, the share, `since` off the first signed tag naming
-    the namespace, `as_of` off the newest pinned feed, the ramp between them,
+    the namespace, `as_of` the composition's own (`_composition_as_of`: the
+    newest pinned envelope's `published_at` or edge `since`), the ramp between them,
     the base (the adopter's whole uncaged residual) and the bounded amount.
     Mutates `entries` in place."""
     institution, workloads = _namespace_facts(adopter_dir)
