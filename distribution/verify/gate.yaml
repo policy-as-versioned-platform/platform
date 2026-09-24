@@ -52,7 +52,7 @@ spec:
     # this check. The controller fetches the tag ref itself and reports what
     # it signed, so the {tag, commit} pair Renovate maintains stays honest
     # without the commit ever entering spec.ref.
-    tag: "policy/v4.0.0"
+    tag: "policy/v5.0.0"
   # spec.verify is deliberately ABSENT. Flux 2.9 speaks OpenPGP and SSH only;
   # pointing it at a gitsign tag fails with `unsupported signature type: x509`
   # and takes the source down. No key re-signs this ref (ADR-0023 D3).
@@ -67,6 +67,6 @@ spec:
   retryInterval: 1m
   timeout: 3m
   sourceRef: { kind: GitRepository, name: platform-policy }
-  path: ./distribution/policies/v4.0.0
+  path: ./distribution/policies/v5.0.0
   prune: true
   wait: true
