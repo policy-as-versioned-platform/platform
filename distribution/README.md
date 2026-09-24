@@ -143,7 +143,7 @@ rather than papered over:
   declared tree's cage-tier dial equals its own `priorityclasses.yaml` `value`
   and `preemptionPolicy` — the check whose absence let the original defect ship.
 
-## 2026-09-24 — 4.0.0 retires, 5.0.0 is the one declared line
+## 2026-09-24: 4.0.0 retires, 5.0.0 is the one declared line
 
 Owner-instructed. Every institution already accepts 5.0.0 (an
 `accepted-majors/platform-5.0.0.yaml` record in each adopter). The owner was
