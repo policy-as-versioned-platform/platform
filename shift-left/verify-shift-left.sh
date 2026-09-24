@@ -10,6 +10,10 @@
 # passed on a technicality (it would "pass" today only because ci-check.py
 # refuses the retired target the fixture used to claim, which is the right
 # answer to the wrong question).
+#
+# 2026-09-24: 4.0.0 retired too (owner-instructed), after 5.0.0 had made the
+# array two majors for a while. One major line again, so the flip beat reads
+# could-not-look again, and the fixtures claim 5.0.0.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 

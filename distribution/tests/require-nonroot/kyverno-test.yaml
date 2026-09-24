@@ -9,29 +9,21 @@
 # nobody. verify-coexistence.sh now asserts that the `policies:` list below is
 # exactly that declared array, so this file cannot drift back onto retired
 # bodies and go on passing about nothing.
+#
+# 2026-09-24: 4.0.0 is retired from distribution/versions.yaml (owner-instructed),
+# so the `policies:` list is 5.0.0 alone. The pod-4-* rows stay as stragglers: a
+# pod still claiming the retired 4.0.0 is judged by no served require-nonroot, so
+# 5.0.0 must SKIP it. With one declared line this matrix proves self-scoping, not
+# coexistence, and verify-coexistence.sh reads could-not-look for the beat.
 apiVersion: cli.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: require-nonroot-coexistence
 policies:
-  - ../../policies/v4.0.0/require-nonroot.yaml
   - ../../policies/v5.0.0/require-nonroot.yaml
 resources:
   - resources.yaml
 results:
-  # --- policy 4.0.0 sees only the 4.0.0 pods ---
-  - policy: require-nonroot-4-0-0
-    kind: Pod
-    resources: [pod-4-compliant]
-    result: pass
-  - policy: require-nonroot-4-0-0
-    kind: Pod
-    resources: [pod-4-violating]
-    result: fail
-  - policy: require-nonroot-4-0-0
-    kind: Pod
-    resources: [pod-5-compliant, pod-5-violating, pod-5-root-attested, pod-5-root-unattested, pod-unversioned]
-    result: skip
   # --- policy 5.0.0 sees only the 5.0.0 pods ---
   # pod-5-root-attested passes on the RE-CARRIED conditional arm while running
   # as root; pod-5-root-unattested is byte-for-byte as hardened and still fails.

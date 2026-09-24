@@ -1,3 +1,7 @@
+# REPINNED 2026-09-24 to 5.0.0, the only declared line once 4.0.0 retired
+# (owner-instructed). With 4.0.0 and 5.0.0 both declared this beat had a
+# neighbour; with 5.0.0 alone it is dormant again.
+#
 # REPINNED 2026-08-29, and DORMANT: see workload-compliant.yaml for why the
 # 2.x/3.x lines are gone from distribution/versions.yaml.
 #
@@ -13,7 +17,7 @@
 # a second major is declared again.
 apiVersion: v1
 kind: Pod
-metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "4.0.0" } }
+metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
 spec:
   securityContext: { runAsNonRoot: true }
   containers: [{ name: c, image: nginx }]
