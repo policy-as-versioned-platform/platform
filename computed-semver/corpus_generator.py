@@ -937,6 +937,16 @@ def selfcheck() -> None:
     else:
         raise AssertionError("an unprobeable predicate expression must fail, not vanish silently")
 
+    # The default old side: the first declared line while there are two, the
+    # highest released tree below the new one when there is one line, and the
+    # new line itself only when nothing was released below it.
+    rel = ["2.0.0", "2.0.1", "3.0.0", "4.0.0", "5.0.0", "selfcheck"]
+    assert default_old_version(["4.0.0", "5.0.0"], "5.0.0", rel) == "4.0.0"
+    assert default_old_version(["5.0.0"], "5.0.0", rel) == "4.0.0", \
+        "one declared line must still compare against the line it retired"
+    assert default_old_version(["2.0.0"], "2.0.0", rel) == "2.0.0"
+    assert default_old_version(["5.0.0"], "5.0.0", ["5.0.0", "6.0.0"]) == "5.0.0"
+
     print(
         "selfcheck ok: predicate expressions extracted from matchConditions and "
         "validations; each gets satisfied/violated/absent; five axes combine "
@@ -956,6 +966,34 @@ def selfcheck() -> None:
     )
 
 
+def _semver_key(v: str) -> tuple[int, int, int] | None:
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def default_old_version(supported: list[str], new_v: str,
+                        released: list[str] | None = None) -> str:
+    """The OLD side of the default spine. While the array declares two or more
+    lines it is the first one, as it always was. When it declares one line
+    (2026-09-24: 4.0.0 retired and left 5.0.0 alone) the first line IS the new
+    one, and a spine of 5.0.0 against itself drops exactly what "a retirement
+    is exactly the case a release must see" keeps: the rules only the older
+    body can tell apart. So the old side falls back to the highest RELEASED
+    tree below `new_v`, the same fallback cut-release-gate.py takes for its
+    own comparison. A released tree is a `distribution/policies/v<semver>`
+    directory; never-cut backport trees are removed, not kept (README.md).
+    With nothing below, the old side is `new_v` itself, as before."""
+    if len(set(supported)) > 1:
+        return supported[0]
+    if released is None:
+        released = [p.name[1:] for p in (DISTRIBUTION / "policies").glob("v*") if p.is_dir()]
+    new_key = _semver_key(new_v)
+    below = sorted((v for v in released
+                    if _semver_key(v) is not None and new_key is not None
+                    and _semver_key(v) < new_key), key=_semver_key)
+    return below[-1] if below else new_v
+
+
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if args and args[0] == "--selfcheck":
@@ -969,8 +1007,8 @@ def main(argv: list[str]) -> int:
     parsed = parser.parse_args(args)
 
     supported = _orphan_guard.versions(DISTRIBUTION / "versions.yaml")
-    old_v = parsed.old_version or supported[0]
     new_v = parsed.new_version or supported[-1]
+    old_v = parsed.old_version or default_old_version(supported, new_v)
 
     old_dir = _materialize_subject(old_v)
     new_dir = _materialize_subject(new_v)
