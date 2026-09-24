@@ -1,20 +1,21 @@
 # REPINNED 2026-09-24 to 5.0.0, the only declared line once 4.0.0 retired
-# (owner-instructed). With 4.0.0 and 5.0.0 both declared this beat had a
-# neighbour; with 5.0.0 alone it is dormant again.
-#
-# REPINNED 2026-08-29, and DORMANT: see workload-compliant.yaml for why the
-# 2.x/3.x lines are gone from distribution/versions.yaml.
+# (owner-instructed).
 #
 # This fixture exists to be CAUGHT: a workload compliant with its own target's
-# rule but not with a NEIGHBOUR's tightened one, which the +/-1 window catches
-# before the dev ever drifts onto that neighbour's pin (ADR-0006: an
-# Audit->Deny promotion is editorial, never a timer).
+# rule but not with a NEIGHBOUR's, which the +/-1 window catches before the dev
+# ever drifts onto that neighbour's pin (ADR-0006: an Audit->Deny promotion is
+# editorial, never a timer).
 #
-# The declared array holds ONE major line today, so there is no neighbour and
-# nothing for the window to catch. verify-shift-left.sh reads the array, sees
-# one major, and grades this beat could-not-look with that reason rather than
-# passing it on a technicality. Re-point this fixture at the older line the day
-# a second major is declared again.
+# Measured with kyverno 1.18.2: under 5.0.0 it passes (7 pass, 0 fail), because
+# 5.0.0's cage hardens the pod before require-nonroot reads it. Under 4.0.0 it
+# fails require-nonroot-4-0-0: no readOnlyRootFilesystem on its container.
+#
+# The served array declares one major line today, so no served target has a
+# neighbour. verify-shift-left.sh says NOTHING-TO-FLIP for the served array and
+# checks this fixture against the planted window fixtures/flip-window.yaml
+# ({4.0.0, 5.0.0}, the real signed bodies). Until 2026-09-24 this fixture
+# claimed 4.0.0 and failed its OWN target, which the beat counted as a caught
+# flip. The beat now refuses that reading.
 apiVersion: v1
 kind: Pod
 metadata: { name: checkout-svc, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }

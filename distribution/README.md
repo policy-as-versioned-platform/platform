@@ -173,8 +173,13 @@ What reads differently with one declared line:
   would leave an empty allow-list.
 - `verify-coexistence.sh` could-not-looks on its beat. `tests/require-nonroot`
   loads 5.0.0 alone. The 4.0.0 pods stay in it as stragglers 5.0.0 must skip.
-- `shift-left/verify-shift-left.sh` could-not-looks on the flip beat, as it did
-  from 2026-08-29 to 2026-09-04. Its fixtures claim 5.0.0.
+- `shift-left/verify-shift-left.sh` has no served neighbour to flip onto. It
+  prints NOTHING-TO-FLIP for the served array and runs the flip beat against
+  the planted window `shift-left/fixtures/flip-window.yaml` ({4.0.0, 5.0.0},
+  the real signed bodies still on disk). The release gate runs this script, so
+  a could-not-look there would fail every release. Its fixtures claim 5.0.0.
+- `distribution/verify/gate.yaml`, the worked source-boundary example, now
+  points at `policy/v5.0.0`.
 - `verify-infra-declaration.sh` proof 4 passes on this repository's own bodies.
 
 
