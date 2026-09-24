@@ -20,7 +20,9 @@ sys.path.insert(0, str(ct.PLATFORM_DIR / "distribution"))
 import cage_body  # noqa: F401,E402
 
 
-class PortableObservations(unittest.TestCase):
+class PublisherFixture(unittest.TestCase):
+    """One fixture publisher tagging cve at three majors, and one adopter pinning cve@v1."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -80,6 +82,8 @@ class PortableObservations(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
 
+
+class PortableObservations(PublisherFixture):
     def test_signed_supersede_rerenders_without_the_publisher(self):
         doc, first = self.composed()
         self.assertEqual([p["amount"] for p in doc["prices"] if p["kind"] == "supersede"], [0.0])
@@ -145,7 +149,7 @@ class PortableObservations(unittest.TestCase):
         self.git("commit", "-qm", "the pinned commit carries only v1")
         _, signed = self.composed()
         self.save(signed)
-        provenance = self.adopter / "composed/feeds/fixture-publisher/v1/PROVENANCE.json"
+        provenance = self.adopter / ct.vendored_rel("fixture-publisher", "cve", "v1") / ct.VENDORED_PROVENANCE
         original = provenance.read_text()
         without = {k: v for k, v in self.trees.items() if k != "fixture-publisher"}
         for key, value in (("readable", True), ("readable", "no"), ("published_at", "2026-09-10")):
@@ -161,7 +165,7 @@ class PortableObservations(unittest.TestCase):
     def test_legacy_provenance_requires_refresh_and_does_not_invent_history(self):
         _, signed = self.composed()
         self.save(signed)
-        provenance = self.adopter / "composed/feeds/fixture-publisher/v1/PROVENANCE.json"
+        provenance = self.adopter / ct.vendored_rel("fixture-publisher", "cve", "v1") / ct.VENDORED_PROVENANCE
         record = json.loads(provenance.read_text())
         del record["publisher_observation"]
         provenance.write_text(json.dumps(record))
@@ -192,7 +196,7 @@ class PortableObservations(unittest.TestCase):
     def test_snapshot_for_another_feed_or_invalid_dates_refuses(self):
         _, signed = self.composed()
         self.save(signed)
-        provenance = self.adopter / "composed/feeds/fixture-publisher/v1/PROVENANCE.json"
+        provenance = self.adopter / ct.vendored_rel("fixture-publisher", "cve", "v1") / ct.VENDORED_PROVENANCE
         original = provenance.read_text()
         for field, value in (("party", "another-publisher"), ("sha", "0" * 40),
                              ("name", "another-feed"), ("version", "v2"), ("schema", 9)):
@@ -211,7 +215,7 @@ class PortableObservations(unittest.TestCase):
     def test_incomplete_signature_and_mismatched_target_tags_refuse_offline(self):
         _, signed = self.composed()
         self.save(signed)
-        provenance = self.adopter / "composed/feeds/fixture-publisher/v1/PROVENANCE.json"
+        provenance = self.adopter / ct.vendored_rel("fixture-publisher", "cve", "v1") / ct.VENDORED_PROVENANCE
         original = provenance.read_text()
         without = {k: v for k, v in self.trees.items() if k != "fixture-publisher"}
         cases = (("pin_signature", "tag", None),
@@ -232,3 +236,42 @@ class PortableObservations(unittest.TestCase):
                 doc, _ = ct.compose(self.adopter, without)
                 self.assertEqual(doc["outcome"], "refused")
                 self.assertIn("no valid recorded publisher observation", str(doc["party_artefact_errors"]))
+
+
+class TwoFeedsOfOnePublisherAtOneMajor(PublisherFixture):
+    """Ticket 136: tuppence pins feeds/cve@v2, and the selfcheck's threat-register bump to v2
+    (the same edit a real Renovate PR makes) refused because both feeds vendored to
+    composed/feeds/feeds/v2. A feed is (party, name, version), so its vendored copy is too."""
+
+    def setUp(self):
+        super().setUp()
+        dest = self.publisher / "eol" / "v1"
+        dest.mkdir(parents=True)
+        (dest / "feed.json").write_text(json.dumps({
+            "kind": "feed", "name": "eol", "version": "1.0.0",
+            "published_by": "fixture-publisher", "published_at": "2026-09-01T00:00:00Z",
+            "payload_schema": "eol/payload.schema.json",
+            "payload": {"feed_version": "v1", "currency": "GBP", "components": {
+                "fixture": {"eol_date": "2026-01-01", "source": "fixture",
+                            "base_lef": [1, 3, 6], "base_lm_gbp": [2000, 10000, 40000]}}}}))
+        self.git("add", "eol")
+        self.git("commit", "-qm", "a second feed at the same major")
+        doc = ct.yaml.safe_load((self.adopter / "party.yaml").read_text())
+        doc["inherits"].append({"party": "fixture-publisher", "kind": "feed", "name": "eol",
+                                "version": "v1", "since": "2026-09-01"})
+        (self.adopter / "party.yaml").write_text(ct.yaml.safe_dump(doc, sort_keys=False))
+
+    def test_each_feed_vendors_to_its_own_directory(self):
+        doc, rendered = self.composed(as_of="2026-09-20")
+        self.assertEqual(doc["refusals"], [])
+        for name in ("cve", "eol"):
+            base = f"composed/feeds/fixture-publisher/{name}/v1"
+            record = json.loads(rendered[f"{base}/PROVENANCE.json"])
+            self.assertEqual((record["name"], record["version"]), (name, "v1"))
+            self.assertIn(f"{base}/{name}/v1/feed.json", rendered)
+        header = ct.yaml.safe_load(rendered["composed/HEADER.yaml"])
+        self.assertEqual(sorted(v["path"] for v in header["vendored-feeds"]),
+                         ["composed/feeds/fixture-publisher/cve/v1",
+                          "composed/feeds/fixture-publisher/eol/v1"])
+        self.save(rendered)
+        self.assertEqual(ct.verify(self.adopter, self.trees), (True, []))
