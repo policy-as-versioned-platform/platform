@@ -3682,6 +3682,13 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
         lef=lef,
         lef_basis=lef_basis,
         **({"lef_from": lef_from} if lef_from else {}),
+        # The weakest evidence grade the twin's price rests on (ADR-0032 point 3; eco-system
+        # ticket 141), READ off the served payload and never derived here: this seam holds no
+        # grade of its own. The payload schema is closed (additionalProperties: false), so the
+        # field arrives with the adopter's next payload major (ticket 144); until a payload states
+        # it the line carries null, a named absence the handbook prints as such, never a grade
+        # this composition invented.
+        rests_on_grade=payload.get("rests_on_grade"),
         old_tier=(prior or {}).get("proposed_tier", tier),
         proposed_tier=tier,
         changed=prior is not None and prior.get("proposed_tier") != tier,
@@ -6053,10 +6060,18 @@ def selfcheck() -> None:
         assert twin["tail"], twin
         assert twin["curve_hash"].startswith("sha256:") and len(twin["curve_hash"]) == 71, twin
         assert twin["proposed_tier"] in _cage_engine().ORDER, twin
+        # ADR-0032 point 3 (eco-system ticket 141): the line carries the weakest grade the
+        # twin's price rests on exactly as the SERVED payload states it, and null where the
+        # payload predates the field. Read back off the same feed, never derived here.
+        served_payload = _forward_intel(driftwood)[0]["payload"]
+        assert "rests_on_grade" in twin, twin
+        assert twin["rests_on_grade"] == served_payload.get("rests_on_grade"), (
+            twin["rests_on_grade"], served_payload.get("rests_on_grade"))
         print("OK prices[]: driftwood's own forward-intel feed prices as one source:twin entry "
-              "-- perspective %s, %s, tail %s, curve %s, policy version %s"
+              "-- perspective %s, %s, tail %s, curve %s, policy version %s, rests on grade %s "
+              "(as the served payload states it, or null where the payload predates the field)"
               % (twin["perspective"], twin["currency"], twin["tail"],
-                 twin["curve_hash"][:12], twin["policy_version"]))
+                 twin["curve_hash"][:12], twin["policy_version"], twin["rests_on_grade"]))
     else:
         print("OK prices[]: driftwood publishes no forward-intel feed yet, so there is no "
               "source:twin entry -- a missing twin feed is silence, never a refusal")

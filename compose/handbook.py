@@ -366,6 +366,22 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                 _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
                         f"the loss frequencies behind {p.get('source')}/{p.get('name')}'s amount "
                         "are not sourced in this artefact")
+            # Every price shows the weakest evidence grade it rests on (ADR-0032 point 3;
+            # eco-system ticket 141). The twin's line carries it READ off the served payload;
+            # a payload that predates the field (payload schema before ticket 144's major)
+            # leaves it null, which is a named absence here, never a grade this page invents.
+            if p.get("kind") == "twin":
+                grade = p.get("rests_on_grade")
+                if isinstance(grade, int) and not isinstance(grade, bool):
+                    a(f"- **{p.get('source')}/{p.get('name')}** — rests on evidence grade {grade}, "
+                      "the weakest grade behind the twin's price (its causal path and its "
+                      "valuation; ADR-0032)")
+                else:
+                    _absent(absences, f"prices[{i}].rests_on_grade", EVIDENCE_PATH,
+                            f"the forward-intel payload behind {p.get('source')}/{p.get('name')} "
+                            "does not state the weakest evidence grade its price rests on; the "
+                            "field arrives with the adopter's next payload major (ADR-0032 "
+                            "point 3, eco-system ticket 144)")
         a("")
         # A hole is a priced absence, never a refusal (ADR-0020, ADR-0026). `holes[]` on a price
         # partitions that price; a singular `hole` is the whole of it. Both are money a reader can
