@@ -3829,29 +3829,56 @@ def _served_sweep(adopter_dir: Path) -> dict:
     return out
 
 
+DRIFT_TEST = re.compile(r"(status --porcelain|diff --exit-code|diff --quiet)[^\n]*-- composed/")
+NONZERO_EXIT = re.compile(r"\bexit\s+[1-9]")
+
+
+def _run_blocks(doc: dict):
+    """Every step's `run` block across a workflow's jobs, with whole comment lines
+    stripped, as (job, step, text). A step is what a job DOES; the raw file text
+    also holds comments, and a comment that names the drift test is not a drift
+    test (review of eco-system ticket 145, round 2)."""
+    jobs = doc.get("jobs") if isinstance(doc.get("jobs"), dict) else {}
+    for jname, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                continue
+            lines = [ln for ln in step["run"].splitlines() if not ln.lstrip().startswith("#")]
+            yield str(jname), str(step.get("name") or "?"), "\n".join(lines)
+
+
 def _served_pull_request_gate(adopter_dir: Path) -> tuple[list[str], list[str], str]:
-    """The pull-request workflows that (a) run shift-left/tier_binding.py and (b)
-    recompose the party artefact and fail on drift against composed/ -- read off
-    the served files, by the two things the step must do rather than by a job's
-    name. The third value names what was looked at."""
+    """The pull-request workflow steps that (a) run shift-left/tier_binding.py and
+    (b) recompose the party artefact and exit non-zero on drift against composed/,
+    read off the steps' own `run` blocks (comment lines stripped) by what each
+    step does rather than by a job's name: a compose invocation, then a drift
+    TEST on `-- composed/` (`status --porcelain`, `diff --exit-code` or `diff
+    --quiet`; a plain `diff` piped to a pager prints, it does not test), then a
+    literal non-zero exit after it, all in one step. Each hit is named `<file> job <job>`. The third value names what was
+    looked at."""
     workflows = sorted(Path(adopter_dir).glob(".github/workflows/*.yml")) + \
         sorted(Path(adopter_dir).glob(".github/workflows/*.yaml"))
     binding: list[str] = []
     recompose: list[str] = []
     looked = 0
     for w in workflows:
-        text = w.read_text(errors="replace")
         try:
-            doc = yaml.safe_load(text) or {}
+            doc = yaml.safe_load(w.read_text(errors="replace")) or {}
         except yaml.YAMLError:
             continue
         if not isinstance(doc, dict) or "pull_request" not in _workflow_triggers(doc):
             continue
         looked += 1
-        if "tier_binding.py" in text:
-            binding.append(w.name)
-        if re.search(r"\bcompose\b", text) and re.search(r"(status --porcelain|diff)[^\n]*-- composed/", text):
-            recompose.append(w.name)
+        for job, _step, text in _run_blocks(doc):
+            where = f"{w.name} job {job}"
+            if "tier_binding.py" in text and where not in binding:
+                binding.append(where)
+            m = DRIFT_TEST.search(text)
+            if (m and re.search(r"\bcompose\b", text[:m.start()]) and NONZERO_EXIT.search(text[m.end():])
+                    and where not in recompose):
+                recompose.append(where)
     return binding, recompose, f"{looked} pull-request workflow(s) read under .github/workflows"
 
 
@@ -3898,29 +3925,32 @@ def _twin_agent_reach(prices: list[dict], adopter_dir: Path) -> tuple[dict, dict
             f"{sweep['why']}; what the writer job's token can merge or tag through REST could not be "
             f"derived")
     # P3: what a merged proposal can serve past the PULL-REQUEST gate. Two served things
-    # close it, both read off the pull-request workflows and both named: a job that runs
-    # platform's tier_binding.py, which refuses a declaration looser than the strictest
-    # priced line; and a job that recomposes the party artefact and fails on any drift
-    # against the committed composed/ tree, which refuses a hand-edited rung on the
-    # agent-cage line itself. A merge over a red gate is the human's act (ADR-0031
-    # decision 1), not the twin agent's. Either job absent is a named could-not-look.
+    # close it, both read off the pull-request workflows' own `run` steps and both named:
+    # a step that runs platform's tier_binding.py, which refuses a declaration looser than
+    # the strictest priced line; and a step that recomposes the party artefact, tests for
+    # drift against the committed composed/ tree and exits non-zero on it, which refuses a
+    # hand-edited rung on the agent-cage line itself. A merge over a red gate is the
+    # human's act (ADR-0031 decision 1), not the twin agent's. Either step absent is a
+    # named could-not-look; a comment that names the drift test is not a step.
     binding, recompose, no_gate = _served_pull_request_gate(adopter_dir)
     if binding and recompose:
         reach["misleading-proposal-merged-by-a-human"] = 0.0
         basis["misleading-proposal-merged-by-a-human"] = (
             f"{', '.join(binding)} runs shift-left/tier_binding.py on every pull request, which refuses "
             f"a declaration looser than the strictest priced line clamped to the floor, and "
-            f"{', '.join(recompose)} recomposes the party artefact on every pull request and fails on "
-            f"any drift against the committed composed/ tree, which refuses a hand-edited rung on this "
-            f"line; so a proposal a human merges through the gate serves none of the gap. A merge over "
-            f"a red gate is the human's act, not the twin agent's (ADR-0031 decision 1)")
+            f"{', '.join(recompose)} recomposes the party artefact on every pull request and exits "
+            f"non-zero on drift against the committed composed/ tree (a compose invocation, a drift "
+            f"test on composed/ and a non-zero exit after it, read off the step's own run block), "
+            f"which refuses a hand-edited rung on this line; so a proposal a human merges through the "
+            f"gate serves none of the gap. A merge over a red gate is the human's act, not the twin "
+            f"agent's (ADR-0031 decision 1)")
     else:
         reach["misleading-proposal-merged-by-a-human"] = None
         missing = [what for what, found in (("runs shift-left/tier_binding.py", binding),
-                                            ("recomposes the party artefact and fails on drift "
-                                             "against composed/", recompose)) if not found]
+                                            ("recomposes the party artefact and exits non-zero on "
+                                             "drift against composed/", recompose)) if not found]
         basis["misleading-proposal-merged-by-a-human"] = (
-            f"{no_gate}; no pull-request workflow under .github/workflows "
+            f"{no_gate}; no pull-request step under .github/workflows "
             f"{' or '.join(missing)}, so what a merged proposal can serve past the pull-request gate "
             f"could not be derived")
     # P4: what a model step's wrong binding or forecast can reach. A price rests on the weakest
@@ -6192,8 +6222,9 @@ def selfcheck() -> None:
         assert SWEEP_WORKFLOW in rb["writer-pushes-a-looser-declaration"] and "5 7 * * *" in rb["writer-pushes-a-looser-declaration"] \
             and "sweep run with contents: write" in rb["writer-pushes-a-looser-declaration"], rb
         assert SWEEP_WORKFLOW in rb["writer-merges-or-tags-through-rest"], rb
-        assert "shift-left.yml runs shift-left/tier_binding.py" in rb["misleading-proposal-merged-by-a-human"] \
-            and "shift-left.yml recomposes the party artefact" in rb["misleading-proposal-merged-by-a-human"], rb
+        assert "shift-left.yml job compose-check runs shift-left/tier_binding.py" in rb["misleading-proposal-merged-by-a-human"] \
+            and "shift-left.yml job compose-check recomposes the party artefact" in rb["misleading-proposal-merged-by-a-human"] \
+            and "read off the step's own run block" in rb["misleading-proposal-merged-by-a-human"], rb
         res4 = agent4["residuals"]
         assert res4["baseline"] == res4["restricted"] == res4["quarantine"] == agent4["amount"], res4
         assert res4["isolated"] == 0.0, res4
@@ -6257,10 +6288,33 @@ def selfcheck() -> None:
         assert agent_ng["residuals"]["baseline"] is None and agent_ng["residuals"]["restricted"] is None \
             and agent_ng["residuals"]["quarantine"] == agent4["amount"] and agent_ng["residuals"]["isolated"] == 0.0, agent_ng["residuals"]
         assert agent_ng["proposed_tier"] == "quarantine", agent_ng["proposed_tier"]
+        # ...and a drift test that survives only as a COMMENT is no gate (review round 2,
+        # finding 4): the served line and its ::error are commented out, the raw file still
+        # holds the substrings, and the step no longer tests for drift, so the proposal path
+        # is could-not-look again. Then the same test with its exit turned to zero.
+        drift_line = next(ln for ln in sl_text.splitlines() if "status --porcelain -- composed/" in ln)
+        error_line = next(ln for ln in sl_text.splitlines() if "::error::the regenerated composed artefact" in ln)
+        commented = sl_text.replace(drift_line, drift_line.replace('drift="$(', '# drift="$(')) \
+                           .replace(error_line, error_line.replace("echo", "# echo"))
+        assert "status --porcelain -- composed/" in commented and commented != sl_text
+        sl_path.write_text(commented)
+        doc_cm, _ = compose(work, {**parent_trees, "feeds": feeds_work})
+        agent_cm = next(p for p in doc_cm["prices"] if p["kind"] == AGENT_CAGE_KIND)
+        assert agent_cm["reach"]["misleading-proposal-merged-by-a-human"] is None, agent_cm["reach"]
+        assert agent_cm["proposed_tier"] == "quarantine", agent_cm["proposed_tier"]
+        sl_path.write_text(sl_text)
+        exit_zero = re.sub(r'(status --porcelain -- composed/[\s\S]*?)\bexit 1\b', r'\1exit 0',
+                           sl_text, count=1)
+        assert exit_zero != sl_text
+        sl_path.write_text(exit_zero)
+        doc_ez, _ = compose(work, {**parent_trees, "feeds": feeds_work})
+        agent_ez = next(p for p in doc_ez["prices"] if p["kind"] == AGENT_CAGE_KIND)
+        assert agent_ez["reach"]["misleading-proposal-merged-by-a-human"] is None, agent_ez["reach"]
         sl_path.write_text(sl_text)
         print("OK agent-cage: the reach is read off the served tree -- a sweep without contents: write "
               "leaves the token paths could-not-look and the pick falls closed to %r; a pull-request "
-              "gate without the recompose job leaves the proposal path could-not-look and the pick "
+              "gate without the recompose step, with its drift test commented out, or with the exit "
+              "after it turned to zero, leaves the proposal path could-not-look and the pick "
               "falls to %r" % (agent_ro["proposed_tier"], agent_ng["proposed_tier"]))
 
     # ======================================================================

@@ -1400,6 +1400,58 @@ def selfcheck() -> None:
         state["closed"] = []
         gh_state.write_text(json.dumps(state))
 
+        # --- 4h. eco-system ticket 145 (ADR-0031 decision 5): an agent-cage line
+        #     whose rung moved is REPORTED and never landed. The rung travels on
+        #     the composed line the compose-check re-derives on every pull request,
+        #     so this proposer opens no pull request, creates no branch and edits
+        #     no file for it; the landed row says the next recompose pull request
+        #     carries it (review round 2, finding 6). ---
+        gh_log.write_text("")
+        state = json.loads(gh_state.read_text())
+        state["pr"] = None
+        gh_state.write_text(json.dumps(state))
+        main_ns_before = _git("show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout
+        current_tier = declared_tier(main_ns_before)
+        refs_before = _git("for-each-ref", "--format=%(refname)", cwd=work, capture=True).stdout
+        agent_prices = [{
+            "source": "twin", "kind": "twin", "perspective": "driftwood", "currency": "GBP",
+            "amount": 1_328_352.28, "policy_version": "1.2.0", "curve_hash": "sha256:a-curve",
+            "old_tier": current_tier, "proposed_tier": current_tier, "changed": False,
+            "residuals": {"baseline": 1_328_352.28, "restricted": 500_000.0,
+                          "quarantine": 100_000.0, "isolated": 37_952.92},
+        }, {
+            "source": "platform", "kind": "agent-cage", "subject": "twin-agent", "name": "twin-agent",
+            "perspective": "driftwood", "currency": "GBP", "amount": 4.21, "old_amount": 0.42,
+            "old_tier": "baseline", "proposed_tier": "quarantine", "changed": True,
+            "proposed_as": "recompose", "residual_basis": "platform-twin-agent-table@1.0.0",
+            "policy_version": "1.2.0",
+            "residuals": {"baseline": 4.21, "restricted": 4.21, "quarantine": 4.21, "isolated": 0.0},
+        }]
+        evidence.write_text(json.dumps({"prices": agent_prices}))
+        landed_a = _run_with_env(run, env, adopter_dir=work, evidence_path=evidence,
+                                 org="driftwood", rejections_path=None, base="main", dry_run=False)
+        assert len(landed_a) == 1 and landed_a[0]["proposal_kind"] == "recompose", landed_a
+        assert landed_a[0]["landed"] == "by the next recompose pull request", landed_a
+        assert landed_a[0]["change"]["from"] == "baseline" and landed_a[0]["change"]["to"] == "quarantine", landed_a
+        assert "composed/evidence.json" in landed_a[0]["change"]["declaration"], landed_a
+        assert landed_a[0]["branch"] == "wargamer/recage-agent-cage-driftwood-twin-agent", landed_a
+        assert "human merges" in landed_a[0]["why"], landed_a
+        calls_a = _read_log(gh_log)
+        assert not any(c[:2] in (["pr", "create"], ["pr", "edit"]) for c in calls_a), \
+            ("the rung travels on the composed line: no pull request of its own", calls_a)
+        refs_after = _git("for-each-ref", "--format=%(refname)", cwd=work, capture=True).stdout
+        assert refs_after == refs_before, ("no branch for a rung the recompose carries", refs_before, refs_after)
+        assert "recage" not in _git("ls-remote", "origin", cwd=work, capture=True).stdout
+        assert _git("status", "--porcelain", cwd=work, capture=True).stdout == "", "nothing edited"
+        assert _git("show", "main:gitops/apps/namespace.yaml", cwd=work, capture=True).stdout == main_ns_before, \
+            "the Namespace declaration is not the twin agent's rung"
+        # ...and with the rung unchanged there is no row to report at all
+        gh_log.write_text("")
+        agent_prices[1].update(old_tier="quarantine", changed=False)
+        evidence.write_text(json.dumps({"prices": agent_prices}))
+        assert _run_with_env(run, env, adopter_dir=work, evidence_path=evidence, org="driftwood",
+                             rejections_path=None, base="main", dry_run=False) == [], "no drift, no row"
+
         # --- 5. structural safety: this module has no way to merge/dispose,
         #     and no way to open an issue either ---
         me = sys.modules[__name__]

@@ -372,13 +372,15 @@ itself needs.
   job running with `contents: write`: the whole gap; a sweep not served, not scheduled or
   declaring no `contents: write` is a named could-not-look, because the token's scope then falls
   to a repository default this composition cannot read), the proposal path off the pull-request
-  workflows (one must run `tier_binding.py` AND one must recompose the party artefact and fail on
-  drift against `composed/`; either absent is a could-not-look), the model path off the composed
-  prices (no price rests on a grade above 3). `cage.twin_agent_residuals` takes the residual at a
+  workflows' own `run` steps, comment lines stripped (one step must run `tier_binding.py` AND one
+  must recompose the party artefact, test for drift against `composed/` and exit non-zero after
+  the test; either absent is a could-not-look, and a drift test that survives only as a comment,
+  or whose exit is zero, is no gate), the model path off the composed prices (no price rests on a
+  grade above 3). `cage.twin_agent_residuals` takes the residual at a
   rung as what the loosest open path can land, and a rung with an open could-not-look path has
-  no residual and is not a candidate, so the pick falls closed (the selfcheck measures both: a
-  sweep without `contents: write` picks `isolated`, a gate without the recompose job picks
-  `quarantine`). Measured consequence on the served trees: `restricted` and `quarantine` carry
+  no residual and is not a candidate, so the pick falls closed (the selfcheck measures each: a
+  sweep without `contents: write` picks `isolated`; a gate without the recompose step, with its
+  drift test commented out, or with the exit after it turned to zero, picks `quarantine`). Measured consequence on the served trees: `restricted` and `quarantine` carry
   `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung and never enters the
   selection.
 - **An adopter that cannot price the line gets it as a named could-not-look** (`amount: null`,
