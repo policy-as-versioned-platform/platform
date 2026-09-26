@@ -59,6 +59,9 @@ HANDBOOK_PATH = "composed/HANDBOOK.md"
 # (ADR-0020's ticket 69 note), a switching entry is a measured counterfactual (ticket 45), and a
 # supersede entry is the surcharge on a line that already proposed its tier (ticket 84).
 # Only these render `—` in the tier column; any other kind with no proposed_tier is named absent.
+# `agent-cage` (eco-system ticket 145, ADR-0031) is deliberately NOT here: it proposes a tier, the
+# twin agent's rung for the subject it names, and an agent-cage line with no rung is a priced
+# absence the page names, never a dash.
 NO_TIER_KINDS = ("premium", "switching", "supersede")
 # The one recorded limit this page does not state. composition.py writes it on every run:
 # `closed` when every priced feed was read from its publisher's own pinned tree, `open` naming
