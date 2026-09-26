@@ -366,6 +366,22 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                 _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
                         f"the loss frequencies behind {p.get('source')}/{p.get('name')}'s amount "
                         "are not sourced in this artefact")
+            # Every price shows the weakest evidence grade it rests on (ADR-0032 point 3;
+            # eco-system ticket 141). The twin's line carries it READ off the served payload;
+            # a payload that predates the field (payload schema before ticket 144's major)
+            # leaves it null, which is a named absence here, never a grade this page invents.
+            if p.get("kind") == "twin":
+                grade = p.get("rests_on_grade")
+                if isinstance(grade, int) and not isinstance(grade, bool):
+                    a(f"- **{p.get('source')}/{p.get('name')}** — rests on evidence grade {grade}, "
+                      "the weakest grade behind the twin's price (its propagation path, its "
+                      "valuation and the path that admits it to the cash flow; ADR-0032)")
+                else:
+                    _absent(absences, f"prices[{i}].rests_on_grade", EVIDENCE_PATH,
+                            f"the forward-intel payload behind {p.get('source')}/{p.get('name')} "
+                            "does not state the weakest evidence grade its price rests on; the "
+                            "field arrives with the adopter's next payload major (ADR-0032 "
+                            "point 3, eco-system ticket 144)")
         a("")
         # A hole is a priced absence, never a refusal (ADR-0020, ADR-0026). `holes[]` on a price
         # partitions that price; a singular `hole` is the whole of it. Both are money a reader can
@@ -829,6 +845,45 @@ def selfcheck() -> int:
     check("...a feed entry with no proposed_tier is named absent, not dashed",
           "`prices[0].proposed_tier` (in `composed/evidence.json`)" in tierless
           and "| GBP 1,234.50 | no | absent |" in tierless)
+
+    # 5d. the twin's line states the weakest evidence grade its price rests on (ADR-0032 point 3,
+    #     eco-system ticket 141), READ off the served forward-intel payload. An integer prints the
+    #     grade sentence; null, a missing field (a payload before ticket 144's major) or a value
+    #     that is not an integer is a named absence, never a grade this page invents (ADR-0020).
+    #     Planted here because the fixture carries no twin line, so no check above reaches the
+    #     branch: the entry is `prices[4]`, the first index past the fixture's four.
+    twin_line = {"source": "twin", "kind": "twin", "perspective": "fixture", "currency": "GBP",
+                 "amount": 2500.0, "name": "forward-intel", "changed": False,
+                 "proposed_tier": "isolated", "lef_basis": "fixture twin basis",
+                 "rests_on_grade": 3}
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"].append(twin_line)
+    stated = render(f2, e2)
+    check("a twin line whose payload states rests_on_grade prints the grade sentence and names "
+          "no absence for it",
+          "**twin/forward-intel** — rests on evidence grade 3" in stated
+          and "prices[4].rests_on_grade" not in stated)
+    for what, value in (("null", None), ("a boolean", True), ("a string", "3"), ("a float", 3.0)):
+        f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+        e2["prices"].append(dict(twin_line, rests_on_grade=value))
+        unstated = render(f2, e2)
+        check(f"a twin line whose rests_on_grade is {what} names `prices[4].rests_on_grade` "
+              "absent and prints no grade sentence",
+              f"`prices[4].rests_on_grade` (in `{EVIDENCE_PATH}`)" in unstated
+              and "rests on evidence grade" not in unstated)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"].append({k: v for k, v in twin_line.items() if k != "rests_on_grade"})
+    unstated = render(f2, e2)
+    check("a twin line with no rests_on_grade field at all names it absent and prints no grade "
+          "sentence",
+          f"`prices[4].rests_on_grade` (in `{EVIDENCE_PATH}`)" in unstated
+          and "rests on evidence grade" not in unstated)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"][0]["rests_on_grade"] = 3
+    check("the grade sentence is the twin's alone: a feed line carrying the field prints none "
+          "and names no absence, because only the twin's price rests on a graded chain",
+          "rests on evidence grade" not in render(f2, e2)
+          and "rests_on_grade" not in render(f2, e2))
 
     # 6. every price carries a perspective and a currency, on the page and in the rule
     check("the price's perspective and currency are both on the page",

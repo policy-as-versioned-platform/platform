@@ -126,6 +126,13 @@ def _floor_enum(schema: dict) -> tuple[str, ...]:
     return tuple(schema["properties"]["overlay"]["properties"]["floor"]["enum"])
 
 
+def _pricing_threshold_enum(schema: dict) -> tuple[int, ...]:
+    """The evidence grades a party may declare it prices on (eco-system
+    ticket 141, ADR-0032 point 2): 2 and 3. Read from schema.json, one
+    source of truth, and the hub's `twin/evidence.py` closes the same set."""
+    return tuple(schema["properties"]["appetite"]["properties"]["pricing_threshold"]["enum"])
+
+
 def _money_errors(where: str, value: object, currencies: bool = True) -> list[str]:
     """A money object is {amount, currency} and nothing else. Every price in
     this estate carries its currency (spec.md, "The £ seam")."""
@@ -204,7 +211,7 @@ def validate_schema(doc: object, schema: dict | None = None) -> list[str]:
 
     errors += _publishes_errors(doc, kinds_enum)
     errors += _size_errors(doc)
-    errors += _appetite_errors(doc)
+    errors += _appetite_errors(doc, schema)
     if "reporting_currency" in doc and not _is_currency(doc["reporting_currency"]):
         errors.append(
             f"'reporting_currency' must be a three-letter ISO 4217 code, "
@@ -301,15 +308,23 @@ def _publishes_errors(doc: dict, kinds_enum: tuple[str, ...]) -> list[str]:
 
 def _size_errors(doc: dict) -> list[str]:
     """The party's own signed size, which the pricing seam scales against
-    (ticket 25, ADR-0020). All five fields or none: a half-declared size
-    would silently price a party against a default it never signed."""
+    (ticket 25, ADR-0020). The four required fields or none: a half-declared
+    size would silently price a party against a default it never signed.
+
+    `data_subjects` is optional since eco-system ticket 141 (decided
+    2026-09-25, ticket 144's Comments): neither comparable filing a
+    demonstration party copies its size from discloses it, and nothing in
+    the estate reads it today. Absent means undisclosed, never zero -- a
+    converter that needs it refuses by name (ADR-0020) rather than pricing
+    against a figure nobody signed. Present, it is checked like the rest."""
     if "size" not in doc:
         return []
     size = doc["size"]
     if not isinstance(size, dict):
         return ["'size' must be a mapping"]
-    fields = {"turnover", "customers", "data_subjects", "headcount", "as_of"}
-    errors = [f"size missing {f!r}" for f in sorted(fields - size.keys())]
+    required = {"turnover", "customers", "headcount", "as_of"}
+    fields = required | {"data_subjects"}
+    errors = [f"size missing {f!r}" for f in sorted(required - size.keys())]
     errors += [f"size has unknown field {f!r}" for f in sorted(size.keys() - fields)]
     if "turnover" in size:
         errors += _money_errors("size.turnover", size["turnover"])
@@ -323,9 +338,19 @@ def _size_errors(doc: dict) -> list[str]:
     return errors
 
 
-def _appetite_errors(doc: dict) -> list[str]:
-    """Appetite as a signed fact on the party's own artefact, replacing the
-    platform-held fixture (ticket 25). The tier selection reads this."""
+def _appetite_errors(doc: dict, schema: dict) -> list[str]:
+    """Appetite as signed facts on the party's own artefact, replacing the
+    platform-held fixture (ticket 25). The tier selection reads `tolerance`.
+
+    `pricing_threshold` (eco-system ticket 141, ADR-0032 point 2) is the
+    weakest evidence grade this party prices on. Optional: absent means the
+    estate default, grade 2. Only the values schema.json enumerates (2 and 3)
+    are admitted, and the enum is read from schema.json rather than
+    re-declared here, for the reason the roles and kinds are. A looser value
+    is refused with its reason named, never clamped: grade 4 is an expert's
+    say-so and grade 5 a model's, and neither may price for anybody. `bool`
+    is excluded explicitly, because `True == 1` in Python and a threshold of
+    `true` would otherwise read as a grade."""
     if "appetite" not in doc:
         return []
     appetite = doc["appetite"]
@@ -333,7 +358,23 @@ def _appetite_errors(doc: dict) -> list[str]:
         return ["'appetite' must be a mapping"]
     errors = ["appetite missing 'tolerance'"] if "tolerance" not in appetite else \
         _money_errors("appetite.tolerance", appetite["tolerance"])
-    errors += [f"appetite has unknown field {f!r}" for f in sorted(appetite.keys() - {"tolerance"})]
+    if "pricing_threshold" in appetite:
+        admitted = _pricing_threshold_enum(schema)
+        value = appetite["pricing_threshold"]
+        if isinstance(value, bool) or not isinstance(value, int):
+            errors.append(
+                f"appetite.pricing_threshold must be an integer grade, one of "
+                f"{admitted}, got {value!r}")
+        elif value not in admitted:
+            why = ("grade 1 is a dated natural experiment and needs no declaration: the estate "
+                   "default already prices it" if value == 1 else
+                   "grade 4 is an expert's say-so and grade 5 a model's, and neither may price "
+                   "for anybody (ADR-0032 point 2)" if value in (4, 5) else
+                   "it is not a grade on the evidence ladder")
+            errors.append(
+                f"appetite.pricing_threshold {value!r} is not one of {admitted}: {why}")
+    errors += [f"appetite has unknown field {f!r}"
+               for f in sorted(appetite.keys() - {"tolerance", "pricing_threshold"})]
     return errors
 
 
@@ -557,8 +598,13 @@ def selfcheck() -> None:
     assert roles_enum == ("publisher", "risk-bearer", "adopter", "platform", "insurer"), roles_enum
     assert _floor_enum(schema) == ("baseline", "restricted", "quarantine", "isolated"), \
         _floor_enum(schema)
-    print("OK schema.json: the three parent kinds, five roles and four floor tiers are exactly "
-          "what this module expects")
+    assert _pricing_threshold_enum(schema) == (2, 3), _pricing_threshold_enum(schema)
+    assert schema["properties"]["size"]["required"] == ["turnover", "customers", "headcount", "as_of"], \
+        schema["properties"]["size"]["required"]
+    assert "data_subjects" in schema["properties"]["size"]["properties"]
+    print("OK schema.json: the three parent kinds, five roles, four floor tiers and two declarable "
+          "pricing thresholds are exactly what this module expects; size requires four fields and "
+          "admits data_subjects as optional")
 
     valid_doc = {
         "party": "driftwood",
@@ -658,10 +704,61 @@ def selfcheck() -> None:
     print("OK validate_schema: a turnover with no currency is refused -- every amount carries one")
 
     half_size = json.loads(json.dumps(sized))
-    del half_size["size"]["data_subjects"]
+    del half_size["size"]["headcount"]
     errs = validate_schema(half_size, schema)
-    assert any("data_subjects" in e for e in errs), errs
+    assert any("headcount" in e for e in errs), errs
     print("OK validate_schema: a half-declared size is refused, not defaulted")
+
+    # Eco-system ticket 141 (decided 2026-09-25, ticket 144's Comments): data_subjects is the
+    # one optional size field. Neither comparable filing discloses it and nothing reads it.
+    undisclosed = json.loads(json.dumps(sized))
+    del undisclosed["size"]["data_subjects"]
+    assert validate_schema(undisclosed, schema) == [], validate_schema(undisclosed, schema)
+    for other in ("turnover", "customers", "as_of"):
+        missing_other = json.loads(json.dumps(undisclosed))
+        del missing_other["size"][other]
+        errs = validate_schema(missing_other, schema)
+        assert any(other in e for e in errs), (other, errs)
+    bad_subjects = json.loads(json.dumps(sized))
+    bad_subjects["size"]["data_subjects"] = -1
+    errs = validate_schema(bad_subjects, schema)
+    assert any("data_subjects" in e for e in errs), errs
+    print("OK validate_schema: a size with no data_subjects validates; every other size field is "
+          "still required, and a data_subjects that is present is still checked")
+
+    # Eco-system ticket 141, ADR-0032 point 2: the pricing threshold a party may declare.
+    for admitted in (2, 3):
+        declares = json.loads(json.dumps(sized))
+        declares["appetite"]["pricing_threshold"] = admitted
+        assert validate_schema(declares, schema) == [], validate_schema(declares, schema)
+    print("OK validate_schema: appetite.pricing_threshold 2 and 3 validate; absent is the default")
+
+    for refused in (1, 4, 5, 0, -2, 6):
+        declares = json.loads(json.dumps(sized))
+        declares["appetite"]["pricing_threshold"] = refused
+        errs = validate_schema(declares, schema)
+        assert any("pricing_threshold" in e and "(2, 3)" in e for e in errs), (refused, errs)
+    errs = validate_schema({**json.loads(json.dumps(sized)),
+                            "appetite": {"tolerance": {"amount": 1, "currency": "GBP"},
+                                         "pricing_threshold": 4}}, schema)
+    assert any("expert's say-so" in e for e in errs), errs
+    print("OK validate_schema: appetite.pricing_threshold 1, 4, 5 and every other grade are refused "
+          "by name -- 4 and 5 never price for anybody, and 1 needs no declaration")
+
+    for not_a_grade in ("3", 3.0, True, False, None, [3], {"grade": 3}):
+        declares = json.loads(json.dumps(sized))
+        declares["appetite"]["pricing_threshold"] = not_a_grade
+        errs = validate_schema(declares, schema)
+        assert any("pricing_threshold must be an integer grade" in e for e in errs), (not_a_grade, errs)
+    print("OK validate_schema: a pricing_threshold that is a string, a float, a bool, null or a "
+          "container is refused -- `true` is not grade 1")
+
+    stray_appetite = json.loads(json.dumps(sized))
+    stray_appetite["appetite"]["evidence_floor"] = 3
+    errs = validate_schema(stray_appetite, schema)
+    assert any("unknown field 'evidence_floor'" in e for e in errs), errs
+    print("OK validate_schema: appetite stays closed -- the declaration is pricing_threshold and "
+          "no other spelling")
 
     infra_floor = json.loads(json.dumps(sized))
     infra_floor["overlay"]["floor"] = "infra"
@@ -777,10 +874,13 @@ def selfcheck() -> None:
 
     print(
         "\nselfcheck ok: schema.json is the single source of truth for the allowed roles, parent "
-        "kinds and floor tiers; validate_schema catches every structural defect ticket 11 names "
-        "and every one ticket 21 adds (a feed parent with no name, a bad 'since', an adopter with "
-        "no baseline, a publishes[] kind outside the three, a half-declared size, an amount with "
-        "no currency, a floor at 'infra'); check_tags matches a real Flux pin and refuses a real "
+        "kinds, floor tiers and declarable pricing thresholds; validate_schema catches every "
+        "structural defect ticket 11 names, every one ticket 21 adds (a feed parent with no name, "
+        "a bad 'since', an adopter with no baseline, a publishes[] kind outside the three, a "
+        "half-declared size, an amount with no currency, a floor at 'infra') and every one "
+        "eco-system ticket 141 adds (a pricing_threshold outside 2 and 3, or not an integer "
+        "grade, or a stray appetite field), while admitting a size with no data_subjects; "
+        "check_tags matches a real Flux pin and refuses a real "
         "disagreement, naming each feed parent as unchecked rather than silencing it; "
         "publish_capability reads two facts off real workflow files and refuses a publishes[] "
         "with no release path; check_baseline_mirror matches, refuses a disagreement, and refuses "

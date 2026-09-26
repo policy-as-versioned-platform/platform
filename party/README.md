@@ -32,11 +32,12 @@ publishes:                     # the discovery record; there is no central catal
 size:                          # signed, so the price is this party's and no fixture's
   turnover: { amount: 120000000, currency: GBP }
   customers: 400000
-  data_subjects: 400000
+  data_subjects: 400000        # optional: absent means undisclosed, never zero
   headcount: 900
   as_of: "2026-08-28"
 appetite:
   tolerance: { amount: 40000, currency: GBP }
+  pricing_threshold: 3         # optional, 2 or 3; absent means the estate default, 2
 reporting_currency: GBP
 overlay:
   add: []
@@ -45,9 +46,20 @@ overlay:
 ```
 
 `schema.json` is the single source of truth for the allowed roles (`publisher`, `risk-bearer`,
-`adopter`, `platform`, `insurer`), the three parent kinds (`controls`, `implementations`, `feed`)
-and the four floor tiers — `party_artefact.py` reads its enums from that file rather than
-re-declaring them.
+`adopter`, `platform`, `insurer`), the three parent kinds (`controls`, `implementations`, `feed`),
+the four floor tiers and the two declarable pricing thresholds — `party_artefact.py` reads its
+enums from that file rather than re-declaring them.
+
+`appetite.pricing_threshold` (eco-system ticket 141, ADR-0032) is the weakest evidence grade on
+the twin's ladder this party prices on. Absent means the estate default, grade 2 (repeated
+historical co-movement); `3` declares that the party prices on published work not observed here,
+such as its comparable firms' regulatory records. Only 2 and 3 are admitted: grade 4 is an
+expert's say-so and grade 5 a model's, and neither may price for anybody, so a looser value is
+refused, never clamped. It sits in `appetite` because it is the risk-bearer's signed choice about
+its own money, like its tolerance. One declaration governs both of the twin's thresholds for this
+party (`twin/evidence-ladder.yaml`'s `pricing_threshold` and `path_admission_threshold`), and
+every price the twin emits shows the weakest grade it rests on. The adopter's emitter reads it
+with the hub's `twin.evidence.declared_threshold(party)` and hands it to `Overlay.load(...)`.
 
 `pricing` and `threat` were separate parent kinds until ticket 21. Both are now `feed` with a free
 `name`, so a new publisher ships a new feed with no platform change (ADR-0019 point 3).
@@ -57,9 +69,11 @@ re-declaring them.
 - **`schema.json`** — the structural shape above, as a JSON Schema draft-07 document.
 - **`party_artefact.py`** — four checks, run in order:
   1. **schema** — the structural shape, against `schema.json`. A `feed` parent must name the feed;
-     a `since` must be a real calendar date; `size` is all five fields or none, so a party is
-     never priced against a default it did not sign; every amount carries its currency; a floor
-     may not be `infra`.
+     a `since` must be a real calendar date; `size` is its four required fields or none, so a
+     party is never priced against a default it did not sign (`data_subjects` is optional since
+     eco-system ticket 141: absent means undisclosed, and a converter that needs it refuses by
+     name); every amount carries its currency; a floor may not be `infra`;
+     `appetite.pricing_threshold` is 2 or 3 or absent.
   2. **tags** — a declared parent version must equal the tag the adopter's own Flux/Renovate files
      pin, for the two parent kinds this estate wires through Flux: `nist`/`controls`
      (`gitops/flux-system/gotk-sync-nist.yaml`) and `platform`/`implementations`
