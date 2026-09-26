@@ -72,6 +72,10 @@ the cage-tier and cage-netpol fixtures only; the grader refuses it by name, so a
 declaration cannot pass under the wider meaning. 5.0.0 was graded under the new scope before the
 new scope was written on its element.
 
+`compose/composition.py` and `shift-left/ci-check.py` read every `tested_engines` value through
+this module's `declared_engines` (ticket 148), so the rule that grades a support claim is the
+rule that prices an unsupported pairing and decides which lines the shift-left check runs.
+
 `engine_compatibility.check(repo, engines, ref)` is the public seam, and
 `verify-cage-engine.sh` runs it. A **cell** is one subject (a line, or the machinery) on one
 engine, and one run grades every cell:

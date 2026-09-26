@@ -338,6 +338,53 @@ itself needs.
   exactly the versions it composed, or a claim on a composed but uninstalled version reaches no
   cage. Each adopter's `scripts/render_composed.py reach` grades that offline.
 
+## What eco-system ticket 148 changes: an unsupported engine pairing is priced
+
+Hub ADR-0033 points 2 and 3. A composed line supports exactly the engines its own element of the
+implementations parent's `distribution/versions.yaml` lists in `tested_engines`. The machinery
+supports the engines in the same tree's `distribution/machinery.yaml`. The adopter declares the
+engine it runs in its own `gitops/engine/kyverno.yaml` (ticket 147).
+
+- **Composition reads three facts.** The declared engine, through `engine/declaration.py`, the
+  reader `shift-left/ci-check.py` uses too. Each composed line's `tested_engines` and the
+  machinery's, from the implementations parent tree, which is the platform tag the adopter's
+  `gitops/platform/platform-pin.yaml` names. Each value is read by the engine grader's own rule,
+  `computed-semver/engine_compatibility.py`'s `declared_engines`. A value that rule does not read
+  as support (absent, a retired scope such as `published-cage-fixtures-v1`, an unknown scope, a
+  malformed list) supports no engine, and the reason is kept.
+- **An unsupported pairing makes every claimed control a hole.** A claim belongs to a line when
+  the policy it names is one of the line's bodies, and to the machinery when it names a machinery
+  member. On an engine the line or the machinery does not support, those claims do not count.
+  Each control they name is then a hole, with the regulator's weight times the triple, a
+  bespoke scenario's residual, or a named absence, exactly as ADR-0026 prices any hole. The
+  regime entry's open share grows by the same lines. A control a second, supported line also
+  claims is still a hole: a workload chooses which composed line it claims, so a control whose
+  body does not load for one line's workloads is not implemented for them.
+- **The delta.** Each such line, and the machinery, prints an `unsupported-engine` delta naming
+  the subject, the engine and the tested engines. Its `amount` is the sum of the hole prices of
+  the controls it names, read off the `holes[]` entries they became. A claimed control outside the
+  selected set is listed with `selected: false` and moves no pound. No control priced is `amount:
+  null`, a named absence. The delta prints on every composition while the pairing stands.
+- **No declaration** is priced the same way, under `undeclared-engine`. A declaration that is
+  present and does not read is a missing instrument, and the composition refuses with
+  `missing-instrument`, subject `gitops/engine/kyverno.yaml`.
+- **The header** records `declared-engine` (`engine`, `version`, `file`, or `null`). The
+  evidence document's `engine` section lists every pairing: subject, tree, file read, tested
+  engines, status (`supported`, `unsupported`, `undeclared`), reason, bodies and claimed controls.
+  A hole a pairing opened carries `uncounted_claims`, and its `new-hole` delta names the subject.
+
+Measured 2026-09-26 on the real estate. The regulator's weights (ico penalty-schema v3) name
+pl-2, ra-3, ca-2 and ir-8. The two controls the estate claims, ac-6 (5.0.0's `require-nonroot`)
+and cm-6 (the machinery's `governed-namespace-requires-claim`), carry no weight. So an unsupported
+pairing today opens those two holes with `amount: null`, and moves no pound. Recomposing the three
+adopters against this tree, each declaring 1.18.2, adds the header field and the evidence section
+and nothing else. Composed against a platform tree from before ticket 146 (v4.0.0), the same
+adopters get both deltas: 5.0.0 there carries the retired scope and the tree has no
+`machinery.yaml`. So an adopter moves its tools pin and its implementations pin together.
+
+Adopter-owned members (`overlay.add`) belong to no line and carry no support claim, so their
+claims are not paired.
+
 ## Run
 
 ```sh
