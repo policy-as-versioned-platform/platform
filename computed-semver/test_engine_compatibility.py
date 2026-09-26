@@ -314,6 +314,14 @@ class Matrix(unittest.TestCase):
         self.assertEqual(out.returncode, 1)
         self.assertTrue(out.stdout.splitlines()[-1].startswith('FAIL: engine cells -- failed'), out.stdout[-400:])
 
+    def test_an_engine_directory_with_no_binary_is_not_the_cli_on_path(self):
+        empty = self.root / 'no-engines'
+        empty.mkdir()
+        out = subprocess.run([sys.executable, str(HERE / 'engine_compatibility.py'), '--repo', str(self.repo),
+                              '--engine-dir', str(empty)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 3, out.stdout[-400:])
+        self.assertIn('no engine was handed in', out.stdout.splitlines()[-1])
+
     # -- the machinery -----------------------------------------------------------------------
     def test_the_machinery_without_a_declaration_supports_nothing_and_reads_could_not_look(self):
         self.git('rm', '-q', 'distribution/machinery.yaml')

@@ -603,7 +603,11 @@ def main(argv: list[str] | None = None) -> int:
     binaries = list(args.engine)
     for d in args.engine_dir:
         binaries += [str(p) for p in sorted(d.glob('*/kyverno'))]
-    result = check(args.repo, binaries or ['kyverno'], args.ref)
+    # The CLI on PATH only when the caller named no engine at all. A named directory that holds
+    # no binary is an instrument that did not arrive, not a reason to grade a different one.
+    if not args.engine and not args.engine_dir:
+        binaries = ['kyverno']
+    result = check(args.repo, binaries, args.ref)
     print(json.dumps(result, indent=2))
     print(matrix_table(result))
     code = {'passed': 0, 'failed': 1, 'could-not-look': 3}[result['outcome']]
