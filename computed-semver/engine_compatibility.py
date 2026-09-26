@@ -23,9 +23,13 @@ default): the array, the machinery declaration, the machinery itself and the lin
   * A BODY is every Kyverno policy document in the line's `distribution/policies/v<version>/`
     tree. Each file is graded against its own fixture: `computed-semver/engine-fixtures/
     v<version>/<file>/` at the graded commit, with its `policies:` pointed at the served bytes
-    and nothing else changed; or, for cage-tier and cage-netpol only, the line tree's own
-    `graded/tests/<family>`, adapted as below (the format the tagged 5.0.0 fixtures carry). A
-    body with neither FAILS: support means its fixtures pass, and it has none.
+    and nothing else changed. For cage-tier and cage-netpol the line tree's own
+    `graded/tests/<family>` (at the tag, once cut), adapted as below, always runs when the tree
+    carries it, and an engine-fixtures folder for the same body runs beside it, never instead of
+    it. A body with neither FAILS: support means its fixtures pass, and it has none.
+  * Every `kyverno test` run is read row by row (`-o json`). A pass or fail row that reads
+    `Excluded` fails the body: Kyverno counts a resource it did not apply the policy to as a pass
+    whatever the row asserts (see `_excluded`).
   * The MACHINERY is what `compose/composition.py`'s `machinery_members()` renders from the
     graded commit, the same call composition makes. Each policy member is graded against
     `computed-semver/engine-fixtures/machinery/<member>/`.
@@ -68,9 +72,12 @@ LIMITS = [
     'Exact CLI versions only; no patch range, Kubernetes version or adopter runtime is inferred.',
     'A cell grades the bodies the subject serves against their fixtures; a fixture proves what its '
     'rows assert and nothing else. The CLI evaluates every resource as a CREATE and cannot '
-    'populate oldObject, so an UPDATE-only body is graded on compiling and on its gates.',
+    'populate oldObject, so an UPDATE-only body is graded on compiling only.',
     'Line fixtures under computed-semver/engine-fixtures/ are read from the graded commit, not '
-    'from the tag, because a fixture can be written after its line was cut; the row records both.',
+    'from the tag, because a fixture can be written after its line was cut; the row records both. '
+    'For cage-tier and cage-netpol the tag\'s own graded/tests fixture always runs as well.',
+    'A pass or fail row that kyverno test reads as Excluded (the policy was not applied to the '
+    'resource) fails its body; a skip row may read Excluded.',
     'Tag signature verification remains the provenance gate; this check binds tag and array policy trees.',
     'Executable SHA256 identifies each binary; its authenticity rests on the caller checksum.',
     'This evidence changes no policy body, policy bump, money, or release authorization.',
@@ -199,12 +206,81 @@ def bodies_in(tree: Path) -> tuple[list[dict], list[str]]:
     return found, other
 
 
-def _summary(run: subprocess.CompletedProcess[str]) -> tuple[bool, dict]:
+_ROW_START = re.compile(r'^\[', re.MULTILINE)
+
+
+def _test_rows(output: str) -> list[dict] | None:
+    """The rows `kyverno test -o json` prints, one JSON array per test manifest, or None when the
+    output carries none. Each row names its POLICY, RESOURCE, RESULT (whether the row's assertion
+    held) and REASON (why)."""
+    decoder, rows, seen, pos = json.JSONDecoder(), [], False, 0
+    while (start := _ROW_START.search(output, pos)) is not None:
+        try:
+            value, pos = decoder.raw_decode(output, start.start())
+        except json.JSONDecodeError:
+            pos = start.end()
+            continue
+        if isinstance(value, list) and all(isinstance(r, dict) and {'RESULT', 'REASON'} <= r.keys()
+                                           for r in value):
+            rows.extend(value)
+            seen = True
+    return rows if seen else None
+
+
+def _asserted(results: list[dict]) -> dict[tuple[str, str], set[str]]:
+    """(policy, resource name) -> every result the fixture's rows assert for that pair."""
+    out: dict[tuple[str, str], set[str]] = {}
+    for r in results:
+        for resource in r.get('resources') or []:
+            key = (str(r.get('policy')), str(resource).rsplit('/', 1)[-1])
+            out.setdefault(key, set()).add(str(r.get('result') or r.get('status')))
+    return out
+
+
+def _excluded(rows: list[dict], results: list[dict]) -> list[str]:
+    """Every row the engine did not apply the policy to, where the fixture asserts pass or fail.
+
+    Kyverno counts a resource the policy is not applied to (REASON `Excluded`: no engine response
+    at all, as for a Pod in a Namespace the CLI does not know, against a `namespaceSelector`) as a
+    PASS whatever the row asserts. Such a pass or fail row measures nothing the body does, so it
+    is refused here. A skip row may read Excluded: it asserts the body does not act, and it fails
+    with "Want skip" if the body does act. Measured on 1.18.2, 2026-09-26 (ticket 146 fixer)."""
+    asserted = _asserted(results)
+    vacuous = []
+    for row in rows:
+        if row.get('REASON') != 'Excluded':
+            continue
+        key = (str(row.get('POLICY')), str(row.get('RESOURCE', '')).rsplit('/', 1)[-1])
+        wants = asserted.get(key)
+        if not wants or wants - {'skip'}:
+            vacuous.append(f'{row.get("POLICY")} on {row.get("RESOURCE")} reads Excluded where the '
+                           f'fixture asserts {"/".join(sorted(wants or {"no row"}))}')
+    return vacuous
+
+
+def _summary(run: subprocess.CompletedProcess[str], results: list[dict]) -> tuple[bool, dict]:
+    """One `kyverno test -o json` run, read row by row. It passes only when the engine exits 0,
+    prints one summary with at least one passed and no failed assertion, prints one row per
+    counted assertion, and no pass or fail row reads Excluded (see `_excluded`)."""
     output = run.stdout + run.stderr
     summaries = re.findall(r'Test Summary:\s*(\d+) tests passed and (\d+) tests failed', output)
     passed, failed = (map(int, summaries[0]) if len(summaries) == 1 else (0, 0))
-    ok = run.returncode == 0 and passed > 0 and failed == 0 and len(summaries) == 1
+    rows = _test_rows(output)
+    reasons: dict[str, int] = {}
+    for row in rows or []:
+        reasons[str(row.get('REASON'))] = reasons.get(str(row.get('REASON')), 0) + 1
+    refusals = []
+    if rows is None:
+        refusals.append('the engine printed no per-row results, so a row it did not apply the '
+                        'policy to cannot be told from one that passed')
+    elif len(rows) != passed + failed:
+        refusals.append(f'the engine printed {len(rows)} rows for {passed + failed} counted assertions')
+    else:
+        refusals += _excluded(rows, results)
+    ok = (run.returncode == 0 and passed > 0 and failed == 0 and len(summaries) == 1
+          and not refusals)
     return ok, {'passed_assertions': passed, 'failed_assertions': failed,
+                'row_reasons': reasons, 'refusals': refusals,
                 'exit_code': run.returncode,
                 'output_sha256': hashlib.sha256(output.encode()).hexdigest(),
                 'diagnostic': None if ok else output[-6000:]}
@@ -233,7 +309,7 @@ def run_fixture(folder: Path, body: dict, binary: str) -> dict:
                          'evaluate, so it grades nothing the body does')
     test['policies'] = [str(body['path'])]
     manifest.write_text(yaml.safe_dump(test, sort_keys=False))
-    ok, facts = _summary(_run([binary, 'test', str(folder)]))
+    ok, facts = _summary(_run([binary, 'test', str(folder), '-o', 'json']), results)
     return {'family': body['family'], 'policies': body['names'], 'fixture': 'engine-fixtures',
             'outcome': 'passed' if ok else 'failed', **facts}
 
@@ -335,36 +411,44 @@ def run_legacy_fixture(folder: Path, body: dict, version: str, binary: str) -> d
         result['policy'] = family + '-' + version.replace('.', '-')
         result['rule'] = result['policy']
     manifest.write_text(yaml.safe_dump(test, sort_keys=False))
-    ok, facts = _summary(_run([binary, 'test', str(folder)]))
+    ok, facts = _summary(_run([binary, 'test', str(folder), '-o', 'json']), results)
     return {'family': family, 'policies': body['names'], 'fixture': 'graded/tests (adapted)',
             'outcome': 'passed' if ok else 'failed', **facts}
 
 
 def _grade_body(body: dict, fixture: Path | None, legacy: Path | None, version: str | None,
                 binary: str, work: Path) -> dict:
+    """One body against every fixture it has. For cage-tier and cage-netpol the line tree's own
+    `graded/tests/<family>` (read from the tag once cut) is ALWAYS run when the tree carries it;
+    an `engine-fixtures` folder at the graded commit, if there is one, runs as well and never
+    replaces it. So nothing committed after a cut can swap a weaker fixture in for the tag-bound
+    grade. Every part must pass."""
     base = {'family': body['family'], 'policies': body['names'], 'body_sha256': body['sha256']}
     try:
-        if fixture is not None and fixture.is_dir():
-            folder = work / ('fixture-' + body['family'])
-            shutil.copytree(fixture, folder)
-            parts = []
-            if (folder / 'kyverno-test.yaml').is_file():
-                parts.append(run_fixture(folder, body, binary))
-            if (folder / 'generates.yaml').is_file():
-                parts.append(run_generation(folder, body, binary))
-            if not parts:
-                raise ValueError(f'{body["family"]}: its fixture folder carries neither kyverno-test.yaml '
-                                 'nor generates.yaml')
-            return {**base, 'fixture': 'engine-fixtures',
-                    'outcome': 'passed' if all(p['outcome'] == 'passed' for p in parts) else 'failed',
-                    'parts': parts}
+        parts = []
         if legacy is not None and version is not None and (legacy / 'kyverno-test.yaml').is_file():
             folder = work / ('legacy-' + body['family'])
             shutil.copytree(legacy, folder)
-            return {**base, **run_legacy_fixture(folder, body, version, binary)}
-        return {**base, 'outcome': 'failed',
-                'reason': (f'{body["family"]} has no fixture, so it is not graded; a supported engine '
-                           'means every body the subject serves passes its fixtures')}
+            parts.append(run_legacy_fixture(folder, body, version, binary))
+        if fixture is not None and fixture.is_dir():
+            folder = work / ('fixture-' + body['family'])
+            shutil.copytree(fixture, folder)
+            found = []
+            if (folder / 'kyverno-test.yaml').is_file():
+                found.append(run_fixture(folder, body, binary))
+            if (folder / 'generates.yaml').is_file():
+                found.append(run_generation(folder, body, binary))
+            if not found:
+                raise ValueError(f'{body["family"]}: its fixture folder carries neither kyverno-test.yaml '
+                                 'nor generates.yaml')
+            parts += found
+        if not parts:
+            return {**base, 'outcome': 'failed',
+                    'reason': (f'{body["family"]} has no fixture, so it is not graded; a supported engine '
+                               'means every body the subject serves passes its fixtures')}
+        return {**base, 'fixture': ' + '.join(dict.fromkeys(p['fixture'] for p in parts)),
+                'outcome': 'passed' if all(p['outcome'] == 'passed' for p in parts) else 'failed',
+                'parts': parts}
     except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError, yaml.YAMLError) as exc:
         return {**base, 'outcome': 'failed', 'reason': str(exc)}
 
@@ -591,6 +675,25 @@ def _count(report: dict) -> str:
             (f'; extra engine(s) reported, not support: {extra}' if extra else ''))
 
 
+def served(report: dict) -> str:
+    """What the verdict line was measured against: the platform commit graded, and for each
+    subject the ref its bodies were read from by `git archive` before `kyverno test` and
+    `kyverno apply` ran them. A cut line names its tag and the commit the tag points at."""
+    if not report.get('graded_commit'):
+        return ''
+    where = []
+    for r in report.get('rows') or []:
+        if r.get('state') == 'published':
+            where.append(f'{r["subject"]} from {r["ref"]} at {r["tag_commit"]}')
+        elif r.get('state') == 'candidate':
+            where.append(f'{r["subject"]} (uncut candidate) from the graded commit')
+        elif r.get('state') == 'graded commit':
+            where.append(f'{r["subject"]} rendered by compose/composition.py at the graded commit')
+    return (f'; graded platform commit {report["graded_commit"]}' +
+            (': ' + ', '.join(where) if where else '') +
+            '; each body read by git archive at that ref and run by the kyverno binaries above')
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -613,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     code = {'passed': 0, 'failed': 1, 'could-not-look': 3}[result['outcome']]
     reason = f' -- {result["reason"]}' if result.get('reason') else ''
     print(('PASS' if code == 0 else 'FAIL' if code == 1 else 'SKIP') +
-          f': engine cells -- {result["outcome"]}; {_count(result)}{reason}')
+          f': engine cells -- {result["outcome"]}; {_count(result)}{reason}{served(result)}')
     return code
 
 

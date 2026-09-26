@@ -94,21 +94,31 @@ For each subject the grader reads one commit (`--ref`, HEAD by default):
   commit being graded, which is the commit that declares it;
 - every Kyverno policy in the line's `distribution/policies/v<version>/` tree is a **body**. Each
   is graded against `engine-fixtures/v<version>/<body>/` at the graded commit, with only its
-  `policies:` pointed at the served bytes; or, for cage-tier and cage-netpol, against the line
-  tree's own `graded/tests/<family>`, adapting only policy/rule identifiers, claim version labels
-  and PriorityClass suffixes (the format the tagged 5.0.0 fixtures carry). A body with neither
-  fails. A fixture folder may also carry `generates.yaml`: for each trigger, the documents the
-  body must generate, compared as parsed YAML after `kyverno apply`, with `[]` for "generates
-  nothing" (ADR-0033 point 6);
+  `policies:` pointed at the served bytes. For cage-tier and cage-netpol the line tree's own
+  `graded/tests/<family>` (at the tag, once cut) always runs, adapting only policy/rule
+  identifiers, claim version labels and PriorityClass suffixes (the format the tagged 5.0.0
+  fixtures carry); an engine-fixtures folder for the same body runs beside it and never replaces
+  it. A body with no fixture fails. A fixture folder may also carry `generates.yaml`: for each
+  trigger, the documents the body must generate, compared as parsed YAML after `kyverno apply`,
+  with `[]` for "generates nothing" (ADR-0033 point 6);
+- every `kyverno test` run is read row by row (`-o json`), and a pass or fail row that reads
+  `Excluded` fails its body: Kyverno counts a resource it did not apply the policy to as a pass
+  whatever the row asserts. A skip row may read Excluded, because it fails with "Want skip" if
+  the body acts;
 - the **machinery** is what `compose/composition.py`'s `machinery_members()` renders from the
   graded commit, each member against `engine-fixtures/machinery/<member>/`.
 
 The one row served today is policy 5.0.0 (4.0.0 retired on 2026-09-24). Its five bodies pass on
 1.18.2 with 13 cage-tier, 11 cage-netpol, 6 require-nonroot, 5 stamp-posture and 5
-posture-trust-boundary assertions, and the seven machinery bodies pass beside it. The records
-each row carries: Git tree identities, a SHA256 manifest of the policy files and of the fixtures,
-each binary's SHA256 and reported version, assertion counts and output digests, and the policy
-API versions, alpha and beta entries named.
+posture-trust-boundary assertions. Two of the 11 cage-netpol rows are skip rows that read
+Excluded; every other line row reads Ok. The seven machinery bodies pass beside it. The two
+orphan bodies pass on rows that all read Ok. The two governed-namespace bodies pass on rows that
+read Ok, except one skip row each, outside a governed Namespace, which reads Excluded. The
+bottom-rung generator passes on the documents it generates for five triggers. The two UPDATE-only
+holds pass on compiling only. The records each row carries: Git tree identities, a SHA256
+manifest of the policy files and of the fixtures, each binary's SHA256 and reported version,
+assertion counts, row reasons and output digests, and the policy API versions, alpha and beta
+entries named.
 
 Under 1.19.1, the ticket 71 diagnosis (`.scratch/ecosystem/research/kyverno-1.19-cage-diagnosis/`
 in the hub) found the 5.0.0 cage-tier body does not compile, and two cage-netpol `skip` rows read
@@ -132,9 +142,12 @@ the adopter's next composition. `.github/scripts/cut-release-update-array-commit
 `tested_engines` it finds before the cut (ticket 146 item 8).
 
 Limits: the offline CLI only, so no Kubernetes admission, no background controller and no live
-reach. A fixture proves what its rows assert. `kyverno test` does not evaluate a
-`namespaceSelector` and evaluates every resource as a CREATE, so the machinery's two UPDATE-only
-holds are graded on compiling (see `engine-fixtures/machinery/README.md`). Line fixtures are read
-from the graded commit rather than the tag, because they can be written after the cut; the row
-records both. The grader does not verify tag signatures; that remains the provenance instrument.
+reach. A fixture proves what its rows assert. `kyverno test` evaluates a `namespaceSelector` only
+against a Namespace a Values file declares. The three governed-namespace machinery bodies match
+on one, so each of their fixtures declares its Namespaces in a `values.yaml`. It evaluates every
+resource as a CREATE, so the machinery's two UPDATE-only holds are graded on compiling only (see
+`engine-fixtures/machinery/README.md`).
+Line fixtures are read from the graded commit rather than the tag, because they can be written
+after the cut; the row records both. The tag's own cage-tier and cage-netpol fixtures run beside
+them. The grader does not verify tag signatures; that remains the provenance instrument.
 A binary's authenticity rests on the checksum its installer checked against the engine table.

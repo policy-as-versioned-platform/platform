@@ -3,8 +3,11 @@
 The synthetic `kyverno` below is never evidence about Kyverno. It reports the version it is told,
 passes or fails a `test` run as its mode file says, fails any policy whose `spec.fails_on` names
 its own version, and on `apply -o` writes the documents a policy's `spec.generate` names for a
-trigger. It refuses to grade a policy whose `spec.marker` is not the tree the test expects, which
-is how these tests know which tree the grader read. The real matrix run supplies the evidence.
+trigger. Under `test -o json` it prints one row per asserted resource, as Kyverno does, and reads
+a resource a policy's `spec.excludes` names as Pass / Excluded whatever the row asserts, as
+Kyverno does for a Pod in a Namespace it does not know. It refuses to grade a policy whose
+`spec.marker` is not the tree the test expects, which is how these tests know which tree the
+grader read. The real matrix run supplies the evidence.
 """
 import importlib.util
 import json
@@ -19,7 +22,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 
 FAKE = r'''#!{python}
-import pathlib, sys, yaml
+import json, pathlib, sys, yaml
 me = pathlib.Path(__file__)
 version = me.with_suffix('.version').read_text().strip()
 if sys.argv[1] == 'version':
@@ -33,11 +36,19 @@ if sys.argv[1] == 'test':
     t = yaml.safe_load((pathlib.Path(sys.argv[2]) / 'kyverno-test.yaml').read_text())
     doc = policy_at(t['policies'][0])
     mode = me.with_suffix('.mode').read_text().strip()
+    excludes = doc['spec'].get('excludes', [])
+    rows = [{'ID': 0, 'POLICY': r['policy'], 'RULE': '', 'RESOURCE': 'v1/Pod/default/' + n, 'RESULT': 'Pass',
+             'REASON': 'Excluded' if n in excludes else 'Ok'} for r in t['results'] for n in r['resources']]
+    as_json = sys.argv[3:5] == ['-o', 'json'] and mode != 'norows'
     if mode == 'fail' or version in doc['spec'].get('fails_on', []):
-        print('Test Summary: 0 tests passed and 1 tests failed'); sys.exit(1)
+        rows[0].update(RESULT='Fail', REASON='Want pass, got fail')
+        if as_json: print(json.dumps(rows, indent=2))
+        print('Test Summary: %d tests passed and 1 tests failed' % (len(rows) - 1)); sys.exit(1)
     if mode == 'zero':
+        if as_json: print('[]')
         print('Test Summary: 0 tests passed and 0 tests failed'); sys.exit(0)
-    print('Test Summary: %d tests passed and 0 tests failed' % len(t['results'])); sys.exit(0)
+    if as_json: print(json.dumps(rows, indent=2))
+    print('Test Summary: %d tests passed and 0 tests failed' % len(rows)); sys.exit(0)
 if sys.argv[1] == 'apply':
     doc = policy_at(sys.argv[2])
     trigger = yaml.safe_load(pathlib.Path(sys.argv[sys.argv.index('--resource') + 1]).read_text())
@@ -214,8 +225,9 @@ class Matrix(unittest.TestCase):
         self.assertEqual(result['outcome'], 'could-not-look')
         self.assertIn('supports no engine', result['rows'][0]['reason'])
 
-    def test_failed_or_zero_assertions_never_report_compatibility(self):
-        for mode in ('fail', 'zero'):
+    def test_failed_zero_or_unread_assertions_never_report_compatibility(self):
+        # 'norows': the summary says passed, but no row says why, so an excluded row is unreadable
+        for mode in ('fail', 'zero', 'norows'):
             with self.subTest(mode=mode):
                 self.binary.with_suffix('.mode').write_text(mode)
                 self.assertEqual(self.check()['outcome'], 'failed')
@@ -245,6 +257,74 @@ class Matrix(unittest.TestCase):
         result = self.check()
         self.assertEqual(result['outcome'], 'failed', result)
         self.assertIn('not annotated', result['rows'][0]['reason'])
+
+    def test_the_verdict_line_names_the_graded_commit_and_each_cut_line_s_tag(self):
+        out = subprocess.run([sys.executable, str(HERE / 'engine_compatibility.py'), '--repo', str(self.repo),
+                              '--engine', str(self.binary)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stdout[-600:])
+        last = out.stdout.splitlines()[-1]
+        head = self.git('rev-parse', 'HEAD')
+        self.assertTrue(last.startswith('PASS: engine cells -- passed; 2 cell(s): 2 passed'), last)
+        self.assertIn(f'graded platform commit {head}', last)
+        self.assertIn(f'policy 1.0.0 from refs/tags/policy/v1.0.0 at {self.commit}', last)
+        self.assertIn('machinery rendered by compose/composition.py at the graded commit', last)
+
+    # -- a row the engine did not apply the policy to ---------------------------------------
+    def test_a_pass_or_fail_row_the_engine_excluded_fails_its_cell(self):
+        # Kyverno counts a resource it did not apply the policy to as a pass, whatever the row says
+        self.write('distribution/guard-body.yaml',
+                   self.policy('guard', 'ValidatingPolicy', 'published', excludes=['p']))
+        self.git('commit', '-qam', 'the guard never applies to p')
+        result = self.check()
+        self.assertEqual(result['outcome'], 'failed')
+        body = self.cells(result, 'machinery')['1.18.2']['bodies'][0]
+        part = body['parts'][0]
+        self.assertEqual((part['passed_assertions'], part['failed_assertions']), (1, 0))
+        self.assertEqual(part['row_reasons'], {'Excluded': 1})
+        self.assertIn('reads Excluded where the fixture asserts pass', part['refusals'][0])
+
+    def test_a_skip_row_may_read_excluded_beside_a_row_that_measures(self):
+        self.write('distribution/guard-body.yaml',
+                   self.policy('guard', 'ValidatingPolicy', 'published', excludes=['outside']))
+        self.write('computed-semver/engine-fixtures/machinery/guard/kyverno-test.yaml', {
+            'policies': ['rendered'], 'results': [
+                {'policy': 'guard', 'resources': ['p'], 'result': 'pass'},
+                {'policy': 'guard', 'resources': ['outside'], 'result': 'skip'}]})
+        self.git('commit', '-qam', 'a scope row')
+        result = self.check()
+        self.assertEqual(result['outcome'], 'passed', json.dumps(result, indent=1))
+        part = self.cells(result, 'machinery')['1.18.2']['bodies'][0]['parts'][0]
+        self.assertEqual(part['row_reasons'], {'Ok': 1, 'Excluded': 1})
+
+    # -- the tag-bound cage grade -------------------------------------------------------------
+    def test_a_later_fixture_never_replaces_the_tag_bound_cage_grade(self):
+        # the tag's own cage-tier fixture is weakened to skip rows only, which grades nothing
+        self.write('graded/tests/cage-tier/kyverno-test.yaml', {'policies': ['unused'], 'results': [
+            {'policy': 'cage-tier', 'rule': 'cage-tier', 'resources': ['p'], 'result': 'skip'}]})
+        # and a fixture that passes is committed for the same body beside the line's other fixtures
+        self.write('computed-semver/engine-fixtures/v1.0.0/cage-tier/kyverno-test.yaml', {
+            'policies': ['rewritten'], 'results': [{'policy': 'cage-tier-1-0-0', 'resources': ['p'], 'result': 'pass'}]})
+        self.git('add', '.')
+        self.git('commit', '-qm', 'a weak tag fixture and a passing later one')
+        self.git('tag', '-f', '-a', 'policy/v1.0.0', '-m', 'unsigned fixture, never production evidence')
+        self.entries[0]['commit'] = self.git('rev-parse', 'HEAD')
+        self.declare()
+        result = self.check()
+        self.assertEqual(result['outcome'], 'failed', json.dumps(result, indent=1))
+        body = {b['family']: b for b in self.cells(result, 'policy 1.0.0')['1.18.2']['bodies']}
+        self.assertIn('no positive assertions', body['cage-tier']['reason'])
+        # with the tag's fixture whole again, both run and both must pass
+        self.write('graded/tests/cage-tier/kyverno-test.yaml', {'policies': ['unused'], 'results': [
+            {'policy': 'cage-tier', 'rule': 'cage-tier', 'resources': ['p'], 'result': 'pass'}]})
+        self.git('commit', '-qam', 'the tag fixture restored')
+        self.git('tag', '-f', '-a', 'policy/v1.0.0', '-m', 'unsigned fixture, never production evidence')
+        self.entries[0]['commit'] = self.git('rev-parse', 'HEAD')
+        self.declare()
+        result = self.check()
+        self.assertEqual(result['outcome'], 'passed', json.dumps(result, indent=1))
+        body = {b['family']: b for b in self.cells(result, 'policy 1.0.0')['1.18.2']['bodies']}
+        self.assertEqual([p['fixture'] for p in body['cage-tier']['parts']],
+                         ['graded/tests (adapted)', 'engine-fixtures'])
 
     # -- many engines ------------------------------------------------------------------------
     def test_a_second_listed_engine_with_no_binary_reads_could_not_look(self):
