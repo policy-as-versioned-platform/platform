@@ -675,6 +675,22 @@ def _count(report: dict) -> str:
             (f'; extra engine(s) reported, not support: {extra}' if extra else ''))
 
 
+def not_passed(report: dict) -> str:
+    """Every subject or cell that did not pass, by name, so the verdict line alone says which
+    engine is missing or failing and why."""
+    named = []
+    for r in report.get('rows') or []:
+        if not r.get('cells') and r.get('outcome') != 'passed':
+            named.append(f'{r["subject"]} {r.get("outcome")} ({r.get("reason")})')
+        for c in r.get('cells', []):
+            if c['outcome'] == 'could-not-look':
+                named.append(f'{r["subject"]} on {c["engine"]} could-not-look ({c.get("reason")})')
+            elif c['outcome'] == 'failed':
+                bodies = [b['family'] for b in c.get('bodies', []) if b['outcome'] != 'passed']
+                named.append(f'{r["subject"]} on {c["engine"]} failed ({", ".join(bodies)})')
+    return '; not passed: ' + '; '.join(named) if named else ''
+
+
 def served(report: dict) -> str:
     """What the verdict line was measured against: the platform commit graded, and for each
     subject the ref its bodies were read from by `git archive` before `kyverno test` and
@@ -716,7 +732,8 @@ def main(argv: list[str] | None = None) -> int:
     code = {'passed': 0, 'failed': 1, 'could-not-look': 3}[result['outcome']]
     reason = f' -- {result["reason"]}' if result.get('reason') else ''
     print(('PASS' if code == 0 else 'FAIL' if code == 1 else 'SKIP') +
-          f': engine cells -- {result["outcome"]}; {_count(result)}{reason}{served(result)}')
+          f': engine cells -- {result["outcome"]}; {_count(result)}{reason}{not_passed(result)}'
+          f'{served(result)}')
     return code
 
 

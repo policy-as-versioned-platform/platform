@@ -337,6 +337,12 @@ class Matrix(unittest.TestCase):
         self.assertEqual(cells['1.19.1']['outcome'], 'could-not-look')
         self.assertIn('no binary for kyverno 1.19.1', cells['1.19.1']['reason'])
         self.assertEqual(result['matrix']['policy 1.0.0'], {'1.18.2': 'passed', '1.19.1': 'could-not-look'})
+        # the verdict line alone names the cell that could not look, and why
+        out = subprocess.run([sys.executable, str(HERE / 'engine_compatibility.py'), '--repo', str(self.repo),
+                              '--engine', str(self.binary)], capture_output=True, text=True)
+        self.assertEqual(out.returncode, 3, out.stdout[-400:])
+        self.assertIn('not passed: policy 1.0.0 on 1.19.1 could-not-look (no binary for kyverno 1.19.1 '
+                      'was handed to this run)', out.stdout.splitlines()[-1])
 
     def test_one_run_grades_every_cell_with_one_binary_per_engine(self):
         self.entries[0]['tested_engines']['kyverno'].append('1.19.1')
@@ -393,6 +399,8 @@ class Matrix(unittest.TestCase):
                              capture_output=True, text=True)
         self.assertEqual(out.returncode, 1)
         self.assertTrue(out.stdout.splitlines()[-1].startswith('FAIL: engine cells -- failed'), out.stdout[-400:])
+        self.assertIn('not passed: policy 2.0.0 on 1.19.1 failed (cage-netpol, cage-tier, require-nonroot)',
+                      out.stdout.splitlines()[-1])
 
     def test_an_engine_directory_with_no_binary_is_not_the_cli_on_path(self):
         empty = self.root / 'no-engines'
