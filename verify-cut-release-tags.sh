@@ -200,6 +200,42 @@ remote_tags | grep -qx "v11.0.0" && fail "v11.0.0 landed from a detached HEAD: t
   fail "remote refs/heads/main moved to $(remote_main) from a detached HEAD: the refusal came after the push, not before it"
 echo "ok: a detached HEAD is refused; the remote holds neither v11.0.0 nor a moved refs/heads/main (still $head)"
 
+say "9. ticket 146: the array rewrite keeps a nested tested_engines it finds before the cut"
+# Hub ADR-0033 point 4: an uncut element carries tested_engines from the moment it is declared, so
+# the cut script meets a NESTED flow mapping. It used to rebuild the element from quoted scalar
+# keys up to the first `}`: the field was dropped and the element's own closing brace was left
+# behind as a stray `}`. The neighbouring cut element must come through byte for byte.
+mkdir -p distribution
+cat >distribution/versions.yaml <<'YAML'
+spec:
+  inputs:
+    - versions:
+        - { version: "9.9.8", tag: "policy/v9.9.8", commit: "8888888888888888888888888888888888888888", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
+        - { version: "9.9.9", tag: "policy/v9.9.9", bump: "minor", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2", "1.19.1"] } }
+YAML
+git add distribution/versions.yaml && git commit -q -m "scratch: an uncut element that carries tested_engines"
+evidence_commit=$(git rev-parse HEAD)
+neighbour_before=$(grep '"9.9.8"' distribution/versions.yaml)
+echo '[{"tag":"policy/v9.9.9","message":"cut with tested_engines"}]' >tags-146.json
+"$scripts/cut-release-update-array-commit.sh" tags-146.json >/dev/null
+[ "$(git rev-parse HEAD^)" = "$evidence_commit" ] || fail "the array rewrite did not commit on top of the evidence commit"
+[ "$(grep '"9.9.8"' distribution/versions.yaml)" = "$neighbour_before" ] ||
+  fail "the rewrite touched a neighbouring element: $(grep '"9.9.8"' distribution/versions.yaml)"
+python3 - "$evidence_commit" <<'PYEOF' || fail "the rewritten element lost tested_engines or gained a stray brace: $(grep '"9.9.9"' distribution/versions.yaml)"
+import sys, yaml
+from pathlib import Path
+text = Path("distribution/versions.yaml").read_text()
+doc = yaml.safe_load(text)
+element = {e["version"]: e for e in doc["spec"]["inputs"][0]["versions"]}["9.9.9"]
+assert element["tested_engines"] == {"scope": "every-served-body-v1", "kyverno": ["1.18.2", "1.19.1"]}, element
+assert element["commit"] == sys.argv[1], element
+assert element["tag"] == "policy/v9.9.9" and element["bump"] == "minor", element
+line = [l for l in text.splitlines() if '"9.9.9"' in l][0]
+assert line.count("{") == line.count("}"), line
+assert line.rstrip().endswith("] } }"), line
+print(f"ok  the cut element keeps tested_engines and gains its commit: {line.strip()}")
+PYEOF
+
 echo
 echo "PASS: single-tag legacy form works, multi-tag dispatch cuts every tag"
 echo "on the same commit, the existing-tag refusal runs for every tag before"
@@ -210,4 +246,4 @@ echo "cut-release-gate.py's skip branch and get pushed ungated; and a degraded"
 echo "publish's prerelease tag (ticket 43) normalizes cleanly and sorts BELOW"
 echo "the clean number through the one shared parser; and the branch carrying"
 echo "the signed evidence lands in the same atomic push as the tags, or not at"
-echo "all (ticket 53)."
+echo "all (ticket 53); and the array rewrite keeps a tested_engines it finds before a cut (ticket 146)."
