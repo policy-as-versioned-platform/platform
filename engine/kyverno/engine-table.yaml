@@ -1,0 +1,63 @@
+# The engine table: every Kyverno version the estate may run (hub ADR-0033 point 4,
+# eco-system ticket 146 item 1).
+#
+# One row per exact version. A row says where each artefact comes from and what its bytes
+# hash to. It does not say that any policy line supports the version: a line supports exactly
+# the engines in its own `tested_engines` (distribution/versions.yaml), and the machinery the
+# composer renders supports exactly the engines in distribution/machinery.yaml. A version is in
+# this table so that a grader, a workflow or an adopter can install it by checksum. Nothing is
+# inferred from it about a neighbouring patch.
+#
+# WHO READS IT (computed-semver/engine_compatibility.py does not: it identifies each binary it is
+# handed by running it)
+#   engine/install-kyverno-engines.sh        installs every row's CLI by checksum (cut-release.yml,
+#                                            a local run).
+#   graded/verify-graded.sh                  refuses to grade on a CLI whose version is not a row.
+#   hub .github/workflows/truth.yml          installs every row's linux_x86_64 CLI by checksum and
+#                                            hands one binary per engine to the cage-engine check.
+#   hub verify/estate-engines/               each estate pin must name a row here, carry the
+#                                            row's checksum, and be a supported engine of every
+#                                            served line and of the machinery.
+#   ticket 147 (adopters)                    an adopter's gitops/engine/kyverno.yaml must agree
+#                                            with the row for its version.
+#
+# WHERE EACH FIGURE COMES FROM. Nothing here is typed from memory.
+#   cli        the release's own checksums.txt, at `checksums`. Cross-checked 2026-09-26 against
+#              the GitHub release API's `digest` for the same asset, and against the pins the
+#              workflows already carried: hub truth.yml, platform release.yml and cut-release.yml
+#              (linux_x86_64, cb2feb83...). darwin_arm64 is the platform the owner's Mac runs.
+#   install    NOT in the release's checksums.txt (that file lists the CLI archives only). The
+#              sha256 is the GitHub release API's `digest` for the install.yaml asset, the sha256
+#              of the downloaded file measured 2026-09-26, and the pin each adopter's
+#              drift-sample.yml already carried (3dcd43ea...). All three agree.
+#   chart      the Kyverno Helm repository index, at `index`: chart 3.8.2 carries appVersion
+#              v1.18.2 there. `digest` is the index's own sha256 for kyverno-3.8.2.tgz. The
+#              platform's reference install, engine/kyverno/helmrelease.yaml, names the chart
+#              version, and a pin check maps it back to this row through `chart.version`.
+#
+# TO ADD A VERSION: a reviewed PR that adds a row with every figure taken from that release's
+# own files, and records where each came from, as above. Adding a row supports nothing. A line
+# supports the version only when the same change, or a later one, adds it to the line's
+# `tested_engines` and the grader passes every new cell (ADR-0033 point 5). Ticket 148 or
+# ticket 149, whichever lands first, adds 1.19.1.
+schema: 1
+engine: kyverno
+versions:
+  - version: "1.18.2"
+    cli:
+      checksums: https://github.com/kyverno/kyverno/releases/download/v1.18.2/checksums.txt
+      darwin_arm64:
+        file: kyverno-cli_v1.18.2_darwin_arm64.tar.gz
+        sha256: "cc69bc6638da1993146c134943fac91cbc9dd0ce60a3e88c6d7c518ae00f1abc"
+      linux_x86_64:
+        file: kyverno-cli_v1.18.2_linux_x86_64.tar.gz
+        sha256: "cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b"
+    install:
+      url: https://github.com/kyverno/kyverno/releases/download/v1.18.2/install.yaml
+      sha256: "3dcd43eaf11f0719084217148cd0c82a8fa49faa9b1a783ea5bea2cf84041bda"
+      source: GitHub release API asset digest; not listed in checksums.txt
+    chart:
+      version: "3.8.2"
+      app_version: v1.18.2
+      index: https://kyverno.github.io/kyverno/index.yaml
+      digest: "f4fc787cf1d6781eefb9e9b45837edcddcfae984c872888289914e97207cc5de"

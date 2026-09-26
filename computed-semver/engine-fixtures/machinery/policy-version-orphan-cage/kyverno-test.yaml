@@ -1,0 +1,22 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: policy-version-orphan-cage-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+results:
+  # an orphan claim lands on the bottom rung: isolated, cage-isolated with its integer priority
+  # and preemptionPolicy, 100m/64Mi, hardened containers and initContainers, host namespaces
+  # shut, privileged clobbered false, and the WAF sidecar.
+  - policy: policy-version-orphan-cage
+    kind: Pod
+    resources: [orphan-claim]
+    patchedResources: patched.yaml
+    result: pass
+  # a served claim is cage-tier's population, and a pod that claims nothing is not an orphan.
+  - policy: policy-version-orphan-cage
+    kind: Pod
+    resources: [served-claim, unclaimed]
+    result: skip

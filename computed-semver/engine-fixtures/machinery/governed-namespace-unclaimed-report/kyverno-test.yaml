@@ -1,0 +1,30 @@
+# values.yaml declares the two Namespaces, so the CLI evaluates the body's namespaceSelector.
+# Without it every row read Pass / Excluded whatever it asserted (measured 2026-09-26), and the
+# grader now refuses a pass or fail row that reads Excluded. This folder grades both what the
+# body reports in a governed Namespace and that it reports nothing outside one.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: governed-namespace-unclaimed-report-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+variables: values.yaml
+results:
+  # the unclaimed pod in a governed Namespace is reported (Audit: observed, never refused); a
+  # claiming pod there passes.
+  - policy: governed-namespace-unclaimed-report
+    kind: Pod
+    resources: [unclaimed-governed]
+    result: fail
+  - policy: governed-namespace-unclaimed-report
+    kind: Pod
+    resources: [claimed-governed]
+    result: pass
+  # the namespace scope: an unclaimed pod outside a governed Namespace is not reported. It reads
+  # Excluded while the selector holds, and "Want skip, got fail" if the selector is lost.
+  - policy: governed-namespace-unclaimed-report
+    kind: Pod
+    resources: [unclaimed-ungoverned]
+    result: skip

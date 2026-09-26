@@ -1,0 +1,31 @@
+# stamp-posture @ 5.0.0 on one engine (eco-system ticket 146 item 3).
+#
+# Written 2026-09-26 against the TAGGED bytes (policy/v5.0.0, tree a8468fb3). The grader rewrites
+# `policies:` to the bytes it extracted from the tag and changes nothing else.
+#
+# The tag carries posture/tests/stamp-posture/, which tests the UNVERSIONED authoring copy: its
+# pods claim 1.0.0 and 2.0.0, which the served 5.0.0 body scopes out. So the served body had no
+# fixture of its own, and this is it.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: stamp-posture-5-0-0-engine
+policies:
+  - ../../../../distribution/policies/v5.0.0/stamp-posture.yaml
+resources:
+  - resources.yaml
+results:
+  # a 5.0.0 claim gets posture 5.0.0 stamped; a forger's hand-set posture is clobbered back.
+  - policy: stamp-posture-5-0-0
+    kind: Pod
+    resources: [pod-claims, pod-forger]
+    patchedResources: patched.yaml
+    result: pass
+  # another version's claim; no claim; and no claim with a hand-set posture. The served body
+  # stamps only its own claim, so none of the three is touched. The third row is a measured
+  # fact, not an endorsement: no served 5.0.0 body clobbers a posture on a pod that claims
+  # nothing (see posture-trust-boundary's fixture, which does not refuse it either).
+  - policy: stamp-posture-5-0-0
+    kind: Pod
+    resources: [pod-other-version, pod-unversioned, pod-unclaimed-forger]
+    result: skip

@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cage-reach-bottom-rung-isolated
+  namespace: governed-ns
+  labels:
+    app.kubernetes.io/managed-by: kyverno
+    posture.acme.io/cage: reach
+    posture.acme.io/tier: isolated
+spec:
+  podSelector:
+    matchLabels:
+      posture.acme.io/caged: "true"
+      posture.acme.io/tier: isolated
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []

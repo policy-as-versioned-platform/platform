@@ -1,0 +1,26 @@
+# The reach cage for the population no served version reaches, graded on what it GENERATES
+# (hub ADR-0033 point 6). For each trigger the grader runs `kyverno apply` with that one resource
+# and compares the generated documents with the file named here; `[]` means it must generate
+# nothing. `kyverno test` cannot grade this body: on 1.18.2 a trigger the body excludes reads
+# Pass / Excluded even on a row that expects a generated resource (measured 2026-09-26), and on
+# 1.19 a generator that does not match returns no result at all.
+#
+# The three gates, each alone: the pod must be caged, its tier must restrict reach, and its claim
+# must be one no served version carries (an orphan, or none).
+resources: resources.yaml
+triggers:
+  # an orphan claim, caged at isolated: nothing in, nothing out, in its own Namespace
+  - resource: orphan-isolated
+    generates: generated-app-ns.yaml
+  # a pod that claims nothing, caged at isolated by the governed-namespace cage
+  - resource: unclaimed-isolated
+    generates: generated-governed-ns.yaml
+  # a served claim belongs to its own version's cage-netpol, so this body stays out
+  - resource: served-isolated
+    generates: []
+  # the is-caged gate alone: an orphan at isolated that carries no caged marker
+  - resource: orphan-uncaged
+    generates: []
+  # the tier gate alone: a caged orphan at baseline, whose reach is not restricted
+  - resource: orphan-baseline
+    generates: []

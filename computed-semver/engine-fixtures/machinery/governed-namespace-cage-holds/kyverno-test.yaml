@@ -1,0 +1,21 @@
+# UPDATE-only. `kyverno test` evaluates every resource as a CREATE, so this body never matches and
+# every row reads Pass / Excluded, with or without its oldObject gate. Measured 2026-09-26 with
+# values.yaml declaring governed-ns, so the namespaceSelector is not why: the gate removed still
+# reads Excluded, and the gate removed with CREATE added reads "Want skip, got pass" on the
+# relabelled pod. What this folder grades is that the body COMPILES on the engine: a planted
+# compile error fails the run. What the hold writes once it matches is measured by
+# distribution/verify-governed-namespace-guard.sh step 5, with the gate stripped from a copy.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: governed-namespace-cage-holds-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+variables: values.yaml
+results:
+  - policy: governed-namespace-cage-holds
+    kind: Pod
+    resources: [unclaimed-relabelled, claimed-governed]
+    result: skip

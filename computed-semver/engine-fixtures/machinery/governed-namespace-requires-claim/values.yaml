@@ -1,0 +1,23 @@
+# The Namespaces this fixture's pods sit in. `kyverno test` evaluates the body's
+# matchConstraints.namespaceSelector only against a Namespace a Values file declares: with none,
+# the CLI applies the policy to no pod and counts every row as Pass / Excluded, whatever the row
+# asserts (measured on 1.18.2, 2026-09-26). governed-ns carries the label the selector matches;
+# app-ns carries the same key with another value, so the ungoverned row fails if the selector is
+# lost.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+metadata:
+  name: values
+namespaces:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: governed-ns
+      labels:
+        policy-as-versioned.dev/governed: "true"
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: app-ns
+      labels:
+        policy-as-versioned.dev/governed: "false"

@@ -1,0 +1,22 @@
+# The platform machinery's supported engines (hub ADR-0033 point 1, eco-system ticket 146 item 4).
+#
+# The machinery is what compose/composition.py's machinery_members() renders beside every
+# composed policy line: the orphan guard and its two cages, the governed-namespace cage, its hold
+# and its report, and the bottom-rung reach generator. It belongs to no policy version, so it has
+# no element in versions.yaml, and it reaches an adopter only inside a platform tools tag. This file
+# is its declaration, read the way a line's `tested_engines` is read:
+#
+#   * computed-semver/engine_compatibility.py grades each engine listed here on the commit it
+#     grades: every machinery body compiles and passes its fixture under
+#     computed-semver/engine-fixtures/machinery/<member>/;
+#   * ticket 148's composition reads this file at the adopter's pinned platform tag, and prices an
+#     adopter whose declared engine is not listed here.
+#
+# Why a file of its own, and not a key in versions.yaml: versions.yaml is a flux-operator
+# ResourceSet that clusters apply, and every reader of its array (the cut script, the orphan-guard
+# twin, the coexistence and refusal checks) would meet a second shape. The machinery's support is
+# metadata that only the grader and composition read, so it sits beside the renderers it describes.
+#
+# A listed engine is a claim that the grader must pass. Adding one is a reviewed change that passes
+# the new cell in the same change (ADR-0033 point 5).
+tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] }

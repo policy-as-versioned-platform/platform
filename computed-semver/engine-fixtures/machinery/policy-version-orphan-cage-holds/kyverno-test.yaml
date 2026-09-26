@@ -1,0 +1,18 @@
+# UPDATE-only. `kyverno test` evaluates every resource as a CREATE, so this body never matches and
+# every row reads Pass / Excluded, with or without its oldObject gate (measured 2026-09-26: the
+# gate removed still reads Excluded; this body has no namespaceSelector). What this folder grades is that the body COMPILES on the engine: a planted
+# compile error fails the run. What the hold writes once it matches is measured by
+# distribution/verify-governed-namespace-guard.sh step 5, with the gate stripped from a copy.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: policy-version-orphan-cage-holds-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+results:
+  - policy: policy-version-orphan-cage-holds
+    kind: Pod
+    resources: [orphan-relabelled, served-claim, unclaimed]
+    result: skip

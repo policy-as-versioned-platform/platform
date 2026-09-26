@@ -1,0 +1,30 @@
+# posture-trust-boundary @ 5.0.0 on one engine (eco-system ticket 146 item 3).
+#
+# Written 2026-09-26 against the TAGGED bytes (policy/v5.0.0, tree a8468fb3). The grader rewrites
+# `policies:` to the bytes it extracted from the tag and changes nothing else.
+#
+# The tag carries posture/tests/posture-trust-boundary/, which tests the UNVERSIONED authoring
+# copy. The served 5.0.0 body adds `only-this-policy-version`, so a forged posture on a pod that
+# claims nothing, which the authoring copy refuses, is out of the served body's scope. The last
+# skip row records that as measured.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: posture-trust-boundary-5-0-0-engine
+policies:
+  - ../../../../distribution/policies/v5.0.0/posture-trust-boundary.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: posture-trust-boundary-5-0-0
+    kind: Pod
+    resources: [pod-legit]
+    result: pass
+  - policy: posture-trust-boundary-5-0-0
+    kind: Pod
+    resources: [pod-forged-mismatch]
+    result: fail
+  - policy: posture-trust-boundary-5-0-0
+    kind: Pod
+    resources: [pod-no-posture, pod-other-version, pod-forged-no-claim]
+    result: skip

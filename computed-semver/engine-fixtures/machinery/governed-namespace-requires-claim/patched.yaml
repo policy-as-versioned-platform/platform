@@ -1,0 +1,47 @@
+# The bottom rung, as graded/cage.py's TIERS table defines `isolated` and cage_body.py extends it
+# to initContainers. Every field below was checked against that table and against the assertions
+# distribution/verify-governed-namespace-guard.sh makes of the same body.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unclaimed-governed
+  namespace: governed-ns
+  labels:
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: isolated
+spec:
+  hostIPC: false
+  hostNetwork: false
+  hostPID: false
+  preemptionPolicy: Never
+  priority: -10000
+  priorityClassName: cage-isolated
+  initContainers:
+  - name: setup
+    image: busybox
+    resources: { limits: { cpu: 100m, memory: 64Mi } }
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities: { drop: [ALL] }
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  containers:
+  - name: c
+    image: nginx
+    resources: { limits: { cpu: 100m, memory: 64Mi } }
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities: { drop: [ALL] }
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+  - name: waf-sidecar
+    image: ghcr.io/acme/coraza-waf:cage
+    resources: { limits: { cpu: 250m, memory: 256Mi } }
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities: { drop: [ALL] }
+      privileged: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true

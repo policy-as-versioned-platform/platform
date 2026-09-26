@@ -173,6 +173,21 @@ bash "$0" --selfcheck || fail "the selfcheck did not bite -- the checker itself 
 
 have kyverno || fail "kyverno CLI required for the offline cage proofs"
 
+# Eco-system ticket 146 item 10 (laya-loophole ticket 08, side finding 1). Every offline proof
+# below calls the `kyverno` on PATH, and this script used to assert no version: on an engine
+# the estate does not run, a red here read as a defect in the cage when it was a fact about the
+# CLI. The engine is now named, and it must be a row of engine/kyverno/engine-table.yaml, the
+# engines the estate may run. Which LINES support it is the grader's question
+# (computed-semver/verify-cage-engine.sh); this script grades the authoring copies.
+ENGINE_BIN="$(command -v kyverno)"
+ENGINE_VERSION="$(kyverno version 2>/dev/null | sed -n 's/^Version: *v\{0,1\}\([0-9][0-9.]*\) *$/\1/p' | head -1)"
+[ -n "$ENGINE_VERSION" ] || fail "the kyverno on PATH ($ENGINE_BIN) did not report a version"
+if command -v sha256sum >/dev/null; then ENGINE_SHA="$(sha256sum "$ENGINE_BIN" | awk '{print $1}')"
+else ENGINE_SHA="$(shasum -a 256 "$ENGINE_BIN" | awk '{print $1}')"; fi
+python3 "$HERE/../engine/engine_table.py" versions | grep -qx "$ENGINE_VERSION" \
+  || fail "the kyverno on PATH reports $ENGINE_VERSION, which is not a row of engine/kyverno/engine-table.yaml: the offline proofs would grade an engine the estate does not run"
+say "engine: kyverno $ENGINE_VERSION at $ENGINE_BIN (binary sha256 $ENGINE_SHA), a row of engine/kyverno/engine-table.yaml"
+
 say "1. offline: the £ engine — the whole ladder, £ picks the tier, floor clamps, TCoR booked"
 python3 "$HERE/cage.py" selfcheck || fail "cage.py selfcheck failed"
 
@@ -826,4 +841,4 @@ MUT
   echo "  ok   all three rungs' reach cages are still present at the end of the run (nothing deleted them)"
 fi
 
-pass_line "the Namespace declares the tier and the pod wears it; the cage only tightens; the bottom rung runs and reaches nothing; TCoR booked"
+pass_line "on kyverno $ENGINE_VERSION: the Namespace declares the tier and the pod wears it; the cage only tightens; the bottom rung runs and reaches nothing; TCoR booked"

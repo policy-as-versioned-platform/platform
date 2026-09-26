@@ -137,7 +137,13 @@ spec:
         # fakes a tag, a signature or a commit hash, so the field stays empty
         # and the live-tail checks could-not-look by name rather than reporting
         # a defect that is really an unmade release.
-        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major", tested_engines: { scope: published-cage-fixtures-v1, kyverno: ["1.18.2"] } }
+        #
+        # `tested_engines` (hub ADR-0033): this line supports exactly the engines listed, and on
+        # each one every body in distribution/policies/v5.0.0/ compiles and passes its fixture.
+        # The scope moved from published-cage-fixtures-v1 (two fixture families) to
+        # every-served-body-v1 on 2026-09-26 (ticket 146), after computed-semver/
+        # engine_compatibility.py graded all five bodies on 1.18.2 under the wider meaning.
+        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---

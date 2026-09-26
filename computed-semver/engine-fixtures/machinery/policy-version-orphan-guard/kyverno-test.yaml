@@ -1,0 +1,23 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: policy-version-orphan-guard-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+results:
+  # a claim the array serves is allowed; a claim it does not serve is reported (Audit, nothing
+  # denied); a pod that claims nothing is out of scope.
+  - policy: policy-version-orphan-guard
+    kind: Pod
+    resources: [served-claim]
+    result: pass
+  - policy: policy-version-orphan-guard
+    kind: Pod
+    resources: [orphan-claim]
+    result: fail
+  - policy: policy-version-orphan-guard
+    kind: Pod
+    resources: [unclaimed]
+    result: skip
