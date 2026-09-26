@@ -96,12 +96,17 @@ def index(needle):
             return i
     raise SystemExit(f"FAIL: no step runs {needle}")
 gate = index("cut-release-gate.py")
+# Ticket 146 item 5 (hub ADR-0033 point 4): every engine cell passes before any commit or tag,
+# with one binary per row of the engine table, and the step is not skipped on a real cut.
+cells = index("engine_compatibility.py")
+assert "install-kyverno-engines.sh" in runs[cells] and "--engine-dir" in runs[cells], runs[cells]
+assert steps[cells].get("if") == "inputs.backfill_evidence_only != 'true'", steps[cells].get("if")
 evidence = index("cut-release-commit-evidence.sh")
 array = index("cut-release-update-array-commit.sh")
 tag = index("cut-release-create-tags.sh")
 push = index("cut-release-push.sh")
-assert gate < evidence < array < tag < push, (gate, evidence, array, tag, push)
-print("ok  gate -> commit evidence -> correct the array -> tag -> push, in that order")
+assert gate < cells < evidence < array < tag < push, (gate, cells, evidence, array, tag, push)
+print("ok  gate -> engine cells -> commit evidence -> correct the array -> tag -> push, in that order")
 PYEOF
 
 echo

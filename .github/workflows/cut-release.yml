@@ -146,6 +146,28 @@ jobs:
         # for exactly what CUT_RELEASE_TEST_MODE does and does not touch.
         run: python3 .github/scripts/cut-release-gate.py tags.json
 
+      - name: engine cells -- every line and the machinery pass on every engine they list, before any tag is signed
+        # Eco-system ticket 146 item 5, hub ADR-0033 point 4. One binary per row of
+        # engine/kyverno/engine-table.yaml, each installed by the table's checksum, then one grader
+        # run over every cell. A line this dispatch cuts is still uncut here, so it is graded as a
+        # candidate on this commit, the commit that declares it; every other cell is graded with it.
+        # Any failed or could-not-look cell stops the job before the evidence commit, so no tag is
+        # signed until every cell passes. Limit: the array commit that follows adds the cut version
+        # to the machinery's orphan allow-list literal, so the tagged machinery differs from the
+        # graded one by that list; the hub gate grades platform main, which carries it, every day.
+        if: inputs.backfill_evidence_only != 'true'
+        run: |
+          set -euo pipefail
+          bash engine/install-kyverno-engines.sh linux_x86_64 "$RUNNER_TEMP/kyverno-engines"
+          if python3 computed-semver/engine_compatibility.py --engine-dir "$RUNNER_TEMP/kyverno-engines" \
+               >"$RUNNER_TEMP/engine-cells.txt"; then
+            tail -n 8 "$RUNNER_TEMP/engine-cells.txt"
+          else
+            tail -n 60 "$RUNNER_TEMP/engine-cells.txt"
+            echo "::error::an engine cell did not pass; no tag is signed"
+            exit 1
+          fi
+
       - name: upload the signed gate evidence as a run artifact (always -- a refusal's own evidence matters most)
         if: always()
         uses: actions/upload-artifact@v4

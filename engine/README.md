@@ -12,6 +12,7 @@ this ticket, even though `estate/driftwood/README.md` and
 | Piece | File | Role |
 |---|---|---|
 | Kyverno | `kyverno/helmrelease.yaml` | admission controller; installs the `policies.kyverno.io` CRD group (`ValidatingPolicy`, `MutatingPolicy`) every policy in this repo needs |
+| Engine table | `kyverno/engine-table.yaml` | every Kyverno version the estate may run, with a sourced sha256 for each CLI archive, `install.yaml` and the Helm chart (hub ADR-0033, ticket 146). Read by `engine_table.py`; `install-kyverno-engines.sh <platform> <dest>` installs every row by checksum. A row supports nothing: a line supports the engines its own `tested_engines` lists |
 | flux-operator | `flux-operator/helmrelease.yaml` | installs the `ResourceSet`/`FluxInstance` CRDs `estate/platform/distribution` needs; no `FluxInstance` is created, so the cluster's existing vanilla Flux install is untouched (ADR-0005 guardrail) |
 
 ## Ordering
