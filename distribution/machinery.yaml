@@ -19,4 +19,4 @@
 #
 # A listed engine is a claim that the grader must pass. Adding one is a reviewed change that passes
 # the new cell in the same change (ADR-0033 point 5).
-tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] }
+tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2", "1.19.1"] }
