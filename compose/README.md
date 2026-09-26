@@ -338,6 +338,58 @@ itself needs.
   exactly the versions it composed, or a claim on a composed but uninstalled version reaches no
   cage. Each adopter's `scripts/render_composed.py reach` grades that offline.
 
+## What eco-system ticket 145 changes: the platform prices the twin agent's cage
+
+- **A new `prices[]` kind, `agent-cage`** (a `PRICE_KINDS` major the £ seam grades; ADR-0031).
+  One line per composition, `source: platform`, for a subject that is not a pod, named on the line
+  (`subject: twin-agent`). Its `proposed_tier` is the twin agent's rung on the one ladder, picked
+  by the adopter's own selection-policy package over residuals platform's twin-agent dial table
+  (`graded/cage.py` `TWIN_AGENT_TIERS`, its own `TWIN_AGENT_TABLE_VERSION`) derives. The tier fold
+  (`wargamer/wargamer.py` `select_party_tier`, `shift-left/tier_binding.py` `bind`) keys on the
+  subject, so the line never folds into a Namespace tier, and only the kind that declares a
+  subject may carry one (`wargamer.folds_into_namespace`: a `feed` line hand-carrying
+  `subject: twin-agent`, or an agent-cage line carrying the Namespace's, is refused as a missing
+  instrument rather than folded out); `wargamer.wargame_agent_cage` is its
+  own drift row and `tier_pr.py` lands no file for it: the composed line is the declaration the
+  adopter's twin-sweep writer job reads (ticket 143 item 4), and the pull request that recomposes
+  it is the proposal a human merges. Carried beside the exposure and never summed into it
+  (`EXPOSURE_KINDS` is unchanged): its magnitude is a slice of a residual the twin line already
+  carries.
+- **The scenario is the adopter's numbers, the platform's table and feeds' frequency** (ticket 30
+  decisions 12 and 15). Loss magnitude: the gap between the adopter's residual at the loosest pod
+  rung and at its selected pod rung, read off the same composition's `source: twin` line, times
+  the hub gate's detection window (`graded/cage.py` `DETECTION_WINDOW`: one day, the truth run's
+  own schedule, with its source and what it assumes on the line). Frequency: the threat register's
+  `scheduled-agent-misuses-write-credential` row, payload major 4, read off the payload at the
+  major the adopter pins. The amount is `fair.expected_ale`, the closed-form expectation of the
+  same compound process `fair.simulate` samples, because the simulation rounds each year's event
+  count to an integer and resolves no event at a frequency this small; the line says so
+  (`scenario.annualised_by`) and carries the simulated ALE and `p_gt_0` beside it.
+- **The reductions are derived, never typed.** `graded/cage.py` `TWIN_AGENT_PATHS` names the four
+  misuse paths and the loosest rung that closes each; `_twin_agent_reach` derives what each path
+  can still land off the served tree and the composed prices, naming what it read on
+  `reach_basis`: the two token paths off `.github/workflows/twin-sweep.yml` (scheduled, and a
+  job running with `contents: write`: the whole gap; a sweep not served, not scheduled or
+  declaring no `contents: write` is a named could-not-look, because the token's scope then falls
+  to a repository default this composition cannot read), the proposal path off the pull-request
+  workflows' own `run` steps, comment lines stripped (one step must run `tier_binding.py` AND one
+  must recompose the party artefact, test for drift against `composed/` and exit non-zero after
+  the test; either absent is a could-not-look, and a drift test that survives only as a comment,
+  or whose exit is zero, is no gate), the model path off the composed prices (no price rests on a
+  grade above 3). `cage.twin_agent_residuals` takes the residual at a
+  rung as what the loosest open path can land, and a rung with an open could-not-look path has
+  no residual and is not a candidate, so the pick falls closed (the selfcheck measures each: a
+  sweep without `contents: write` picks `isolated`; a gate without the recompose step, with its
+  drift test commented out, or with the exit after it turned to zero, picks `quarantine`). Measured consequence on the served trees: `restricted` and `quarantine` carry
+  `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung and never enters the
+  selection.
+- **An adopter that cannot price the line gets it as a named could-not-look** (`amount: null`,
+  the reason on `could_not_look`): no `source: twin` line yet (tuppence and ludlow until ticket
+  144), or a pinned register without the row (every adopter until its feeds pin moves to major 4).
+  With no rung on the line, the sweep's writer job reads none and falls closed to `isolated`
+  (ADR-0022). `verify/pound-seam/` in the hub grades the line (leg 3b) and re-derives the rung
+  through the adopter's own package.
+
 ## Run
 
 ```sh

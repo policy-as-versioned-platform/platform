@@ -272,6 +272,39 @@ def selfcheck() -> None:
         rc, last, _ = plant(tmp, "isolated", two_feeds)
         assert rc == 0, ("declared at the strictest of the two, it is bound", rc, last)
 
+        # 15. eco-system ticket 145 (ADR-0031 decision 6): the platform's `agent-cage`
+        #     line carries a rung for the TWIN AGENT, another subject on the same
+        #     ladder. bind() keys on the subject, so that line never binds the
+        #     Namespace: planted at every rung beside a Namespace line, the verdict
+        #     is the one the Namespace lines alone give, and the agent line is not
+        #     among the lines the verdict names.
+        agent = {"source": "platform", "kind": "agent-cage", "subject": "twin-agent",
+                 "name": "twin-agent", "proposed_tier": "isolated", "changed": True}
+        for rung in ("baseline", "restricted", "quarantine", "isolated"):
+            a = plant(tmp, "restricted", [line("ico", "restricted"), dict(agent, proposed_tier=rung)])
+            b = plant(tmp, "restricted", [line("ico", "restricted")])
+            assert (a[0], a[2]["bound"], a[2]["required"]) == (b[0], b[2]["bound"], b[2]["required"]) == (0, True, "restricted"), \
+                ("a twin-agent rung must not move the Namespace verdict", rung, a[1])
+            assert "platform/agent-cage" not in " ".join(a[2]["lines"]), a[2]["lines"]
+            c = plant(tmp, "baseline", [line("ico", "restricted"), dict(agent, proposed_tier=rung)])
+            assert c[0] == 1 and c[2]["required"] == "restricted", ("the Namespace lines still bind", rung, c[1])
+        rc, last, v = plant(tmp, "baseline", [dict(agent, proposed_tier="isolated")])
+        assert rc == 0 and "nothing binds" in last, ("an agent line alone binds no Namespace", rc, last)
+        # 15b. Only the kind that declares a subject may carry one (ticket 145 review,
+        #      finding 2). A `feed` line hand-carrying `subject: twin-agent` dropped out
+        #      of the fold in the first cut, so `baseline` declared over an `isolated`
+        #      feed line graded BOUND. It is a missing instrument now: the fold refuses
+        #      the document, and so does an agent-cage line carrying the Namespace's
+        #      subject or none.
+        smuggled = dict(line("feeds", "isolated"), subject="twin-agent")
+        rc, last, v = plant(tmp, "baseline", [line("ico", "baseline"), smuggled])
+        assert rc == 1 and v is None and "missing instrument" in last and "carries subject" in last, \
+            ("a feed line carrying the twin agent's subject is refused, never folded out", rc, last)
+        for bad in (dict(agent, subject="namespace"), {k: v for k, v in agent.items() if k != "subject"}):
+            rc, last, v = plant(tmp, "isolated", [line("ico", "isolated"), bad])
+            assert rc == 1 and v is None and "carries subject" in last, \
+                ("an agent-cage line without the twin agent's subject is refused", bad, rc, last)
+
     print("ok  tier binding: driftwood's committed shape (isolated over {isolated, baseline, "
           "isolated}) is bound; restricted or baseline over a stricter line is REFUSED and told "
           "what to declare; tighter or equal is bound; no declaration is isolated by default; "

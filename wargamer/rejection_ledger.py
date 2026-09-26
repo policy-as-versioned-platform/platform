@@ -100,7 +100,11 @@ def fingerprint(prices: list[dict]) -> dict:
     ride on the single `source: twin` price entry composition emits. An adopter
     with no twin overlay yet has an empty fingerprint, which compares equal to
     another empty one -- absence is not a mismatch, it is the same absence."""
-    twin = next((p for p in prices if p.get("source") == "twin"), {})
+    # `source: twin` AND `kind: twin`: eco-system ticket 145's `agent-cage` line
+    # is priced by the platform (source: platform) and carries the same
+    # policy_version, so keying on the source alone was one adjective short of
+    # naming the line this fingerprint is about.
+    twin = next((p for p in prices if p.get("source") == "twin" and p.get("kind") == "twin"), {})
     return {"curve_hash": twin.get("curve_hash") or "",
             "policy_version": twin.get("policy_version") or ""}
 
@@ -235,9 +239,13 @@ def selfcheck() -> None:
     assert "derived from 1 closed-unmerged" in note, note
 
     # 6. the fingerprint rides the twin entry, and absence equals absence.
-    assert fingerprint([{"source": "twin", "curve_hash": "sha256:aa",
+    assert fingerprint([{"source": "twin", "kind": "twin", "curve_hash": "sha256:aa",
                          "policy_version": "1.0.0"}]) == today[k]
     assert fingerprint([{"source": "ico"}]) == {"curve_hash": "", "policy_version": ""}
+    # eco-system ticket 145: the platform's agent-cage line carries the same
+    # policy_version and is not the twin entry; the fingerprint never reads it.
+    assert fingerprint([{"source": "platform", "kind": "agent-cage", "subject": "twin-agent",
+                         "policy_version": "1.0.0"}]) == {"curve_hash": "", "policy_version": ""}
 
     print("ok  the ledger is a decay curve derived from closed-unmerged PRs, keyed "
           "<org>/<kind>/<slug>: one rejection suppresses for just under a half-life then "

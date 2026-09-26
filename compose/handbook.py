@@ -59,6 +59,9 @@ HANDBOOK_PATH = "composed/HANDBOOK.md"
 # (ADR-0020's ticket 69 note), a switching entry is a measured counterfactual (ticket 45), and a
 # supersede entry is the surcharge on a line that already proposed its tier (ticket 84).
 # Only these render `—` in the tier column; any other kind with no proposed_tier is named absent.
+# `agent-cage` (eco-system ticket 145, ADR-0031) is deliberately NOT here: it proposes a tier, the
+# twin agent's rung for the subject it names, and an agent-cage line with no rung is a priced
+# absence the page names, never a dash.
 NO_TIER_KINDS = ("premium", "switching", "supersede")
 # The one recorded limit this page does not state. composition.py writes it on every run:
 # `closed` when every priced feed was read from its publisher's own pinned tree, `open` naming
@@ -302,7 +305,10 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
       "could not price carries its reason instead of a number, and is named in section 6. "
       "In the *proposed tier* column, `—` means the entry's kind (`premium`, `switching`, "
       "`supersede`) "
-      "proposes no tier by construction; a feed entry with no `proposed_tier` is named absent.")
+      "proposes no tier by construction; a feed entry with no `proposed_tier` is named absent. "
+      "An `agent-cage` entry prices the twin agent's cage (ADR-0031): the tier in its row is the "
+      "twin agent's own rung, for the subject the row names, never the Namespace's, and the "
+      "Namespace fold does not read it.")
     a("")
     prices = _listed(absences, evidence, "prices", EVIDENCE_PATH,
                      "nothing was priced, so this page states no cost")
@@ -362,6 +368,13 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                 # loss, and carries its own basis sentence
                 a(f"- **{p.get('source')}/{p.get('name')}** ({p.get('kind')}) — basis: "
                   f"{p['basis']}")
+            elif p.get("amount") is None:
+                # A line that could not be priced has no amount for a frequency to sit
+                # behind: the absence says the frequency was never read, and section 6
+                # carries the composer's own reason (ticket 145 review, finding 7).
+                _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
+                        f"no loss frequency was read for {p.get('source')}/{p.get('name')}: the "
+                        "line could not be priced, and its `could_not_look` above says why")
             else:
                 _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
                         f"the loss frequencies behind {p.get('source')}/{p.get('name')}'s amount "
@@ -370,6 +383,34 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
             # eco-system ticket 141). The twin's line carries it READ off the served payload;
             # a payload that predates the field (payload schema before ticket 144's major)
             # leaves it null, which is a named absence here, never a grade this page invents.
+            # Eco-system ticket 145 (ADR-0031): the twin agent's cage line. Its rung is the twin
+            # agent's, read by the adopter's twin-sweep writer job (ticket 143 item 4), and the
+            # sentence names the subject, the scenario's inputs and the reduction basis, all off
+            # the line. A line that could not be priced says what its sweep then reads.
+            if p.get("kind") == "agent-cage":
+                subject = p.get("subject") or "?"
+                sc = p.get("scenario") or {}
+                if p.get("amount") is None:
+                    a(f"- **{p.get('source')}/{p.get('name')}** (`agent-cage`, subject `{subject}`) — "
+                      "the twin agent's cage could not be priced; section 6 names why. With no rung "
+                      "on this line, the twin-sweep writer job reads none and falls closed to "
+                      "`isolated` (ADR-0022, eco-system ticket 143).")
+                else:
+                    residuals = p.get("residuals") or {}
+                    a(f"- **{p.get('source')}/{p.get('name')}** (`agent-cage`, subject `{subject}`) — "
+                      f"a rung for the twin agent, not the Namespace: `{p.get('proposed_tier')}`, "
+                      f"picked by selection-policy version {p.get('policy_version')} over residuals "
+                      f"derived from `{p.get('residual_basis')}` ("
+                      + ", ".join(f"{r} {('could not look' if v is None else _money(v, p['currency']))}"
+                                  for r, v in residuals.items())
+                      + f"). Loss magnitude: the gap between this party's residual at `{sc.get('loosest_pod_tier')}` "
+                      f"and at `{sc.get('selected_pod_tier')}` on its own twin line "
+                      f"({_money(sc.get('gap'), p['currency']) if isinstance(sc.get('gap'), (int, float)) else 'unstated'} a year) "
+                      f"over the gate's detection window of {sc.get('window_days')} day(s) "
+                      f"({sc.get('window_source')}). Frequency: threat-register@{p.get('register_version')}. "
+                      f"Run cost {_money((p.get('cost') or {}).get('amount', 0.0), p['currency'])} at every rung, "
+                      "outside the selection. The rung is what the twin-sweep writer job reads "
+                      "(eco-system ticket 143 item 4).")
             if p.get("kind") == "twin":
                 grade = p.get("rests_on_grade")
                 if isinstance(grade, int) and not isinstance(grade, bool):
@@ -863,6 +904,55 @@ def selfcheck() -> int:
           "no absence for it",
           "**twin/forward-intel** — rests on evidence grade 3" in stated
           and "prices[4].rests_on_grade" not in stated)
+    # 12b. eco-system ticket 145 (ADR-0031): the twin agent's cage line. Priced, its row shows
+    #      the twin agent's rung and the sentence beneath names the subject, the gap, the window,
+    #      the register and the reduction basis, all read off the line; unpriced, the row reads
+    #      "could not look", the reason is a named absence and the sentence says the sweep falls
+    #      closed to `isolated`. Neither shape is dashed as tierless: the line proposes a rung.
+    agent_line = {"source": "platform", "kind": "agent-cage", "subject": "twin-agent",
+                  "name": "twin-agent", "perspective": "fixture", "currency": "GBP",
+                  "amount": 0.87, "old_amount": 0.87, "changed": False,
+                  "proposed_tier": "baseline", "old_tier": "baseline",
+                  "residual_basis": "platform-twin-agent-table@1.0.0",
+                  "residuals": {"baseline": 0.87, "restricted": 0.87, "quarantine": 0.87, "isolated": 0.0},
+                  "scenario": {"gap": 1290399.36, "loosest_pod_tier": "baseline",
+                               "selected_pod_tier": "isolated", "window_days": 1.0,
+                               "window_source": "fixture truth.yml cron"},
+                  "register_version": "v4", "policy_version": "1.1.0",
+                  "cost": {"amount": 0.0, "currency": "GBP"},
+                  "lef_basis": "fixture agent basis"}
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"].append(agent_line)
+    priced = render(f2, e2)
+    check("a priced agent-cage line shows the twin agent's rung in the tier column, not a dash",
+          "| platform | agent-cage | twin-agent | fixture | GBP | GBP 0.87 | no | baseline |" in priced)
+    check("...and its sentence names the subject, the gap, the window, the register and the basis",
+          "(`agent-cage`, subject `twin-agent`)" in priced
+          and "a rung for the twin agent, not the Namespace: `baseline`" in priced
+          and "GBP 1,290,399.36 a year" in priced and "window of 1.0 day(s)" in priced
+          and "threat-register@v4" in priced and "platform-twin-agent-table@1.0.0" in priced
+          and "isolated GBP 0.00" in priced and "prices[4].proposed_tier" not in priced)
+    f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
+    e2["prices"].append({k: v for k, v in agent_line.items()
+                         if k not in ("residuals", "scenario", "register_version", "policy_version",
+                                      "lef_basis")}
+                        | {"amount": None, "proposed_tier": None, "old_tier": None,
+                           "could_not_look": "missing instrument: no `source: twin` line"})
+    unpriced = render(f2, e2)
+    check("an unpriced agent-cage line reads could-not-look, names its reason as an absence, and "
+          "says the sweep falls closed to isolated",
+          "| platform | agent-cage | twin-agent | fixture | GBP | could not look (section 6) | no | absent |"
+          in unpriced
+          and "`prices[4].amount` (in `composed/evidence.json`)" in unpriced
+          and "falls closed to `isolated`" in unpriced
+          and "`prices[4].proposed_tier` (in `composed/evidence.json`)" in unpriced)
+    # The composer writes no lef_basis on a line it refused before reading the register, so
+    # the page names that absence too; it must say no frequency was read, not that one sits
+    # "behind its amount" when the line has none (ticket 145 review, finding 7).
+    check("...and the frequency absence on an unpriced line says none was read, not 'behind its amount'",
+          "`prices[4].lef_basis` (in `composed/evidence.json`) — no loss frequency was read for "
+          "platform/twin-agent: the line could not be priced" in unpriced
+          and "behind platform/twin-agent's amount" not in unpriced)
     for what, value in (("null", None), ("a boolean", True), ("a string", "3"), ("a float", 3.0)):
         f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
         e2["prices"].append(dict(twin_line, rests_on_grade=value))
