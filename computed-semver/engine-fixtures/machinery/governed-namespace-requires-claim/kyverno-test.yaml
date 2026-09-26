@@ -1,0 +1,25 @@
+# `kyverno test` does not evaluate matchConstraints.namespaceSelector (measured 2026-09-26: a
+# selector that matches nothing still passes every row), so every pod here sits in governed-ns
+# and this folder grades what the body does to them, not its namespace scoping. The scoping is
+# proved structurally by distribution/verify-governed-namespace-guard.sh.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: governed-namespace-requires-claim-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+results:
+  # a pod that claims nothing in a governed Namespace lands on the bottom rung, caged and not
+  # denied, with its initContainer hardened too.
+  - policy: governed-namespace-requires-claim
+    kind: Pod
+    resources: [unclaimed-governed]
+    patchedResources: patched.yaml
+    result: pass
+  # a pod that claims a version is cage-tier's, not this policy's.
+  - policy: governed-namespace-requires-claim
+    kind: Pod
+    resources: [claimed-governed]
+    result: skip

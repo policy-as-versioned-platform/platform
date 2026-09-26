@@ -1,0 +1,23 @@
+# `kyverno test` does not evaluate matchConstraints.namespaceSelector (measured 2026-09-26: a
+# selector that matches nothing still passes every row), so every pod here sits in governed-ns
+# and this folder grades what the body does to them, not its namespace scoping. The scoping is
+# proved structurally by distribution/verify-governed-namespace-guard.sh.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: governed-namespace-unclaimed-report-engine
+policies:
+  - rendered by the grader from the graded commit
+resources:
+  - resources.yaml
+results:
+  # the unclaimed pod in a governed Namespace is reported (Audit: observed, never refused); a
+  # claiming pod there passes.
+  - policy: governed-namespace-unclaimed-report
+    kind: Pod
+    resources: [unclaimed-governed]
+    result: fail
+  - policy: governed-namespace-unclaimed-report
+    kind: Pod
+    resources: [claimed-governed]
+    result: pass

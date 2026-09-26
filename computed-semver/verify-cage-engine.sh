@@ -28,4 +28,14 @@ python3 cage_engine.py --selfcheck
 # Ticket 71: grade the actual published policy trees under the declared CLI.
 # Kept in this registered check: no second discovery/manifest entry is needed.
 python3 -m unittest discover -s . -p test_engine_compatibility.py
-python3 engine_compatibility.py
+# Ticket 146: one grader run grades every cell, one binary per engine. The hub's truth.yml
+# installs every row of engine/kyverno/engine-table.yaml by checksum into
+# KYVERNO_ENGINE_DIR/<version>/kyverno and names that directory here. With no such directory
+# (a local run) the grader is handed the kyverno on PATH alone, and every listed cell it cannot
+# fill reads could-not-look by name. The grader identifies each binary by running it.
+if [ -n "${KYVERNO_ENGINE_DIR:-}" ]; then
+  [ -d "$KYVERNO_ENGINE_DIR" ] || { echo "FAIL: KYVERNO_ENGINE_DIR=$KYVERNO_ENGINE_DIR is not a directory"; exit 1; }
+  python3 engine_compatibility.py --engine-dir "$KYVERNO_ENGINE_DIR"
+else
+  python3 engine_compatibility.py --engine "$(command -v kyverno)"
+fi

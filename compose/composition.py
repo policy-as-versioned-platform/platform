@@ -1287,6 +1287,15 @@ def _load_module(root: Path, filename: str, module_name: str):
     return mod
 
 
+def machinery_members(root: Path) -> list[dict]:
+    """Every `platform-machinery` member this platform tree composes, rendered exactly as
+    composition renders it. The public name for `_load_guards`, so the engine grader
+    (`computed-semver/engine_compatibility.py`, eco-system ticket 146 item 4) grades the bodies
+    composition ships through the same call, and not a second list of renderers that could drift
+    from this one."""
+    return _load_guards(root)
+
+
 def _load_guards(root: Path) -> list[dict]:
     """`_load_guards_from`, with the parent's OWN `cage_body` bound under that shared module name
     for the duration and the previous binding put back afterwards (ticket 111).

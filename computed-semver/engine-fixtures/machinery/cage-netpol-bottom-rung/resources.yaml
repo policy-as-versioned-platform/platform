@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: orphan-isolated
+  namespace: app-ns
+  labels:
+    policy-as-versioned.dev/policy-version: "0.0.1"
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: isolated
+spec:
+  containers: [{ name: c, image: nginx }]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unclaimed-isolated
+  namespace: governed-ns
+  labels:
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: isolated
+spec:
+  containers: [{ name: c, image: nginx }]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: served-isolated
+  namespace: app-ns
+  labels:
+    policy-as-versioned.dev/policy-version: "5.0.0"
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: isolated
+spec:
+  containers: [{ name: c, image: nginx }]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: orphan-uncaged
+  namespace: app-ns
+  labels:
+    policy-as-versioned.dev/policy-version: "0.0.1"
+    posture.acme.io/tier: isolated
+spec:
+  containers: [{ name: c, image: nginx }]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: orphan-baseline
+  namespace: app-ns
+  labels:
+    policy-as-versioned.dev/policy-version: "0.0.1"
+    posture.acme.io/caged: "true"
+    posture.acme.io/tier: baseline
+spec:
+  containers: [{ name: c, image: nginx }]

@@ -1,0 +1,36 @@
+# require-nonroot @ 5.0.0 on one engine (eco-system ticket 146 item 3).
+#
+# Written 2026-09-26 against the TAGGED bytes (policy/v5.0.0, tree a8468fb3, equal to the array
+# commit's and to main's). The grader rewrites `policies:` to the bytes it extracted from the tag
+# and changes nothing else. The path below lets a reader run `kyverno test` on this folder from a
+# platform checkout, where distribution/policies/v5.0.0/ carries the same tree.
+#
+# The tag's own fixture, distribution/tests/require-nonroot/, tests 4.0.0 and 5.0.0 together for
+# coexistence. This one tests the 5.0.0 body alone: its plain arm, its re-carried
+# root-if-attested arm, and its self-scoping.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-nonroot-5-0-0-engine
+policies:
+  - ../../../../distribution/policies/v5.0.0/require-nonroot.yaml
+resources:
+  - resources.yaml
+results:
+  # non-root with a read-only root filesystem; and root, attested, with every container
+  # hardened (condition C).
+  - policy: require-nonroot-5-0-0
+    kind: Pod
+    resources: [pod-compliant, pod-root-attested]
+    result: pass
+  # non-root with no read-only root filesystem; and the attested pod's exact hardening with no
+  # attestation, which is the row that makes the attestation mean something.
+  - policy: require-nonroot-5-0-0
+    kind: Pod
+    resources: [pod-violating, pod-root-unattested]
+    result: fail
+  # another version's claim, and no claim at all: out of this body's scope.
+  - policy: require-nonroot-5-0-0
+    kind: Pod
+    resources: [pod-other-version, pod-unversioned]
+    result: skip
