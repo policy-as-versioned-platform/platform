@@ -48,16 +48,16 @@ versions:
       checksums: https://github.com/kyverno/kyverno/releases/download/v1.18.2/checksums.txt
       darwin_arm64:
         file: kyverno-cli_v1.18.2_darwin_arm64.tar.gz
-        sha256: cc69bc6638da1993146c134943fac91cbc9dd0ce60a3e88c6d7c518ae00f1abc
+        sha256: "cc69bc6638da1993146c134943fac91cbc9dd0ce60a3e88c6d7c518ae00f1abc"
       linux_x86_64:
         file: kyverno-cli_v1.18.2_linux_x86_64.tar.gz
-        sha256: cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b
+        sha256: "cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b"
     install:
       url: https://github.com/kyverno/kyverno/releases/download/v1.18.2/install.yaml
-      sha256: 3dcd43eaf11f0719084217148cd0c82a8fa49faa9b1a783ea5bea2cf84041bda
+      sha256: "3dcd43eaf11f0719084217148cd0c82a8fa49faa9b1a783ea5bea2cf84041bda"
       source: GitHub release API asset digest; not listed in checksums.txt
     chart:
       version: "3.8.2"
       app_version: v1.18.2
       index: https://kyverno.github.io/kyverno/index.yaml
-      digest: f4fc787cf1d6781eefb9e9b45837edcddcfae984c872888289914e97207cc5de
+      digest: "f4fc787cf1d6781eefb9e9b45837edcddcfae984c872888289914e97207cc5de"
