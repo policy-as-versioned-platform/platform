@@ -99,13 +99,17 @@
     },
     "size": {
       "type": "object",
-      "required": ["turnover", "customers", "data_subjects", "headcount", "as_of"],
+      "required": ["turnover", "customers", "headcount", "as_of"],
       "additionalProperties": false,
-      "description": "The party's own signed size. The percent-of-turnover and per-subject formulas scale against these numbers, so the price is this party's and no fixture's (ticket 25, ADR-0020). A stale `as_of` widens to the cap; it never refuses.",
+      "description": "The party's own signed size. The percent-of-turnover and per-subject formulas scale against these numbers, so the price is this party's and no fixture's (ticket 25, ADR-0020). A stale `as_of` widens to the cap; it never refuses. Four fields are required; `data_subjects` is optional since eco-system ticket 141 (decided 2026-09-25, ticket 144's Comments): neither comparable filing a demonstration party copies its size from discloses it, and nothing in the estate reads it today. A converter that needs it refuses by name when it is absent (ADR-0020); the rule against filling a gap with a figure nobody signed stands.",
       "properties": {
         "turnover": { "$ref": "#/definitions/money" },
         "customers": { "type": "integer", "minimum": 0 },
-        "data_subjects": { "type": "integer", "minimum": 0 },
+        "data_subjects": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional. The count of natural persons whose data this party holds, where the party's own filing states one. Absent means undisclosed, never zero: a per-subject converter that needs it refuses by name rather than pricing against a default."
+        },
         "headcount": { "type": "integer", "minimum": 0 },
         "as_of": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
       }
@@ -114,9 +118,14 @@
       "type": "object",
       "required": ["tolerance"],
       "additionalProperties": false,
-      "description": "The party's own risk tolerance, as a signed fact rather than a platform-held fixture (ticket 25). The tier selection reads this.",
+      "description": "The party's own risk appetite, as signed facts rather than platform-held fixtures (ticket 25). `tolerance` is the band the tier selection reads. `pricing_threshold` (eco-system ticket 141, ADR-0032) is the weakest evidence grade this party prices on: it sits here because it is the risk-bearer's signed choice about its own money, like its tolerance.",
       "properties": {
-        "tolerance": { "$ref": "#/definitions/money" }
+        "tolerance": { "$ref": "#/definitions/money" },
+        "pricing_threshold": {
+          "type": "integer",
+          "enum": [2, 3],
+          "description": "The weakest evidence grade on the twin's ladder this party prices on (ADR-0032 point 2). Optional; absent means the estate default, grade 2 (repeated historical co-movement). 3 declares that this party prices on published work not observed here, its comparable firms' regulatory records for example. Only 2 and 3 are admitted: grade 4 is an expert's say-so and grade 5 a model's, and neither may price for anybody, so a looser value is refused by the schema rather than clamped. The declaration governs both of the twin's thresholds for this party, the use-gate and path admission (`twin/evidence-ladder.yaml`), and every price the twin emits shows the weakest grade it rests on. The single source of truth for the admitted values: party_artefact.py reads this enum."
+        }
       }
     },
     "reporting_currency": {
