@@ -80,6 +80,29 @@ cage.py dials restricted                                                   # the
 cage.py selfcheck                                                          # the assertions
 ```
 
+## The twin agent's dial table (eco-system ticket 145; ADR-0031)
+
+One ladder, a dial table per actor class. `TWIN_AGENT_TIERS` carries the same four rung names
+for the adopter's twin acting with nobody at the keyboard (the scheduled sweep and the local
+clock's headless steps); `infra` is absent, because it is a Namespace role, not an actor's rung.
+
+| Rung | Writes | Model step | Local clock | Cost |
+|---|---|---|---|---|
+| `baseline` | observation line, proposal branch, pull request | local clock at grade 5 | runs | 0 |
+| `restricted` | as baseline | none | does not run | 0 |
+| `quarantine` | observation line only | none | does not run | 0 |
+| `isolated` | nothing (the twin job writes only its job log) | none | does not run | 0 |
+
+`reduce` is not on the row. It is derived (`twin_agent_reduce`) from the misuse paths each rung
+closes (`TWIN_AGENT_PATHS`, the rows of the hub's `twin/ecosystem-misuse-catalogue.yaml`) and
+from what each open path can still land, which the composition derives per adopter off its own
+served tree and prices; the residual at a rung is what the loosest open path can land, so doors
+onto one loss never add. Measured: `restricted` and `quarantine` carry `baseline`'s residual and
+`isolated` collapses it. `DETECTION_WINDOW` is the hub gate's cadence, copied with its source and
+assumptions; `cost` is 0 GBP in cash at every rung and enters `twin_agent_tcor`, never the
+selection. `compose/composition.py` `price_twin_agent` prices the line; the adopter's own
+selection policy picks the rung.
+
 ## The cage, at admission
 
 ```mermaid

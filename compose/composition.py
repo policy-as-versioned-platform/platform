@@ -461,8 +461,28 @@ FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema
 #               feeds module's own EOL ramp from the day that tag was cut
 #               (ticket 13 D5). Carried beside the line, never summed into the
 #               exposure the line is already in. Producer: price_supersede().
-PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability", "supersede")
+#   agent-cage  eco-system ticket 145 (ADR-0031): the PLATFORM's price of the
+#               twin agent's cage (source: platform), for a SUBJECT that is not a
+#               pod -- the line names it (`subject: twin-agent`). Its amount is
+#               the annualised loss of the scenario ticket 30 decision 12 fixed:
+#               the gap between the adopter's own residual at the loosest pod
+#               rung and at its selected pod rung, read off the same
+#               composition's `source: twin` line, over the hub gate's detection
+#               window, at the frequency the threat register publishes for
+#               `scheduled-agent-misuses-write-credential`. Its `proposed_tier`
+#               is the twin agent's rung, picked by the adopter's own selection
+#               policy over residuals platform's twin-agent table derives; the
+#               tier fold keys on the subject and never folds it into a
+#               Namespace. Carried BESIDE the exposure, never summed into it: the
+#               gap is a slice of a residual the twin line already carries.
+#               Producer: price_twin_agent(). A twin-agent line that cannot be
+#               priced is a named could-not-look on the line, never a silence.
+PRICE_KINDS = ("feed", "twin", "premium", "switching", "reliability", "supersede", "agent-cage")
 SUPERSEDE_KIND = "supersede"
+AGENT_CAGE_KIND = "agent-cage"
+AGENT_CAGE_SUBJECT = "twin-agent"
+AGENT_MISUSE_THREAT = "scheduled-agent-misuses-write-credential"
+AGENT_CAGE_PROPOSED_AS = "evidence"   # the composed line is the declaration the sweep reads (ticket 143)
 SUPERSEDE_BASIS = ("the pinned line's own amount x (eol_ramp(since, as_of) - 1): the surcharge "
                    "the feeds module's EOL ramp puts on a version its publisher has superseded, "
                    "+1x per year behind and capped at +4x, where `since` is the day the newer "
@@ -3698,6 +3718,287 @@ def price_twin(adopter_dir: Path, adopter_party: str, tolerance: float, floor: s
 
 
 # --------------------------------------------------------------------------
+# 8b'. the twin agent's cage (eco-system ticket 145; ADR-0031)
+# --------------------------------------------------------------------------
+
+
+def _agent_misuse_row(edges: list[dict], adopter_party: str,
+                      parent_trees: dict[str, Path]) -> tuple[dict | None, str | None, str | None]:
+    """The threat-register row the twin agent's cage is priced at: the adopter's
+    pinned register, at the major it pins, `institutions.<adopter>.threats.
+    scheduled-agent-misuses-write-credential` (payload major 4). Read off the
+    payload here, the way `_regime_holes` reads ico's, rather than through the
+    converter subprocess: the converter's argv is recorded per (feed, version)
+    for the portability replay, and a second call for the same version would
+    overwrite the headline's record. The publisher's converter still ships the
+    same reader (`to_fair_scenario.py threat <payload> <party> --threat <row>`).
+
+    Returns (row, pinned version, None) or (None, pinned version, why)."""
+    edge = next((e for e in edges if e.get("kind") in FEED_KINDS
+                 and _feed_name(e) == "threat-register"), None)
+    if edge is None:
+        return None, None, (f"{adopter_party} pins no threat-register feed, so no publisher supplies "
+                            f"the frequency the twin agent's cage is priced at (ticket 30 decision 12)")
+    version = str(edge["version"])
+    tree = edge_tree(edge, parent_trees) or PLATFORM_DIR
+    try:
+        path = feed_file("", "threat-register", version, tree)
+        if not path.exists():
+            raise Refused(f"feed threat-register@{version}: no file at {path}")
+        payload = load_feed_payload(path, "threat-register", version)
+    except Refused as e:
+        return None, version, str(e)
+    entry = (payload.get("institutions") or {}).get(adopter_party) or {}
+    row = (entry.get("threats") or {}).get(AGENT_MISUSE_THREAT)
+    if not isinstance(row, dict):
+        return None, version, (
+            f"threat-register@{version} (feed_version {payload.get('feed_version')!r}, pinned by "
+            f"{adopter_party}) publishes no institutions.{adopter_party}.threats."
+            f"{AGENT_MISUSE_THREAT} row; the row arrives with the register's major 4 (eco-system "
+            f"ticket 145) and this line prices nothing until the pin moves to it")
+    return row, version, None
+
+
+def _twin_agent_reach(prices: list[dict], adopter_dir: Path) -> tuple[dict, dict]:
+    """What each misuse path can still land, as a fraction of the scenario's loss
+    (the declaration gap), DERIVED from the served tree and the composed prices
+    (ticket 30 decision 15; graded/cage.py TWIN_AGENT_PATHS). None where it could
+    not be derived, with the reason beside it. Nothing here is typed."""
+    reach: dict[str, float | None] = {}
+    basis: dict[str, str] = {}
+    reach["writer-pushes-a-looser-declaration"] = 1.0
+    basis["writer-pushes-a-looser-declaration"] = (
+        "the writer job's token holds contents: write on the repository that serves the governed "
+        "Namespace, so a looser declaration it pushes to main is served whole: the whole gap, until "
+        "the hub gate reads the push (verify/schedules/lane.py grades a push to main by a scheduled "
+        "identity as a FAIL, eco-system ticket 142a)")
+    reach["writer-merges-or-tags-through-rest"] = 1.0
+    basis["writer-merges-or-tags-through-rest"] = (
+        "a REST merge lands the same looser declaration by another door, the whole gap; a REST tag "
+        "signs only this party's own artefacts and moves no price under this perspective; the union "
+        "of the two is the whole gap, until the hub gate reads the merge (lane.py grades a merge made "
+        "by a scheduled identity as a FAIL, ticket 142a)")
+    # P3: what a merged proposal can serve past the PULL-REQUEST gate. Each adopter's shift-left
+    # workflow runs platform's tier_binding.py on every pull request, which refuses a declaration
+    # looser than the strictest priced line; a merge over a red gate is the human's act (ADR-0031
+    # decision 1), not the twin agent's. Read off the served workflows, never assumed.
+    workflows = sorted(Path(adopter_dir).glob(".github/workflows/*.yml")) + \
+        sorted(Path(adopter_dir).glob(".github/workflows/*.yaml"))
+    binding = [w.name for w in workflows if "tier_binding.py" in w.read_text(errors="replace")]
+    if binding:
+        reach["misleading-proposal-merged-by-a-human"] = 0.0
+        basis["misleading-proposal-merged-by-a-human"] = (
+            f"{', '.join(binding)} runs shift-left/tier_binding.py on every pull request, which refuses "
+            f"a declaration looser than the strictest priced line clamped to the floor, so a proposal "
+            f"a human merges through the gate serves none of the gap; a merge over a red gate is the "
+            f"human's act, not the twin agent's (ADR-0031 decision 1)")
+    else:
+        reach["misleading-proposal-merged-by-a-human"] = None
+        basis["misleading-proposal-merged-by-a-human"] = (
+            "no workflow under .github/workflows runs shift-left/tier_binding.py, so what a merged "
+            "proposal can serve past the pull-request gate could not be derived")
+    # P4: what a model step's wrong binding or forecast can reach. A price rests on the weakest
+    # grade behind it (ADR-0032 point 3); the party schema admits a pricing threshold of 2 or 3
+    # only, and a model's claim is grade 5, so no priced figure rests on one.
+    above = [f"{e.get('source')}/{e.get('name') or e.get('kind')}" for e in prices
+             if isinstance(e.get("rests_on_grade"), int) and not isinstance(e.get("rests_on_grade"), bool)
+             and e["rests_on_grade"] >= 4]
+    if above:
+        reach["model-step-writes-a-wrong-binding-or-forecast"] = None
+        basis["model-step-writes-a-wrong-binding-or-forecast"] = (
+            f"{', '.join(above)} rests on a grade above 3, which the party schema admits no pricing "
+            f"threshold for; what a model's claim reaches in it could not be derived")
+    else:
+        reach["model-step-writes-a-wrong-binding-or-forecast"] = 0.0
+        basis["model-step-writes-a-wrong-binding-or-forecast"] = (
+            "no priced line rests on a grade above 3 (party/schema.json admits appetite."
+            "pricing_threshold 2 or 3 only, and a model's claim is grade 5, which never prices), so "
+            "a wrong binding or forecast a model step writes reaches no figure this composition prices")
+    return reach, basis
+
+
+def price_twin_agent(prices: list[dict], edges: list[dict], adopter_dir: Path, adopter_party: str,
+                     tolerance: float, floor: str | None, parent_trees: dict[str, Path],
+                     perspective_doc: dict, prev_prices: list[dict],
+                     band_currency: str | None = None) -> dict:
+    """The platform's price of the twin agent's cage, ONE `agent-cage` line
+    (ADR-0031 decision 5; eco-system ticket 145).
+
+    The scenario (ticket 30 decision 12): the loss magnitude is the gap between
+    this party's residual at the loosest pod rung and at its selected pod rung,
+    both read off the `source: twin` line this same composition priced, over the
+    window until the hub's gate detects the act (graded/cage.py
+    DETECTION_WINDOW, the gate's own schedule); the frequency is the register
+    row feeds publishes for `scheduled-agent-misuses-write-credential`, at the
+    major this party pins. fair.py annualises it. The reductions are DERIVED
+    (decision 15): what each misuse path can still land, off the served tree
+    and the composed prices, through graded/cage.py's twin-agent table. The
+    adopter's OWN selection policy picks the rung over those residuals and its
+    own band (ADR-0021); the proposer proposes it; a human merges. The twin
+    never prices or selects its own cage: the table and the window are the
+    platform's, the frequency feeds', the numbers this party's.
+
+    Cost is 0 GBP at every rung and never enters the selection. The line is
+    carried beside the exposure and never summed into it (EXPOSURE_KINDS): its
+    magnitude is a slice of a residual the twin line already carries.
+
+    A party that cannot price the line today gets it as a NAMED could-not-look
+    (amount null, the reason on `could_not_look`, ADR-0020): no twin line yet
+    (tuppence and ludlow, until ticket 144), or a pinned register without the
+    row (every adopter, until its pin moves to major 4). The rung the sweep's
+    writer job then reads (ticket 143 item 4) is none, which falls closed to
+    `isolated` (ADR-0022)."""
+    cage = _cage_engine()
+    reporting = _reporting_currency(perspective_doc)
+    prior = next((e for e in prev_prices if e.get("kind") == AGENT_CAGE_KIND
+                  and e.get("subject") == AGENT_CAGE_SUBJECT), None)
+    prior_tier = (prior or {}).get("proposed_tier")
+    prior_amount = (prior or {}).get("amount")
+    base = dict(
+        subject=AGENT_CAGE_SUBJECT, name=AGENT_CAGE_SUBJECT,
+        residual_basis=f"platform-twin-agent-table@{cage.TWIN_AGENT_TABLE_VERSION}",
+        proposed_as=AGENT_CAGE_PROPOSED_AS,
+        cost={"amount": 0.0, "currency": reporting,
+              "basis": "0 in cash at every rung: Actions minutes are free on a public repository "
+                       "and the local clock runs on the owner's own subscription (ticket 30 "
+                       "decision 15); booked in tcor, never read by the selection"},
+        window=dict(cage.DETECTION_WINDOW),
+    )
+
+    def refused(reason: str, **more: object) -> dict:
+        return _price_entry("platform", AGENT_CAGE_KIND, adopter_party, reporting, None,
+                            perspective_doc, could_not_look=reason, proposed_tier=None,
+                            old_tier=prior_tier, changed=False, old_amount=prior_amount,
+                            **base, **more)
+
+    twin = next((e for e in prices if e.get("source") == "twin" and e.get("kind") == "twin"), None)
+    if twin is None:
+        return refused(f"missing instrument: {adopter_party} composes no `source: twin` line, so "
+                       f"there is no residual at the loosest and at the selected pod rung to take "
+                       f"the loss magnitude from (ticket 30 decision 12; the line arrives with "
+                       f"eco-system ticket 144)")
+    residuals = twin.get("residuals") or {}
+    selected, loosest = twin.get("proposed_tier"), cage.ORDER[0]
+    if selected not in residuals or loosest not in residuals or twin.get("amount") is None:
+        return refused(f"missing instrument: {adopter_party}'s `source: twin` line carries no "
+                       f"residual at {loosest!r} and at its selected rung {selected!r} "
+                       f"(residuals: {sorted(residuals)}), so the gap cannot be read off it")
+    if twin.get("currency") != reporting:
+        return refused(f"missing instrument: the twin line is in {twin.get('currency')} and this "
+                       f"party reports in {reporting}; a gap is read in one currency")
+    gap = float(residuals[loosest]) - float(residuals[selected])
+    if gap < 0:
+        return refused(f"missing instrument: the twin line's residual at {loosest!r} "
+                       f"({residuals[loosest]}) is below its residual at {selected!r} "
+                       f"({residuals[selected]}); the residuals are not the table's, so the gap "
+                       f"cannot be read off them")
+    scenario = {
+        "gap": gap, "gap_currency": reporting,
+        "loosest_pod_tier": loosest, "selected_pod_tier": selected,
+        "gap_from": (f"the `source: twin` line's residuals ({twin.get('residual_basis')}): "
+                     f"{loosest} {residuals[loosest]} minus {selected} {residuals[selected]}"),
+        "window_days": cage.DETECTION_WINDOW["days"],
+        "window_source": cage.DETECTION_WINDOW["source"],
+        "window_detects": cage.DETECTION_WINDOW["detects"],
+        "window_assumes": list(cage.DETECTION_WINDOW["assumes"]),
+    }
+    row, version, why = _agent_misuse_row(edges, adopter_party, parent_trees)
+    if row is None:
+        return refused(f"missing instrument: {why}", scenario=scenario, register_version=version)
+    lef = row.get("lef")
+    if not (isinstance(lef, list) and len(lef) == 3 and all(isinstance(x, (int, float)) for x in lef)
+            and lef[0] <= lef[1] <= lef[2]):
+        return refused(f"missing instrument: threat-register@{version}'s {AGENT_MISUSE_THREAT} row "
+                       f"for {adopter_party} carries lef {lef!r}, not a lo<=mode<=hi triple",
+                       scenario=scenario, register_version=version)
+    lef_basis = row.get("lef_basis") or {}
+    if not lef_basis.get("statement") or not lef_basis.get("as_of"):
+        return refused(f"missing instrument: threat-register@{version}'s {AGENT_MISUSE_THREAT} row "
+                       f"for {adopter_party} publishes a frequency with no basis carrying a "
+                       f"`statement` and an `as_of` date", scenario=scenario, register_version=version)
+    lef_note = (f"Frequency basis ({lef_basis.get('kind', 'unlabelled')}, read {lef_basis['as_of']}): "
+                f"{lef_basis['statement']}"
+                + (f" COULD NOT LOOK: {lef_basis['could_not_look']}" if lef_basis.get("could_not_look") else ""))
+    window_years = cage.detection_window_years()
+    lm_point = gap * window_years
+    scenario.update(lm=[lm_point, lm_point, lm_point],
+                    lm_basis=f"the gap ({gap} {reporting} a year) times the window "
+                             f"({cage.DETECTION_WINDOW['days']} day(s) of 365.25), a point magnitude: "
+                             f"the loss of serving the loosest rung instead of the selected one for "
+                             f"the window, per event")
+    fair = cage.fair
+    summary = fair.summarize(fair.simulate([float(x) for x in lef], scenario["lm"]))
+    # The amount is the closed-form expectation, not the simulated mean: fair.simulate
+    # rounds each year's event count to an integer, so a frequency this far below half
+    # an event a year resolves no event in any simulated year and its ALE to 0.0 by
+    # construction. The expectation is the same compound process's mean; the simulated
+    # tail and p_gt_0 travel beside it so the resolution limit is readable.
+    amount = float(fair.expected_ale([float(x) for x in lef], scenario["lm"]))
+    scenario.update(
+        annualised_by="expectation",
+        annualised_basis=(f"E[events a year] x E[loss per event] over the PERT means "
+                          f"(fair.expected_ale); fair.simulate at {fair.ITERATIONS} iterations "
+                          f"rounds each year's event count to an integer and resolved "
+                          f"{summary['p_gt_0']:.4f} of its years with an event (simulated ALE "
+                          f"{summary['ale']:.4f}), so the simulated mean is the engine's "
+                          f"resolution, not the scenario's"),
+        simulated_ale=float(summary["ale"]), simulated_p_gt_0=float(summary["p_gt_0"]))
+    reach, reach_basis = _twin_agent_reach(prices, adopter_dir)
+    agent_residuals = cage.twin_agent_residuals(amount, reach)
+    band, _ = _converted(tolerance, band_currency or reporting, reporting, None, parent_trees) \
+        if (band_currency or reporting) != reporting else (float(tolerance), {})
+    try:
+        policy = _selection_policy(adopter_dir, adopter_party)
+    except Refused as e:
+        return refused(str(e), scenario=scenario, register_version=version, lef=list(lef),
+                       lef_basis=lef_note, lef_from="threat-register", residuals=agent_residuals,
+                       reach=reach, reach_basis=reach_basis)
+    candidates = {r: {"amount": v, "currency": reporting} for r, v in agent_residuals.items()
+                  if v is not None}
+    try:
+        picked = policy.select(candidates, {"amount": band, "currency": reporting}, floor)
+    except Exception as e:                       # noqa: BLE001 -- the package's own refusal
+        return refused(f"missing instrument: {adopter_party}'s {SELECTION_POLICY_DIR} package could "
+                       f"not pick a twin-agent rung from the derived residuals ({e})",
+                       scenario=scenario, register_version=version, lef=list(lef),
+                       lef_basis=lef_note, lef_from="threat-register", residuals=agent_residuals,
+                       reach=reach, reach_basis=reach_basis)
+    rung = picked["tier"]
+    twin_grade = twin.get("rests_on_grade")
+    twin_graded = isinstance(twin_grade, int) and not isinstance(twin_grade, bool)
+    return _price_entry(
+        "platform", AGENT_CAGE_KIND, adopter_party, reporting, amount, perspective_doc,
+        **base,
+        proposed_tier=rung,
+        old_tier=prior_tier if prior_tier is not None else rung,
+        changed=prior is not None and prior_tier != rung,
+        old_amount=prior_amount if prior_amount is not None else amount,
+        residuals=agent_residuals,
+        # Which rung closes which path, and what each open path can still land:
+        # the derivation behind `residuals`, on the line, so the rung can be
+        # re-derived rather than believed.
+        closes={r: cage.twin_agent_closed(r) for r in cage.ORDER},
+        reach=reach, reach_basis=reach_basis,
+        scenario=scenario,
+        lef=[float(x) for x in lef], lef_basis=lef_note, lef_from="threat-register",
+        register_version=version,
+        tail=summary["tail"],
+        policy_version=picked["policy_version"], policy_basis=picked["basis"],
+        tcor=cage.twin_agent_tcor(amount, rung, reach),
+        # The weakest grade the price rests on (ADR-0032 point 3): the register
+        # row's own kind (published: grade 3) and the twin line's grade, the one
+        # order statistic ADR-0024 point 6 admits. A twin line that states no
+        # grade leaves this null, a named absence, never a grade this seam invents.
+        rests_on_grade=(max(3, int(twin_grade)) if twin_graded else None),
+        rests_on_grade_basis=(
+            f"the register row is {lef_basis.get('kind', 'unlabelled')} (grade 3 at best: published "
+            f"work, not observed here) and the twin line rests on grade "
+            f"{twin_grade if twin_graded else 'none stated'}; the weaker of the two"
+            + ("" if twin_graded else ", which cannot be stated while the twin line states none")),
+    )
+
+
+# --------------------------------------------------------------------------
 # 8c. the insurance premium edge (ticket 36; ticket 14 answer 3)
 # --------------------------------------------------------------------------
 
@@ -4448,6 +4749,11 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                        prev_prices or [], lef_by_feed, band_currency)
     if twin is not None:
         prices.append(twin)
+    # Eco-system ticket 145: the twin agent's cage, priced by the platform off the
+    # twin line above and the register row this party pins. Always one line: a
+    # party that cannot price it gets the reason on the line, never a silence.
+    prices.append(price_twin_agent(prices, edges, adopter_dir, adopter_party, tolerance, floor,
+                                   parent_trees, perspective_doc, prev_prices or [], band_currency))
     if include_switching:
         # Last, and over the finished list: a switching cost is a statement
         # ABOUT the prices above it, and re-pricing an edge set that already
@@ -5670,6 +5976,113 @@ def selfcheck() -> None:
     print("OK prices[]: every entry names its perspective, currency, source and kind, and "
           "restates its own amount per customer against driftwood's OWN signed size "
           "(%s customers)" % (customers if customers else "unsigned -> null"))
+
+    # ======================================================================
+    # eco-system ticket 145 (ADR-0031): the twin agent's cage
+    # ======================================================================
+
+    # --- on the real driftwood, ONE agent-cage line, unpriced and saying why: the
+    # register it pins (v2) publishes no `scheduled-agent-misuses-write-credential`
+    # row. The line names the version, the row and the ticket the row arrives
+    # with; it proposes no rung; and it moves nothing else in the document. ---
+    agents = [p for p in document["prices"] if p["kind"] == AGENT_CAGE_KIND]
+    assert len(agents) == 1, agents
+    agent = agents[0]
+    assert agent["source"] == "platform" and agent["subject"] == AGENT_CAGE_SUBJECT, agent
+    assert agent["amount"] is None and agent["per_customer"] is None, agent
+    assert agent["proposed_tier"] is None and agent["proposed_as"] == AGENT_CAGE_PROPOSED_AS, agent
+    assert AGENT_MISUSE_THREAT in agent["could_not_look"] and "@v2" in agent["could_not_look"] \
+        and "ticket 145" in agent["could_not_look"], agent["could_not_look"]
+    assert agent["residual_basis"] == f"platform-twin-agent-table@{_cage_engine().TWIN_AGENT_TABLE_VERSION}"
+    assert agent["cost"]["amount"] == 0.0 and agent["window"]["days"] == 1.0, agent
+    assert agent["kind"] not in EXPOSURE_KINDS, "the line is carried beside the exposure, never summed"
+    print("OK agent-cage: the real driftwood carries ONE twin-agent cage line, unpriced by name -- "
+          "its pinned threat-register@v2 publishes no `%s` row -- proposing no rung" % AGENT_MISUSE_THREAT)
+
+    # --- the same driftwood with its register pin moved to a major 4 that
+    # carries the row (planted here, so this check needs no published v4): the
+    # line prices, and every figure on it is derived from the document itself.
+    # The Namespace fold, run with and without the line, does not move. ---
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        work = _adopter_copy("driftwood", root)
+        for extra in ("twin", "selection-policy"):
+            shutil.copytree(driftwood / extra, work / extra)
+        party = yaml.safe_load((work / "party.yaml").read_text())
+        for e in party["inherits"]:
+            if e.get("name") == "threat-register":
+                e["version"] = "v4"
+        (work / "party.yaml").write_text(yaml.safe_dump(party, **YAML_KWARGS))
+        feeds_src = DEFAULT_ESTATE_CLONE / "feeds"
+        feeds_work = root / "feeds"
+        shutil.copytree(feeds_src, feeds_work, ignore=shutil.ignore_patterns(".git"))
+        v4 = feeds_work / "threat-register" / "v4" / "feed.json"
+        if not v4.exists():
+            # A FIXTURE row, labelled as one: the published row's numbers and
+            # sources live in the feeds repository (threat-register/v4), not here.
+            v3 = json.loads((feeds_work / "threat-register" / "v3" / "feed.json").read_text())
+            v3["version"], v3["payload_schema"] = "4.0.0", "threat-register/payload.schema.v4.json"
+            v3["payload"]["feed_version"] = "v4"
+            for inst in v3["payload"]["institutions"].values():
+                inst["threats"] = {AGENT_MISUSE_THREAT: {
+                    "threat": "a scheduled agent misuses its write credential",
+                    "lef": [8e-5, 8e-5, 3e-4],
+                    "lef_basis": {"kind": "published", "as_of": "2026-09-26",
+                                  "statement": "FIXTURE for this selfcheck; the published row is the feeds repository's",
+                                  "could_not_look": "fixture"},
+                    "magnitude_basis": {"kind": "subscriber", "as_of": "2026-09-26",
+                                        "statement": "the subscriber's own gap over the gate's window"}}}
+            v4.parent.mkdir(parents=True)
+            v4.write_text(json.dumps(v3, indent=2) + "\n")
+        doc4, rendered4 = compose(work, {**parent_trees, "feeds": feeds_work})
+        assert doc4["outcome"] == "composed", doc4["refusals"]
+        twin4 = next(p for p in doc4["prices"] if p["kind"] == "twin")
+        agent4 = [p for p in doc4["prices"] if p["kind"] == AGENT_CAGE_KIND]
+        assert len(agent4) == 1, agent4
+        agent4 = agent4[0]
+        cage = _cage_engine()
+        assert agent4["amount"] is not None and agent4["could_not_look" if "could_not_look" in agent4 else "amount"] is not None, agent4
+        assert "could_not_look" not in agent4, agent4.get("could_not_look")
+        sc = agent4["scenario"]
+        gap = twin4["residuals"][cage.ORDER[0]] - twin4["residuals"][twin4["proposed_tier"]]
+        assert abs(sc["gap"] - gap) < 1e-6 and sc["selected_pod_tier"] == twin4["proposed_tier"], (sc, twin4["proposed_tier"])
+        assert all(abs(x - gap * cage.detection_window_years()) < 1e-9 for x in sc["lm"]), sc["lm"]
+        assert agent4["lef"] == [8.4186e-05, 8.4186e-05, 0.00029465] or agent4["lef"] == [8e-5, 8e-5, 3e-4], agent4["lef"]
+        expected = cage.fair.expected_ale(agent4["lef"], sc["lm"])
+        assert abs(agent4["amount"] - expected) < 1e-9 and agent4["amount"] > 0, (agent4["amount"], expected)
+        assert sc["annualised_by"] == "expectation" and sc["simulated_ale"] == 0.0, sc
+        assert agent4["reach"] == {"writer-pushes-a-looser-declaration": 1.0,
+                                   "writer-merges-or-tags-through-rest": 1.0,
+                                   "misleading-proposal-merged-by-a-human": 0.0,
+                                   "model-step-writes-a-wrong-binding-or-forecast": 0.0}, agent4["reach"]
+        res4 = agent4["residuals"]
+        assert res4["baseline"] == res4["restricted"] == res4["quarantine"] == agent4["amount"], res4
+        assert res4["isolated"] == 0.0, res4
+        assert agent4["proposed_tier"] == "baseline" and agent4["policy_version"] == twin4["policy_version"], agent4
+        assert agent4["lef_from"] == "threat-register" and agent4["register_version"] == "v4", agent4
+        assert agent4["tcor"]["cost_of_controls"] == 0.0 and agent4["cost"]["amount"] == 0.0, agent4["tcor"]
+        assert agent4["rests_on_grade"] is None and "none stated" in agent4["rests_on_grade_basis"], agent4
+        assert agent4["per_customer"] == {"amount": agent4["amount"] / customers, "currency": "GBP"}, agent4["per_customer"]
+        # the twin line and every other line are what they were: the agent line is
+        # priced beside them and summed into nothing
+        for key in ("amount", "proposed_tier", "residuals"):
+            assert twin4[key] == next(p for p in document["prices"] if p["kind"] == "twin")[key], key
+        assert doc4["prices"].index(agent4) == doc4["prices"].index(twin4) + 1, "the agent line follows the twin line"
+        sys.path.insert(0, str(PLATFORM_DIR / "wargamer"))
+        import wargamer  # noqa: E402
+        with_line = wargamer.select_party_tier(doc4["prices"], current="isolated")
+        without = wargamer.select_party_tier([p for p in doc4["prices"] if p is not agent4], current="isolated")
+        assert (with_line["tier"], with_line["lines"]) == (without["tier"], without["lines"]) == ("isolated", without["lines"]), with_line
+        assert "platform/agent-cage" not in " ".join(with_line["lines"]), with_line["lines"]
+        assert not wargamer.wargame_cage_tier([agent4], "driftwood"), "no Namespace row for the agent line"
+        hb4 = rendered4["composed/HANDBOOK.md"]
+        assert "| platform | agent-cage | twin-agent | driftwood | GBP |" in hb4 and "a rung for the twin agent, not the Namespace: `baseline`" in hb4, "the handbook renders the line"
+        print("OK agent-cage: with the register pin moved to a major 4 carrying the row, driftwood's "
+              "twin-agent cage prices at %.4f GBP a year (gap %.2f over %s day(s), frequency %s), "
+              "restricted and quarantine carry baseline's residual, isolated 0; driftwood's own "
+              "selection policy %s picks %r; the Namespace fold gives %r with the line and without it"
+              % (agent4["amount"], gap, sc["window_days"], agent4["lef"], agent4["policy_version"],
+                 agent4["proposed_tier"], without["tier"]))
 
     # ======================================================================
     # ticket 36: the exposure section and the premium it buys
