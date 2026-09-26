@@ -316,6 +316,20 @@ COMPUTED IN COMPOSITION -- AND THE TREE THAT MAKES IT PAYABLE.
     does not match its signed digest REFUSES rather than pricing from
     bytes nobody signed.
 
+ECO-SYSTEM TICKET 148 (hub ADR-0033 points 2 and 3): AN UNSUPPORTED ENGINE
+PAIRING IS PRICED, NEVER REFUSED. The adopter declares its engine in its own
+`gitops/engine/kyverno.yaml` (read by `engine/declaration.py`). Each composed
+line supports the engines its element of the implementations parent's
+`distribution/versions.yaml` lists in `tested_engines`, and the machinery the
+engines in that tree's `distribution/machinery.yaml`, both read by the engine
+grader's own rule. On an engine a line or the machinery does not support, its
+claims do not count: every control it claims is a hole, priced as ADR-0026
+prices one, and an `unsupported-engine` delta names the pairing with the sum of
+those hole prices. No declaration prices the same way under `undeclared-engine`;
+a declaration that does not read refuses as a missing instrument. The header
+records `declared-engine`, and the evidence document's `engine` section lists
+every pairing (`pair_engines`, `engine_deltas`).
+
 Usage:
     composition.py compose <adopter-dir> [--estate-clone DIR] [--out DIR]
     composition.py verify <adopter-dir> [--estate-clone DIR]
@@ -398,11 +412,15 @@ CONTROL_KEY_SEP = ":"
 # The OSCAL prop on a bespoke control that names the adopter-signed scenario
 # pricing its hole, repo-relative to the adopter's own tree.
 BESPOKE_SCENARIO_PROP = "scenario"
-# The deltas[] kinds: what replaced the three refusals, plus their closings.
+# The deltas[] kinds: what replaced the three refusals, plus their closings. The last two are
+# eco-system ticket 148's (hub ADR-0033 point 3): a composed line, or the machinery, that does not
+# support the adopter's declared engine, or an adopter that declares none. Each prints on every
+# composition while the pairing stands, because it is a fact of the inputs, not a transition.
 DELTA_KINDS = ("new-hole", "closed-hole", "baseline-widening",
                "removed-control", "baseline-narrowing", "withdrawn-control",
                "new-ungoverned-namespace", "closed-ungoverned-namespace",
-               "new-untagged-pin", "closed-untagged-pin", "floor-change")
+               "new-untagged-pin", "closed-untagged-pin", "floor-change",
+               "unsupported-engine", "undeclared-engine")
 # Ticket 69: what a premium entry's `pin_signature.state` may read, and the
 # kind of the hole an untagged pin opens on that entry.
 PIN_SIGNATURE_STATES = ("signed", "untagged", "unobserved")
@@ -2891,6 +2909,220 @@ def _decorate_regime_holes(prices: list[dict], hole_entries: list[dict], selecte
                 h["status"] = "unselected"
 
 
+# --------------------------------------------------------------------------
+# eco-system ticket 148 (hub ADR-0033 points 1 to 3): the engine the adopter declares, and the
+# engines each composed line and the machinery support. An unsupported pairing is priced, never
+# refused.
+# --------------------------------------------------------------------------
+
+#: Where the adopter declares its engine, in its own repository (ADR-0033 point 2, ticket 147).
+ENGINE_DECLARATION = ("gitops", "engine", "kyverno.yaml")
+ENGINE_DECLARATION_FILE = "/".join(ENGINE_DECLARATION)
+KYVERNO_RELEASES = "https://github.com/kyverno/kyverno/releases/download"
+#: Where the machinery declares its supported engines, in the implementations parent's tree
+#: (eco-system ticket 146 item 4). A line's is its element in `distribution/versions.yaml`.
+MACHINERY_DECLARATION = ("distribution", "machinery.yaml")
+MACHINERY_LINE = "machinery"
+#: The one reader of an adopter's declaration, shared with shift-left/ci-check.py.
+ENGINE_DECLARATION_READER = PLATFORM_DIR / "engine" / "declaration.py"
+#: The grader whose reading of `tested_engines` this composer uses, so the gate that grades a
+#: support claim and the composer that prices it read one rule: an exact version list under the
+#: scope `every-served-body-v1`, and nothing under a retired or unknown scope.
+ENGINE_GRADER = PLATFORM_DIR / "computed-semver" / "engine_compatibility.py"
+_ENGINE_MODULES: dict[str, object] = {}
+#: The engine every selfcheck fixture adopter declares and every fixture line and fixture
+#: machinery supports, so a fixture that is not about the engine prices exactly as it did before
+#: composition paired engines. `_write_engine_declaration` takes its figures from the real row of
+#: the engine table.
+FIXTURE_ENGINE = "1.18.2"
+FIXTURE_SUPPORT = {"scope": "every-served-body-v1", "kyverno": [FIXTURE_ENGINE]}
+
+
+def _engine_module(name: str, path: Path):
+    """A module of the tools tree this composer ships in, loaded once by path. A tools tree
+    without it is a missing instrument, named: the composer will not guess what a declaration or
+    a `tested_engines` value means."""
+    if name not in _ENGINE_MODULES:
+        if not path.is_file():
+            raise Refused(f"missing instrument: {path.relative_to(PLATFORM_DIR)} is absent from the "
+                          f"tools tree, so no engine pairing can be read (ADR-0033)")
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _ENGINE_MODULES[name] = module
+    return _ENGINE_MODULES[name]
+
+
+def declared_engine(adopter_dir: Path) -> dict | None:
+    """The engine the adopter declares, or None where it declares none.
+
+    An ABSENT `gitops/engine/kyverno.yaml` is an undeclared engine. That is a missing behaviour,
+    and it is priced (ADR-0033 point 3, ADR-0020). A file that is present but does not read, or
+    whose shape the adopter's own reader would refuse, is a missing instrument, and it refuses
+    by name: the adopter wrote a declaration, and the composer cannot say what it declares. The
+    shape is `engine/declaration.py`'s, the reader shift-left/ci-check.py uses too."""
+    reader = _engine_module("engine_declaration_reader", ENGINE_DECLARATION_READER)
+    try:
+        return reader.read(Path(adopter_dir).joinpath(*ENGINE_DECLARATION))
+    except reader.Malformed as exc:
+        raise Refused(f"missing instrument: {exc}, so the engine this adopter runs cannot be read "
+                      f"and no composed line can be paired with it (ADR-0020, ADR-0033 point 2)") from exc
+
+
+def _supported_engines_rule():
+    """`computed-semver/engine_compatibility.py`'s `declared_engines`, the grader's own reading
+    of a `tested_engines` value."""
+    return _engine_module("engine_compatibility_rule", ENGINE_GRADER).declared_engines
+
+
+def engine_subjects(impl_party: str, impl_version: str, impl_root: Path,
+                    members_by_version: dict[str, dict[tuple[str, str], dict]]) -> list[dict]:
+    """One subject per composed line of one implementations parent: its supported engines, read
+    from its own element in that parent's `distribution/versions.yaml` (the adopter's pinned
+    platform tag, ADR-0033 point 5), and the bodies whose control claims it carries. A line with
+    no `tested_engines`, or one the grader's rule does not read as a support claim (a retired
+    scope, an unknown scope, a malformed list), supports no engine, and the reason is kept."""
+    rule = _supported_engines_rule()
+    elements = {str(e.get("version")): e for e in _version_array(impl_root) if isinstance(e, dict)}
+    subjects = []
+    for version, members in sorted(members_by_version.items()):
+        listed, why = rule((elements.get(version) or {}).get("tested_engines"))
+        subjects.append({
+            "subject": f"{impl_party} policy {version}", "party": impl_party, "line": version,
+            "tree": f"{impl_party}@{impl_version}", "read_from": "distribution/versions.yaml",
+            "tested_engines": listed, "reason": why,
+            "bodies": sorted({base for (_family, base), meta in members.items()
+                              if meta["kind"] in ADMISSION_KINDS}),
+        })
+    return subjects
+
+
+def machinery_subject(impl_party: str, impl_version: str, impl_root: Path,
+                      guards: list[dict]) -> dict:
+    """The machinery's subject: its supported engines, read from `distribution/machinery.yaml` in
+    the same parent tree that rendered it, and the bodies whose claims it carries (cm-6's
+    `governed-namespace-requires-claim` today). No file, or one that does not read, supports no
+    engine (ADR-0033 point 3)."""
+    rule = _supported_engines_rule()
+    rel = "/".join(MACHINERY_DECLARATION)
+    path = Path(impl_root).joinpath(*MACHINERY_DECLARATION)
+    if not path.is_file():
+        listed, why = None, (f"{rel} is absent from {impl_party}@{impl_version}, so the machinery "
+                             f"declares no tested_engines and supports no engine (ADR-0033 point 3)")
+    else:
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+            listed, why = None, f"{rel} does not read ({type(exc).__name__}), so it supports no engine"
+        else:
+            listed, why = rule(doc.get("tested_engines") if isinstance(doc, dict) else None)
+    return {
+        "subject": f"{impl_party} machinery", "party": impl_party, "line": MACHINERY_LINE,
+        "tree": f"{impl_party}@{impl_version}", "read_from": rel,
+        "tested_engines": listed, "reason": why,
+        "bodies": sorted({g["member_name"] for g in guards if g["kind"] in ADMISSION_KINDS}),
+    }
+
+
+def pair_engines(subjects: list[dict], engine: dict | None,
+                 claims: list[tuple[str | None, str, str, str]],
+                 catalog_props: dict[str, dict[str, dict[str, str]]],
+                 baseline_source: str | None) -> set[ControlKey]:
+    """Pair every subject with the declared engine, give each the controls its bodies claim, and
+    return the controls whose claims do not count.
+
+    `status` is `supported` when the declared version is in the subject's list, `unsupported`
+    when it is not (or the subject lists none), and `undeclared` when the adopter declares no
+    engine. A claim belongs to a subject when the policy it names is one of the subject's bodies,
+    whoever wrote the claim. On an engine a subject does not support, its bodies are priced as not
+    loading, so every control one of them claims is a hole, even where a second claim also names
+    it: a workload chooses which composed line it claims, and a control whose body does not load
+    for one line's workloads is not implemented for them (delegated, ticket 148)."""
+    uncounted: set[ControlKey] = set()
+    sources = set(catalog_props)
+    for s in subjects:
+        if engine is None:
+            s["status"] = "undeclared"
+        elif s["tested_engines"] is not None and engine["version"] in s["tested_engines"]:
+            s["status"] = "supported"
+        else:
+            s["status"] = "unsupported"
+        bodies = set(s["bodies"])
+        s["controls"] = sorted({(str(_claim_source(href, party, sources, baseline_source)), cid)
+                                for href, cid, policy_name, party in claims
+                                if policy_name in bodies})
+        if s["status"] != "supported":
+            uncounted.update(s["controls"])
+    return uncounted
+
+
+def engine_evidence(engine: dict | None, subjects: list[dict],
+                    baseline_source: str | None) -> dict:
+    """The evidence document's `engine` section: what the adopter declares and how each composed
+    subject pairs with it. It is what a reader checks an absent engine delta against."""
+    return {
+        "declared": engine,
+        "file": ENGINE_DECLARATION_FILE,
+        "pairings": [{
+            "subject": s["subject"], "party": s["party"], "line": s["line"], "tree": s["tree"],
+            "read_from": s["read_from"], "tested_engines": s["tested_engines"],
+            "status": s["status"], "reason": s["reason"], "bodies": s["bodies"],
+            "controls": [_encode_control(k, baseline_source) for k in s["controls"]],
+        } for s in subjects],
+    }
+
+
+def engine_deltas(subjects: list[dict], engine: dict | None, hole_entries: list[dict],
+                  selected: set[ControlKey], perspective: str, currency: str) -> list[dict]:
+    """One `unsupported-engine` or `undeclared-engine` delta per subject whose claims do not
+    count (ADR-0033 point 3). Its amount is the sum of the hole prices of the controls the
+    subject claims, read off the very holes[] entries those controls became, so it is priced
+    exactly as ADR-0026 prices a hole: the regulator's weight times the triple, a bespoke
+    control's own scenario residual, or a named absence. A claimed control outside the selected
+    set is no hole and moves no pound; it is listed with `selected: false`. No control priced is
+    `amount: null`, never a zero."""
+    open_holes = {(h["source"], h["control_id"]): h for h in hole_entries if h["status"] != "closed"}
+    deltas: list[dict] = []
+    for s in subjects:
+        if s["status"] == "supported":
+            continue
+        controls = []
+        for key in s["controls"]:
+            hole = open_holes.get(key)
+            controls.append({"source": key[0], "control_id": key[1], "selected": key in selected,
+                             "amount": hole.get("amount") if hole else None,
+                             "priced_by": hole.get("priced_by") if hole else None})
+        priced = [c["amount"] for c in controls if c["amount"] is not None]
+        amount = sum(priced) if priced else None
+        ids = ", ".join(f"{c['source']}{CONTROL_KEY_SEP}{c['control_id']}" for c in controls) or "none"
+        listed = s["tested_engines"]
+        support = (f"lists tested_engines {listed}" if listed is not None
+                   else f"supports no engine ({s['reason']})")
+        if s["status"] == "undeclared":
+            kind, engine_field = "undeclared-engine", None
+            why = (f"{perspective} declares no engine ({ENGINE_DECLARATION_FILE} is absent), so "
+                   f"{s['subject']} ({s['tree']}, {s['read_from']}) is priced as on an engine it "
+                   f"does not support")
+        else:
+            kind = "unsupported-engine"
+            engine_field = {"engine": engine["engine"], "version": engine["version"]}
+            why = (f"{perspective} declares kyverno {engine['version']} in {engine['file']}, and "
+                   f"{s['subject']} ({s['tree']}, {s['read_from']}) {support}: an unsupported "
+                   f"pairing")
+        deltas.append({
+            "kind": kind, "subject": s["subject"], "party": s["party"], "line": s["line"],
+            "engine": engine_field, "tested_engines": listed,
+            "perspective": perspective, "currency": currency,
+            "controls": controls, "priced": len(priced), "amount": amount,
+            "detail": (f"{why}. Its claims do not count on that engine, so each control it claims "
+                       f"is a hole ({ids})"
+                       + (f"; {len(priced)} carry a price, summing to {amount:.2f} {currency}"
+                          if priced else "; none carries a pinned price, a named absence")
+                       + " (ADR-0033 point 3, ADR-0026)"),
+        })
+    return deltas
+
+
 def _closed_ungoverned_detail(entry: dict) -> str:
     """Why a recorded ungoverned namespace closed, as its entry's `closed_by`
     says (eco-system ticket 122). An entry with no `closed_by` names neither
@@ -2921,9 +3153,13 @@ def compute_deltas(hole_entries: list[dict], ungoverned_entries: list[dict],
                 "kind": f"{h['status']}-hole", "source": h["source"], "control_id": h["control_id"],
                 "perspective": perspective, "currency": currency,
                 "amount": h.get("amount"), "priced_by": h.get("priced_by"),
-                "detail": (f"{h['source']}{CONTROL_KEY_SEP}{h['control_id']} is selected and no "
-                           f"claim covers it, and it was not in the last signed composed "
-                           f"artefact's recorded holes" if h["status"] == "new" else
+                "detail": (f"{h['source']}{CONTROL_KEY_SEP}{h['control_id']} is selected and "
+                           + (f"the claims on it are carried by "
+                              f"{', '.join(h['uncounted_claims'])}, which do not support the "
+                              f"declared engine, so they do not count (ADR-0033 point 3)"
+                              if h.get("uncounted_claims") else "no claim covers it")
+                           + ", and it was not in the last signed composed artefact's recorded "
+                             "holes" if h["status"] == "new" else
                            f"{h['source']}{CONTROL_KEY_SEP}{h['control_id']} was a recorded hole "
                            f"and a claim now covers it")
                           + (f"; priced at {h['amount']:.2f} {currency} by {h['priced_by']}"
@@ -4625,6 +4861,20 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
 
     refusals: list[dict] = check_diamonds(edges)
 
+    # Eco-system ticket 148 (hub ADR-0033 point 2): the engine the adopter declares in its own
+    # repository. Absent is an undeclared engine, priced below. Present and unreadable is a
+    # missing instrument: it refuses by name, and the rest of this run prices as undeclared.
+    try:
+        engine = declared_engine(adopter_dir)
+    except Refused as e:
+        engine = None
+        refusals.append({"kind": "missing-instrument", "subject": ENGINE_DECLARATION_FILE,
+                         "detail": str(e), "needs_composition": False})
+    # Every composed line of every implementations parent, and the machinery, each with the
+    # engines it supports, read from the same parent tree that supplies its bodies.
+    engine_lines: list[dict] = []
+    machinery: dict | None = None
+
     # Merge every implementations parent's members into one set, keyed on
     # (version, family, name). Two sources supplying the same key with
     # different content is refused -- never merged, never last-wins
@@ -4651,6 +4901,13 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         impl_root = Path(parent_trees[impl_party])
         members_by_version, this_guards = load_implementations(impl_root)
         source_ref = f"{impl_party}@{impl_version}"
+        try:
+            engine_lines += engine_subjects(impl_party, str(impl_version), impl_root, members_by_version)
+            if machinery is None and not guards and this_guards:
+                machinery = machinery_subject(impl_party, str(impl_version), impl_root, this_guards)
+        except Refused as e:
+            refusals.append({"kind": "missing-instrument", "subject": source_ref,
+                             "detail": str(e), "needs_composition": True})
 
         for href, control_id, policy_name in _load_claims(impl_root.joinpath(*PARENT_CLAIMS_PATH)):
             claims.append((href, control_id, policy_name, impl_party))
@@ -4778,6 +5035,13 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
 
     covered, claim_refusals = resolve_claims(claims, policy_owner, catalog_props, baseline_source)
     refusals += claim_refusals
+    # Eco-system ticket 148 (hub ADR-0033 point 3): on an engine a composed line or the machinery
+    # does not support, its claims do not count, so every control it claims is a hole below and
+    # is priced as ADR-0026 prices one. `covered` stays what resolve_claims found; `counted` is
+    # what the price reads.
+    engine_pairings = engine_lines + ([machinery] if machinery is not None else [])
+    uncounted = pair_engines(engine_pairings, engine, claims, catalog_props, baseline_source)
+    counted = covered - uncounted
 
     prev_source = _header_controls_source(prev_header, adopter_party) or baseline_source
     prev_holes = ({_decode_control(h, prev_source) for h in prev_header.get("holes", [])}
@@ -4797,7 +5061,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         set(prev_header.get("ungoverned-namespaces", [])) if prev_header is not None else None
     )
 
-    hole_entries = compute_holes(selected_set, covered, prev_holes)
+    hole_entries = compute_holes(selected_set, counted, prev_holes)
+    for h in hole_entries:
+        key = (h["source"], h["control_id"])
+        if h["status"] != "closed" and key in uncounted:
+            h["uncounted_claims"] = [s["subject"] for s in engine_pairings
+                                     if s["status"] != "supported" and key in s["controls"]]
     removed, withdrawn = split_withdrawn(
         removed_controls(selected_set, prev_selected), adopter_party=adopter_party,
         catalog_props=catalog_props, baseline_source=baseline_source,
@@ -4819,8 +5088,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # The adopter's own signed facts: its appetite band, its reporting currency
     # and its tighten-only cage floor. No fixture prices a party (ticket 25).
     # What it implements -- a selected control a claim covers -- comes off the
-    # regime entry it prices (eco-system ticket 121).
-    implemented = selected_set & covered
+    # regime entry it prices (eco-system ticket 121). A claim that does not count on the declared
+    # engine implements nothing (eco-system ticket 148), so the regime entry's open share grows.
+    implemented = selected_set & counted
     band = None
     try:
         band = _appetite(adopter_party, adopter_dir, parent_trees)
@@ -4856,7 +5126,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     refusals += _price_bespoke_holes(hole_entries, adopter_party, adopter_dir,
                                      catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
-    _decorate_regime_holes(prices, hole_entries, selected_set, covered, catalog_props)
+    _decorate_regime_holes(prices, hole_entries, selected_set, counted, catalog_props)
     removed_entries = _price_removed(removed, hole_prices, adopter_party, adopter_dir,
                                      catalog_props.get(adopter_party, {}), band, reporting,
                                      (party_doc.get("overlay", {}) or {}).get("floor"))
@@ -4880,6 +5150,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # Ticket 69 (and 84, for every feed line): a pin that opened or closed as
     # an untagged-pin hole.
     deltas += untagged_pin_deltas(prices, adopter_party, reporting)
+    # Eco-system ticket 148: each composed line, and the machinery, whose claims do not count on
+    # the declared engine, priced at the holes its claimed controls became.
+    deltas += engine_deltas(engine_pairings, engine, hole_entries, selected_set,
+                            adopter_party, reporting)
 
     # Ticket 27: publisher-version comparisons above retain their meaning.
     # A separate counterfactual isolates a floor edit at current feed inputs.
@@ -4999,6 +5273,11 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "policy-as-versioned.dev/composed": True,
         "parents": parents,
         "baseline": baseline_name,
+        # Eco-system ticket 148 (hub ADR-0033 point 2): the engine this adopter declares in
+        # gitops/engine/kyverno.yaml, or null where it declares none. Every composed line and
+        # the machinery were paired with it; evidence.json's `engine` section says how.
+        "declared-engine": ({"engine": engine["engine"], "version": engine["version"],
+                             "file": engine["file"]} if engine is not None else None),
         "floor-comparison": floor_inputs,
         "governed-namespaces": governed_namespaces(adopter_dir),
         "holes": recorded_hole_ids,
@@ -5055,6 +5334,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "floor_change": floor_change,
         "limits": limits,
         "vendored": vendored_records,
+        "engine": engine_evidence(engine, engine_pairings, baseline_source),
     }
     # The handbook (ticket 34; ADR-0007's last-mile section). A pure function of `rendered` and
     # `document` -- the two things this call has just derived from the pinned parents -- so it is
@@ -5567,7 +5847,8 @@ def _write_fixture_ico(root: Path, real_ico: Path) -> None:
 def _write_fixture_adopter(work: Path, baseline: str, controls_add: list[str] | None = None,
                             add: list[dict] | None = None, own_claims: list[tuple[str, str]] | None = None,
                             nist_party: str = "fixture-nist", impl_party: str = "fixture-platform",
-                            extra_inherits: list[dict] | None = None) -> None:
+                            extra_inherits: list[dict] | None = None,
+                            engine: str | None = FIXTURE_ENGINE) -> None:
     party_doc = {
         "party": "fixture-adopter14", "roles": ["adopter"], "baseline": baseline,
         # A synthetic party is still a party: it signs its own appetite band
@@ -5587,6 +5868,8 @@ def _write_fixture_adopter(work: Path, baseline: str, controls_add: list[str] | 
     _write_baseline_configmap(work, baseline)
     if own_claims:
         _write_component_definition(work / ADOPTER_CLAIMS_FILE, own_claims)
+    if engine is not None:
+        _write_engine_declaration(work, engine)
 
 
 def _write_namespace(work: Path, name: str, *, institution: bool = True, governed: bool = False) -> None:
@@ -8339,8 +8622,30 @@ def _assert_only_the_moved_feed_changed(before: dict[str, str], after: dict[str,
         {p for p in before if not p.startswith(vendored)}, (sorted(after), sorted(before))
 
 
-def _write_versions_yaml(root: Path, versions: list[dict]) -> None:
+def _write_engine_declaration(work: Path, version: str = FIXTURE_ENGINE) -> None:
+    """A `gitops/engine/kyverno.yaml` declaring `version`, with the figures of that version's row
+    in this platform's engine table (never invented). A version the table does not list fails
+    here, loudly: a fixture must name an engine the estate can install."""
+    reader = _engine_module("engine_declaration_reader", ENGINE_DECLARATION_READER)
+    doc = reader.from_table(version)
+    path = Path(work).joinpath(*ENGINE_DECLARATION)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+
+def _write_versions_yaml(root: Path, versions: list[dict],
+                         supported: dict | None = FIXTURE_SUPPORT) -> None:
+    """A fixture array. Each element that names no `tested_engines` supports the fixture engine,
+    and the fixture machinery declares the same unless a `machinery.yaml` is already there
+    (eco-system ticket 148). `supported=None` writes the elements as given and no declaration."""
     (root / "distribution").mkdir(parents=True, exist_ok=True)
+    if supported is not None:
+        versions = [v if "tested_engines" in v else {**v, "tested_engines": copy.deepcopy(supported)}
+                    for v in versions]
+        machinery = Path(root).joinpath(*MACHINERY_DECLARATION)
+        if not machinery.exists():
+            machinery.write_text(yaml.safe_dump({"tested_engines": copy.deepcopy(supported)},
+                                                sort_keys=False))
     doc = {
         "apiVersion": "fluxcd.controlplane.io/v1", "kind": "ResourceSet",
         "metadata": {"name": "policy-versions", "namespace": "flux-system"},

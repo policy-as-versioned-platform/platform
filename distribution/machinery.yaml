@@ -9,8 +9,11 @@
 #   * computed-semver/engine_compatibility.py grades each engine listed here on the commit it
 #     grades: every machinery body compiles and passes its fixture under
 #     computed-semver/engine-fixtures/machinery/<member>/;
-#   * ticket 148's composition reads this file at the adopter's pinned platform tag, and prices an
-#     adopter whose declared engine is not listed here.
+#   * compose/composition.py (ticket 148) reads this file in the implementations parent tree the
+#     adopter composes against, the platform tag its gitops/platform/platform-pin.yaml names. That
+#     is the tree that renders the machinery. An adopter whose declared engine is not listed here
+#     gets an `unsupported-engine` delta, and cm-6, which the machinery claims, becomes a priced
+#     hole. A tree with no such file supports no engine (hub ADR-0033 point 3).
 #
 # Why a file of its own, and not a key in versions.yaml: versions.yaml is a flux-operator
 # ResourceSet that clusters apply, and every reader of its array (the cut script, the orphan-guard
@@ -19,4 +22,11 @@
 #
 # A listed engine is a claim that the grader must pass. Adding one is a reviewed change that passes
 # the new cell in the same change (ADR-0033 point 5).
-tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] }
+#
+# 1.19.1 joined on 2026-09-26 (eco-system ticket 148 item 6). Before this line listed it,
+# engine_compatibility.py graded every machinery body on a throwaway commit that listed it, with
+# the kyverno CLI 1.18.2 and 1.19.1 handed in: seven bodies, every one passed on both engines,
+# with the same row reasons, and no body changed. The bodies are still policies.kyverno.io/v1alpha1.
+# Both engines serve v1 and mark v1alpha1 deprecated; the move to v1 waits on the ResourceSet
+# template in distribution/versions.yaml, which each machinery twin's selfcheck compares with.
+tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2", "1.19.1"] }

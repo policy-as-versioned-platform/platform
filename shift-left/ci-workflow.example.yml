@@ -1,6 +1,13 @@
 # Example: how an institution repo (driftwood/tuppence/ludlow) wires the
 # shift-left check into its own CI. Not run here -- each institution owns its
 # own .github/workflows/; this is the reference shape ci-check.py expects.
+#
+# Eco-system ticket 148: ci-check.py reads the engine the workload repository
+# declares in its own gitops/engine/kyverno.yaml, and runs each line only on an
+# engine that line lists in tested_engines. The kyverno CLI installed below must
+# report the declared version, so install it from that file by its checksum, as
+# each adopter's own shift-left.yml does; a CLI of another version is a
+# could-not-look (exit 3).
 name: shift-left policy check
 on: [pull_request]
 jobs:
