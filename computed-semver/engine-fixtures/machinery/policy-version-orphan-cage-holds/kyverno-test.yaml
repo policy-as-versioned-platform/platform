@@ -1,6 +1,6 @@
 # UPDATE-only. `kyverno test` evaluates every resource as a CREATE, so this body never matches and
-# every row reads skip, with or without its oldObject gate (measured 2026-09-26: the gate removed
-# still reads skip). What this folder grades is that the body COMPILES on the engine: a planted
+# every row reads Pass / Excluded, with or without its oldObject gate (measured 2026-09-26: the
+# gate removed still reads Excluded; this body has no namespaceSelector). What this folder grades is that the body COMPILES on the engine: a planted
 # compile error fails the run. What the hold writes once it matches is measured by
 # distribution/verify-governed-namespace-guard.sh step 5, with the gate stripped from a copy.
 apiVersion: cli.kyverno.io/v1alpha1

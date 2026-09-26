@@ -1,7 +1,8 @@
-# `kyverno test` does not evaluate matchConstraints.namespaceSelector (measured 2026-09-26: a
-# selector that matches nothing still passes every row), so every pod here sits in governed-ns
-# and this folder grades what the body does to them, not its namespace scoping. The scoping is
-# proved structurally by distribution/verify-governed-namespace-guard.sh.
+# values.yaml declares the two Namespaces, so the CLI evaluates the body's namespaceSelector.
+# Without it every row read Pass / Excluded whatever it asserted (measured 2026-09-26), and the
+# grader now refuses a pass or fail row that reads Excluded. This folder grades both what the
+# body does to an unclaimed pod in a governed Namespace and that it leaves the same pod alone in
+# a Namespace that is not governed.
 apiVersion: cli.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -10,6 +11,7 @@ policies:
   - rendered by the grader from the graded commit
 resources:
   - resources.yaml
+variables: values.yaml
 results:
   # a pod that claims nothing in a governed Namespace lands on the bottom rung, caged and not
   # denied, with its initContainer hardened too.
@@ -22,4 +24,10 @@ results:
   - policy: governed-namespace-requires-claim
     kind: Pod
     resources: [claimed-governed]
+    result: skip
+  # the namespace scope: an unclaimed pod outside a governed Namespace is not this body's. It reads
+  # Excluded while the selector holds, and "Want skip, got pass" if the selector is lost.
+  - policy: governed-namespace-requires-claim
+    kind: Pod
+    resources: [unclaimed-ungoverned]
     result: skip

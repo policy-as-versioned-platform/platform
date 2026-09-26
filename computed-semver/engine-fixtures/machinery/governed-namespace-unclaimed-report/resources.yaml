@@ -10,3 +10,10 @@ kind: Pod
 metadata: { name: claimed-governed, namespace: governed-ns, labels: { "policy-as-versioned.dev/policy-version": "5.0.0" } }
 spec:
   containers: [{ name: c, image: nginx }]
+---
+# the same unclaimed pod in a Namespace that is not governed: outside this body's scope
+apiVersion: v1
+kind: Pod
+metadata: { name: unclaimed-ungoverned, namespace: app-ns }
+spec:
+  containers: [{ name: c, image: nginx, securityContext: { privileged: true } }]
