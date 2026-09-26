@@ -59,8 +59,78 @@ text = path.read_text()
 #     claim and what the orphan guard allow-lists -- so `tier` is the field
 #     that tells a consumer it is on a degraded line.
 # Every other key on the element (`bump` above all) is preserved verbatim.
-ELEMENT = re.compile(r'\{\s*version:\s*"(?P<version>[^"]+)"(?P<rest>[^}]*)\}')
-KEY = re.compile(r'(\w+):\s*"([^"]*)"')
+#
+# Ticket 146. "Verbatim" was not true of a NESTED value. The element was matched with
+# `[^}]*` and rebuilt from its quoted scalar keys only, so an element that carried
+# `tested_engines: { scope: ..., kyverno: [...] }` before its cut lost the field and left its own
+# closing brace behind as a stray `}`. Hub ADR-0033 point 4 puts that field on every element from
+# the moment it is declared, so every cut would have hit it. The element is now found by its
+# balanced braces, split at its top-level commas, and every value this step does not own is
+# written back as the exact text it read.
+START = re.compile(r'\{\s*version:\s*"(?P<version>[^"]+)"')
+
+
+def flow_end(text, start):
+    """The index just past the `}` that closes the flow mapping opening at text[start]."""
+    depth, quote, i = 0, None, start
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    sys.exit("FAIL: a versions.yaml array element has unbalanced braces")
+
+
+def items(inner):
+    """The element's top-level `key: value` pairs, each value as the exact text it was written as."""
+    parts, buf, depth, quote, i = [], "", 0, None, 0
+    while i < len(inner):
+        c = inner[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                buf += inner[i:i + 2]
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in "\"'":
+            quote = c
+        elif c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(buf)
+            buf = ""
+            i += 1
+            continue
+        buf += c
+        i += 1
+    if buf.strip():
+        parts.append(buf)
+    pairs = []
+    for part in parts:
+        key, sep, value = part.partition(":")
+        if not sep or not key.strip():
+            sys.exit("FAIL: a versions.yaml array element carries a part that is not key: value: %r" % part)
+        pairs.append((key.strip(), value.strip()))
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        sys.exit("FAIL: a versions.yaml array element names a key twice: %r" % keys)
+    return pairs
+
 
 for tag in tags:
     version = tag[len("policy/v"):]
@@ -70,26 +140,42 @@ for tag in tags:
     if evidence.exists():
         degraded = json.loads(evidence.read_text())["outcome"]["result"] == "degraded"
 
-    found = []
-
-    def rewrite(m):
-        if m.group("version") != base:
-            return m.group(0)
-        found.append(m.group(0))
-        fields = dict(KEY.findall(m.group("rest")))
-        fields["tag"] = tag
-        fields["commit"] = evidence_commit
+    found, out, pos = [], [], 0
+    for m in START.finditer(text):
+        if m.start() < pos or m.group("version") != base:
+            continue
+        end = flow_end(text, m.start())
+        pairs = items(text[m.start() + 1:end - 1])
+        found.append(text[m.start():end])
+        fields = dict(pairs)
+        fields["version"] = '"%s"' % base
+        fields["tag"] = '"%s"' % tag
+        fields["commit"] = '"%s"' % evidence_commit
         if degraded:
-            fields["tier"] = "quarantine"
-        order = ["tag", "commit", "bump", "tier"]
-        keys = [k for k in order if k in fields] + [k for k in fields if k not in order]
-        inner = ", ".join('%s: "%s"' % (k, fields[k]) for k in keys)
-        return '{ version: "%s", %s }' % (base, inner)
-
-    text = ELEMENT.sub(rewrite, text)
+            fields["tier"] = '"quarantine"'
+        order = ["version", "tag", "commit", "bump", "tier"]
+        keys = [k for k in order if k in fields] + [k for k, _ in pairs if k not in order]
+        out.append(text[pos:m.start()])
+        out.append("{ " + ", ".join("%s: %s" % (k, fields[k]) for k in keys) + " }")
+        pos = end
+    out.append(text[pos:])
+    text = "".join(out)
     if len(found) != 1:
         sys.exit("FAIL: expected exactly one versions.yaml array element for version %r, matched %d"
                  % (base, len(found)))
+
+# The rewrite is read back before it is written: the file still parses and each cut element
+# carries the fields this step owns. PyYAML is installed by cut-release.yml's first step.
+try:
+    import yaml
+except ImportError:
+    yaml = None
+if yaml is not None:
+    elements = {str(e["version"]): e for e in yaml.safe_load(text)["spec"]["inputs"][0]["versions"]}
+    for tag in tags:
+        e = elements[tag[len("policy/v"):].split("-", 1)[0]]
+        if e.get("tag") != tag or e.get("commit") != evidence_commit:
+            sys.exit("FAIL: the rewritten element for %s does not read back: %r" % (tag, e))
 
 path.write_text(text)
 PYEOF
