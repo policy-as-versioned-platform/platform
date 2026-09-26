@@ -290,6 +290,20 @@ def selfcheck() -> None:
             assert c[0] == 1 and c[2]["required"] == "restricted", ("the Namespace lines still bind", rung, c[1])
         rc, last, v = plant(tmp, "baseline", [dict(agent, proposed_tier="isolated")])
         assert rc == 0 and "nothing binds" in last, ("an agent line alone binds no Namespace", rc, last)
+        # 15b. Only the kind that declares a subject may carry one (ticket 145 review,
+        #      finding 2). A `feed` line hand-carrying `subject: twin-agent` dropped out
+        #      of the fold in the first cut, so `baseline` declared over an `isolated`
+        #      feed line graded BOUND. It is a missing instrument now: the fold refuses
+        #      the document, and so does an agent-cage line carrying the Namespace's
+        #      subject or none.
+        smuggled = dict(line("feeds", "isolated"), subject="twin-agent")
+        rc, last, v = plant(tmp, "baseline", [line("ico", "baseline"), smuggled])
+        assert rc == 1 and v is None and "missing instrument" in last and "carries subject" in last, \
+            ("a feed line carrying the twin agent's subject is refused, never folded out", rc, last)
+        for bad in (dict(agent, subject="namespace"), {k: v for k, v in agent.items() if k != "subject"}):
+            rc, last, v = plant(tmp, "isolated", [line("ico", "isolated"), bad])
+            assert rc == 1 and v is None and "carries subject" in last, \
+                ("an agent-cage line without the twin agent's subject is refused", bad, rc, last)
 
     print("ok  tier binding: driftwood's committed shape (isolated over {isolated, baseline, "
           "isolated}) is bound; restricted or baseline over a stricter line is REFUSED and told "

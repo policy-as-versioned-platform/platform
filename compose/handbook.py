@@ -368,6 +368,13 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                 # loss, and carries its own basis sentence
                 a(f"- **{p.get('source')}/{p.get('name')}** ({p.get('kind')}) — basis: "
                   f"{p['basis']}")
+            elif p.get("amount") is None:
+                # A line that could not be priced has no amount for a frequency to sit
+                # behind: the absence says the frequency was never read, and section 6
+                # carries the composer's own reason (ticket 145 review, finding 7).
+                _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
+                        f"no loss frequency was read for {p.get('source')}/{p.get('name')}: the "
+                        "line could not be priced, and its `could_not_look` above says why")
             else:
                 _absent(absences, f"prices[{i}].lef_basis", EVIDENCE_PATH,
                         f"the loss frequencies behind {p.get('source')}/{p.get('name')}'s amount "
@@ -939,6 +946,13 @@ def selfcheck() -> int:
           and "`prices[4].amount` (in `composed/evidence.json`)" in unpriced
           and "falls closed to `isolated`" in unpriced
           and "`prices[4].proposed_tier` (in `composed/evidence.json`)" in unpriced)
+    # The composer writes no lef_basis on a line it refused before reading the register, so
+    # the page names that absence too; it must say no frequency was read, not that one sits
+    # "behind its amount" when the line has none (ticket 145 review, finding 7).
+    check("...and the frequency absence on an unpriced line says none was read, not 'behind its amount'",
+          "`prices[4].lef_basis` (in `composed/evidence.json`) — no loss frequency was read for "
+          "platform/twin-agent: the line could not be priced" in unpriced
+          and "behind platform/twin-agent's amount" not in unpriced)
     for what, value in (("null", None), ("a boolean", True), ("a string", "3"), ("a float", 3.0)):
         f2, e2 = copy.deepcopy(dict(files)), copy.deepcopy(dict(evidence))
         e2["prices"].append(dict(twin_line, rests_on_grade=value))

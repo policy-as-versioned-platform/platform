@@ -346,7 +346,10 @@ itself needs.
   by the adopter's own selection-policy package over residuals platform's twin-agent dial table
   (`graded/cage.py` `TWIN_AGENT_TIERS`, its own `TWIN_AGENT_TABLE_VERSION`) derives. The tier fold
   (`wargamer/wargamer.py` `select_party_tier`, `shift-left/tier_binding.py` `bind`) keys on the
-  subject, so the line never folds into a Namespace tier; `wargamer.wargame_agent_cage` is its
+  subject, so the line never folds into a Namespace tier, and only the kind that declares a
+  subject may carry one (`wargamer.folds_into_namespace`: a `feed` line hand-carrying
+  `subject: twin-agent`, or an agent-cage line carrying the Namespace's, is refused as a missing
+  instrument rather than folded out); `wargamer.wargame_agent_cage` is its
   own drift row and `tier_pr.py` lands no file for it: the composed line is the declaration the
   adopter's twin-sweep writer job reads (ticket 143 item 4), and the pull request that recomposes
   it is the proposal a human merges. Carried beside the exposure and never summed into it
@@ -364,11 +367,20 @@ itself needs.
   (`scenario.annualised_by`) and carries the simulated ALE and `p_gt_0` beside it.
 - **The reductions are derived, never typed.** `graded/cage.py` `TWIN_AGENT_PATHS` names the four
   misuse paths and the loosest rung that closes each; `_twin_agent_reach` derives what each path
-  can still land off the served tree (the pull-request workflows that run `tier_binding.py`) and
-  the composed prices (no price rests on a grade above 3); `cage.twin_agent_residuals` takes the
-  residual at a rung as what the loosest open path can land. Measured consequence: `restricted`
-  and `quarantine` carry `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung
-  and never enters the selection.
+  can still land off the served tree and the composed prices, naming what it read on
+  `reach_basis`: the two token paths off `.github/workflows/twin-sweep.yml` (scheduled, and a
+  job running with `contents: write`: the whole gap; a sweep not served, not scheduled or
+  declaring no `contents: write` is a named could-not-look, because the token's scope then falls
+  to a repository default this composition cannot read), the proposal path off the pull-request
+  workflows (one must run `tier_binding.py` AND one must recompose the party artefact and fail on
+  drift against `composed/`; either absent is a could-not-look), the model path off the composed
+  prices (no price rests on a grade above 3). `cage.twin_agent_residuals` takes the residual at a
+  rung as what the loosest open path can land, and a rung with an open could-not-look path has
+  no residual and is not a candidate, so the pick falls closed (the selfcheck measures both: a
+  sweep without `contents: write` picks `isolated`, a gate without the recompose job picks
+  `quarantine`). Measured consequence on the served trees: `restricted` and `quarantine` carry
+  `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung and never enters the
+  selection.
 - **An adopter that cannot price the line gets it as a named could-not-look** (`amount: null`,
   the reason on `could_not_look`): no `source: twin` line yet (tuppence and ludlow until ticket
   144), or a pinned register without the row (every adopter until its feeds pin moves to major 4).

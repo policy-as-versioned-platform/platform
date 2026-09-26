@@ -184,11 +184,35 @@ DECLARABLE = LADDER + (INFRA,)
 # doors, or hold the Namespace open for a rung selected on the twin's residual.
 NAMESPACE_SUBJECT = "namespace"
 AGENT_CAGE_KIND = "agent-cage"
+AGENT_CAGE_SUBJECT = "twin-agent"
+# Which subject each kind may carry. Only the kind that declares a subject may
+# carry one: `agent-cage` carries the twin agent's and nothing else, every other
+# kind carries the Namespace's (and names none). A line outside this table is a
+# document the fold cannot read -- a `feed` line hand-carrying `subject:
+# twin-agent` would otherwise drop out of the Namespace fold and a declaration
+# looser than it would grade bound (review of eco-system ticket 145, finding 2).
+SUBJECT_OF_KIND = {AGENT_CAGE_KIND: AGENT_CAGE_SUBJECT}
 
 
 def subject_of(price):
     """Which subject a priced line's `proposed_tier` is a rung for."""
     return price.get("subject") or NAMESPACE_SUBJECT
+
+
+def folds_into_namespace(price):
+    """True when the line's rung is the Namespace's, False when it is the twin
+    agent's. Raises ValueError for a subject the line's kind does not declare:
+    the proposer cannot tell which actor the rung is for, and guessing either
+    way is a loosening nobody signed (ADR-0020). The one refusal every reader
+    of `subject` shares, so the fold, the cage-tier rows and the agent-cage
+    rows cannot disagree about a line."""
+    kind, subject = price.get("kind"), subject_of(price)
+    expected = SUBJECT_OF_KIND.get(kind, NAMESPACE_SUBJECT)
+    if subject != expected:
+        raise ValueError(f"{price.get('source')}/{kind} carries subject {subject!r}, but a "
+                         f"`{kind}` line's rung is for {expected!r} -- which actor this rung is "
+                         f"for cannot be told, so it folds into nothing (eco-system ticket 145)")
+    return subject == NAMESPACE_SUBJECT
 
 
 def rank(tier):
@@ -264,7 +288,7 @@ def select_party_tier(prices, current=None, floor=None):
     tiers = []
     lines = {}
     for price in prices:
-        if subject_of(price) != NAMESPACE_SUBJECT:
+        if not folds_into_namespace(price):
             continue                       # a rung for another actor (the twin agent, ticket 145) never folds into the Namespace
         tier = price.get("proposed_tier")
         if tier is None:
@@ -319,7 +343,7 @@ def wargame_cage_tier(prices, org, selection=None):
     proposal WRITES is the party's tier, carried on every row (ticket 78)."""
     rows = []
     for price in prices:
-        if subject_of(price) != NAMESPACE_SUBJECT:
+        if not folds_into_namespace(price):
             continue                       # the twin agent's line is wargame_agent_cage()'s row, not a Namespace one
         rows.append({
             "kind": "cage-tier",
@@ -342,20 +366,26 @@ def wargame_agent_cage(prices, org):
     second formula. It never enters select_party_tier(): the subject is the
     twin agent, not a Namespace, and the two ladders share names, not rungs.
 
-    `tolerance` is the line's amount before this composition and
-    `risk_bought_current` its amount now, the same materiality shape the
-    cage-tier rows use. The dedupe key proposer_bounds derives is
+    `tolerance` is None on purpose: a rung move is a categorical signal, like a
+    scenario move-change, so proposer_bounds.confidence() grades the row at
+    STRUCTURAL_CONFIDENCE rather than at (amount - old amount) / old amount. The
+    first cut carried the amounts there, and a rung that moved while the amount
+    held or fell (a band change, a tighter pod rung shrinking the gap) graded
+    hold-low-confidence and was never reported (review of eco-system ticket 145,
+    finding 5). The amounts still travel on the row, for the reader, beside the
+    price. The dedupe key proposer_bounds derives is
     `<org>/agent-cage/<source>-<kind>-<subject>`."""
     rows = []
     for price in prices:
-        if price.get("kind") != AGENT_CAGE_KIND or subject_of(price) == NAMESPACE_SUBJECT:
-            continue
+        if folds_into_namespace(price):
+            continue                       # a Namespace line; the subject rule has refused any other shape
         rows.append({
             "kind": AGENT_CAGE_KIND,
             "org": org,
             "control": f"{price['source']}-{price['kind']}-{subject_of(price)}",
-            "tolerance": price.get("old_amount"),
+            "tolerance": None,
             "risk_bought_current": price.get("amount"),
+            "old_amount": price.get("old_amount"),
             "drift": bool(price.get("changed")),
             "price": price,
         })
@@ -826,6 +856,32 @@ def selfcheck():
     assert propose(wargame_agent_cage([dict(agent, changed=False)], "driftwood")[0]) is None, \
         "no rung move, no proposal"
     assert not wargame_agent_cage([line("feeds", "isolated")], "driftwood"), "a Namespace line is not an agent-cage row"
+    # 7b. Only the kind that declares a subject may carry one (review finding 2). A
+    #     `feed` line hand-carrying `subject: twin-agent` used to drop out of the
+    #     fold, so a declaration looser than it graded bound; it is refused now, by
+    #     every reader of `subject`, and so is an agent-cage line carrying the
+    #     Namespace's subject (or none), which would otherwise cage every pod for
+    #     the twin agent's rung.
+    smuggled = dict(line("feeds", "isolated"), subject="twin-agent")
+    for reader in (lambda ps: select_party_tier(ps, current="baseline"),
+                   lambda ps: wargame_cage_tier(ps, "driftwood"),
+                   lambda ps: wargame_agent_cage(ps, "driftwood")):
+        for bad in (smuggled, dict(agent, subject="namespace"), {k: v for k, v in agent.items() if k != "subject"}):
+            try:
+                reader([line("ico", "baseline"), bad])
+            except ValueError as e:
+                assert "carries subject" in str(e), e
+            else:
+                raise AssertionError(f"a subject the kind does not declare must be refused: {bad}")
+    # 7c. The agent-cage row grades at STRUCTURAL_CONFIDENCE: a rung move whose
+    #     amount held or fell is still reported (review finding 5).
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "honesty"))
+    import proposer_bounds  # noqa: E402
+    for old, new in ((0.9, 0.9), (0.9, 0.3), (None, 0.9), (0.9, 1.8)):
+        row = wargame_agent_cage([dict(agent, old_amount=old, amount=new)], "driftwood")[0]
+        assert row["tolerance"] is None and row["old_amount"] == old, row
+        assert proposer_bounds.confidence(row) == proposer_bounds.STRUCTURAL_CONFIDENCE, (old, new, row)
+        assert proposer_bounds.bound([row], {"rejections": {}})[0]["disposition"] == "propose", (old, new)
 
     print(
         "ok  collected v1->v3 signed feed + %d-scenario library (human-seed + AI); "

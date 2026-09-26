@@ -3759,6 +3759,102 @@ def _agent_misuse_row(edges: list[dict], adopter_party: str,
     return row, version, None
 
 
+SWEEP_WORKFLOW = ".github/workflows/twin-sweep.yml"
+
+
+def _workflow_triggers(doc: dict) -> dict:
+    """The `on:` block as a mapping, whatever shape it was written in. YAML 1.1 reads
+    a bare `on` as the boolean True, so both keys; `on: [pull_request]` and
+    `on: pull_request` are the list and string forms of the same thing."""
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, dict):
+        return on
+    if isinstance(on, list):
+        return {str(t): {} for t in on}
+    if isinstance(on, str):
+        return {on: {}}
+    return {}
+
+
+def _grants_contents_write(perms: object) -> bool | None:
+    """True/False when a `permissions` block decides `contents`, None when it says
+    nothing about it (the enclosing scope or the repository default then applies)."""
+    if perms == "write-all":
+        return True
+    if perms == "read-all":
+        return False
+    if isinstance(perms, dict):
+        if "contents" in perms:
+            return perms["contents"] == "write"
+        return False       # a permissions map that names other scopes sets contents to none
+    return None
+
+
+def _served_sweep(adopter_dir: Path) -> dict:
+    """The served twin sweep and what its token can do, read off the file: which of
+    its jobs run with `contents: write` (a job-level block overrides the workflow's;
+    a job that declares none inherits it), and its schedule. `write_jobs` empty
+    means could-not-look, with `why` naming what the file did or did not say."""
+    path = Path(adopter_dir) / SWEEP_WORKFLOW
+    out = {"file": SWEEP_WORKFLOW, "crons": [], "write_jobs": [], "why": ""}
+    if not path.exists():
+        out["why"] = f"no {SWEEP_WORKFLOW} is served, so there is no scheduled twin sweep to read"
+        return out
+    try:
+        doc = yaml.safe_load(path.read_text(errors="replace")) or {}
+    except yaml.YAMLError as e:
+        out["why"] = f"{SWEEP_WORKFLOW} does not parse ({str(e).splitlines()[-1].strip()})"
+        return out
+    if not isinstance(doc, dict):
+        out["why"] = f"{SWEEP_WORKFLOW} is not a workflow mapping"
+        return out
+    out["crons"] = [s.get("cron") for s in (_workflow_triggers(doc).get("schedule") or [])
+                    if isinstance(s, dict) and s.get("cron")]
+    if not out["crons"]:
+        out["why"] = f"{SWEEP_WORKFLOW} declares no `schedule:` trigger, so it is not the scheduled agent"
+        return out
+    top = _grants_contents_write(doc.get("permissions"))
+    jobs = doc.get("jobs") if isinstance(doc.get("jobs"), dict) else {}
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            continue
+        own = _grants_contents_write(job.get("permissions"))
+        if own is True or (own is None and top is True):
+            out["write_jobs"].append(str(name))
+    if not out["write_jobs"]:
+        out["why"] = (f"{SWEEP_WORKFLOW} is scheduled but no job of its {len(jobs)} runs with a declared "
+                      f"`contents: write`: the token's scope falls to the repository's default workflow "
+                      f"permission, which this composition cannot read, and a token minted another "
+                      f"way is not in the file")
+    return out
+
+
+def _served_pull_request_gate(adopter_dir: Path) -> tuple[list[str], list[str], str]:
+    """The pull-request workflows that (a) run shift-left/tier_binding.py and (b)
+    recompose the party artefact and fail on drift against composed/ -- read off
+    the served files, by the two things the step must do rather than by a job's
+    name. The third value names what was looked at."""
+    workflows = sorted(Path(adopter_dir).glob(".github/workflows/*.yml")) + \
+        sorted(Path(adopter_dir).glob(".github/workflows/*.yaml"))
+    binding: list[str] = []
+    recompose: list[str] = []
+    looked = 0
+    for w in workflows:
+        text = w.read_text(errors="replace")
+        try:
+            doc = yaml.safe_load(text) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(doc, dict) or "pull_request" not in _workflow_triggers(doc):
+            continue
+        looked += 1
+        if "tier_binding.py" in text:
+            binding.append(w.name)
+        if re.search(r"\bcompose\b", text) and re.search(r"(status --porcelain|diff)[^\n]*-- composed/", text):
+            recompose.append(w.name)
+    return binding, recompose, f"{looked} pull-request workflow(s) read under .github/workflows"
+
+
 def _twin_agent_reach(prices: list[dict], adopter_dir: Path) -> tuple[dict, dict]:
     """What each misuse path can still land, as a fraction of the scenario's loss
     (the declaration gap), DERIVED from the served tree and the composed prices
@@ -3766,37 +3862,67 @@ def _twin_agent_reach(prices: list[dict], adopter_dir: Path) -> tuple[dict, dict
     not be derived, with the reason beside it. Nothing here is typed."""
     reach: dict[str, float | None] = {}
     basis: dict[str, str] = {}
-    reach["writer-pushes-a-looser-declaration"] = 1.0
-    basis["writer-pushes-a-looser-declaration"] = (
-        "the writer job's token holds contents: write on the repository that serves the governed "
-        "Namespace, so a looser declaration it pushes to main is served whole: the whole gap, until "
-        "the hub gate reads the push (verify/schedules/lane.py grades a push to main by a scheduled "
-        "identity as a FAIL, eco-system ticket 142a)")
-    reach["writer-merges-or-tags-through-rest"] = 1.0
-    basis["writer-merges-or-tags-through-rest"] = (
-        "a REST merge lands the same looser declaration by another door, the whole gap; a REST tag "
-        "signs only this party's own artefacts and moves no price under this perspective; the union "
-        "of the two is the whole gap, until the hub gate reads the merge (lane.py grades a merge made "
-        "by a scheduled identity as a FAIL, ticket 142a)")
-    # P3: what a merged proposal can serve past the PULL-REQUEST gate. Each adopter's shift-left
-    # workflow runs platform's tier_binding.py on every pull request, which refuses a declaration
-    # looser than the strictest priced line; a merge over a red gate is the human's act (ADR-0031
-    # decision 1), not the twin agent's. Read off the served workflows, never assumed.
-    workflows = sorted(Path(adopter_dir).glob(".github/workflows/*.yml")) + \
-        sorted(Path(adopter_dir).glob(".github/workflows/*.yaml"))
-    binding = [w.name for w in workflows if "tier_binding.py" in w.read_text(errors="replace")]
-    if binding:
+    # P1 and P2: what the writer job's token can land. READ off the served sweep,
+    # `.github/workflows/twin-sweep.yml` (the file ticket 30, ticket 143 and the hub's
+    # verify/schedules all name): a scheduled workflow whose effective permissions grant
+    # `contents: write` holds a token that can push to main, merge a pull request through
+    # REST and cut a tag or a release, so a looser declaration it lands is served whole
+    # until the gate reads it. That is the whole gap for both doors, which do not add
+    # (one loss, two doors). A sweep that is not served, is not scheduled, or declares no
+    # `contents: write` is a named could-not-look, never a 0: the token's scope then falls
+    # to the repository's default workflow permission, which this composition cannot read,
+    # and a token minted another way (an app installation token, a secret) is not in the
+    # file. The first cut typed 1.0 with a prose basis; decision 15 says derived.
+    sweep = _served_sweep(adopter_dir)
+    if sweep["write_jobs"]:
+        reach["writer-pushes-a-looser-declaration"] = 1.0
+        basis["writer-pushes-a-looser-declaration"] = (
+            f"{sweep['file']} is scheduled ({', '.join(sweep['crons'])}) and its job(s) "
+            f"{', '.join(sweep['write_jobs'])} run with contents: write on the repository that serves "
+            f"the governed Namespace, so a looser declaration the token pushes to main is served whole: "
+            f"the whole gap, until the hub gate reads the push (verify/schedules/lane.py grades a push "
+            f"to main by a scheduled identity as a FAIL, eco-system ticket 142a)")
+        reach["writer-merges-or-tags-through-rest"] = 1.0
+        basis["writer-merges-or-tags-through-rest"] = (
+            f"the same contents: write token on {sweep['file']} ({', '.join(sweep['write_jobs'])}) "
+            f"can merge a pull request through REST, landing the same looser declaration by another "
+            f"door, the whole gap; a REST tag signs only this party's own artefacts and moves no price "
+            f"under this perspective; the union of the two is the whole gap, until the hub gate reads "
+            f"the merge (lane.py grades a merge made by a scheduled identity as a FAIL, ticket 142a)")
+    else:
+        reach["writer-pushes-a-looser-declaration"] = None
+        basis["writer-pushes-a-looser-declaration"] = (
+            f"{sweep['why']}; what the writer job's token can push could not be derived")
+        reach["writer-merges-or-tags-through-rest"] = None
+        basis["writer-merges-or-tags-through-rest"] = (
+            f"{sweep['why']}; what the writer job's token can merge or tag through REST could not be "
+            f"derived")
+    # P3: what a merged proposal can serve past the PULL-REQUEST gate. Two served things
+    # close it, both read off the pull-request workflows and both named: a job that runs
+    # platform's tier_binding.py, which refuses a declaration looser than the strictest
+    # priced line; and a job that recomposes the party artefact and fails on any drift
+    # against the committed composed/ tree, which refuses a hand-edited rung on the
+    # agent-cage line itself. A merge over a red gate is the human's act (ADR-0031
+    # decision 1), not the twin agent's. Either job absent is a named could-not-look.
+    binding, recompose, no_gate = _served_pull_request_gate(adopter_dir)
+    if binding and recompose:
         reach["misleading-proposal-merged-by-a-human"] = 0.0
         basis["misleading-proposal-merged-by-a-human"] = (
             f"{', '.join(binding)} runs shift-left/tier_binding.py on every pull request, which refuses "
-            f"a declaration looser than the strictest priced line clamped to the floor, so a proposal "
-            f"a human merges through the gate serves none of the gap; a merge over a red gate is the "
-            f"human's act, not the twin agent's (ADR-0031 decision 1)")
+            f"a declaration looser than the strictest priced line clamped to the floor, and "
+            f"{', '.join(recompose)} recomposes the party artefact on every pull request and fails on "
+            f"any drift against the committed composed/ tree, which refuses a hand-edited rung on this "
+            f"line; so a proposal a human merges through the gate serves none of the gap. A merge over "
+            f"a red gate is the human's act, not the twin agent's (ADR-0031 decision 1)")
     else:
         reach["misleading-proposal-merged-by-a-human"] = None
+        missing = [what for what, found in (("runs shift-left/tier_binding.py", binding),
+                                            ("recomposes the party artefact and fails on drift "
+                                             "against composed/", recompose)) if not found]
         basis["misleading-proposal-merged-by-a-human"] = (
-            "no workflow under .github/workflows runs shift-left/tier_binding.py, so what a merged "
-            "proposal can serve past the pull-request gate could not be derived")
+            f"{no_gate}; no pull-request workflow under .github/workflows "
+            f"{' or '.join(missing)}, so what a merged proposal can serve past the pull-request gate "
+            f"could not be derived")
     # P4: what a model step's wrong binding or forecast can reach. A price rests on the weakest
     # grade behind it (ADR-0032 point 3); the party schema admits a pricing threshold of 2 or 3
     # only, and a model's claim is grade 5, so no priced figure rests on one.
@@ -6047,7 +6173,11 @@ def selfcheck() -> None:
         gap = twin4["residuals"][cage.ORDER[0]] - twin4["residuals"][twin4["proposed_tier"]]
         assert abs(sc["gap"] - gap) < 1e-6 and sc["selected_pod_tier"] == twin4["proposed_tier"], (sc, twin4["proposed_tier"])
         assert all(abs(x - gap * cage.detection_window_years()) < 1e-9 for x in sc["lm"]), sc["lm"]
-        assert agent4["lef"] == [8.4186e-05, 8.4186e-05, 0.00029465] or agent4["lef"] == [8e-5, 8e-5, 3e-4], agent4["lef"]
+        # The frequency is whatever the register file in the estate (or the fixture
+        # planted above) publishes for driftwood's row: read off that file here, never
+        # typed, so a recount in the feeds repository moves nothing in this selfcheck.
+        published = json.loads(v4.read_text())["payload"]["institutions"]["driftwood"]["threats"][AGENT_MISUSE_THREAT]
+        assert agent4["lef"] == [float(x) for x in published["lef"]], (agent4["lef"], published["lef"])
         expected = cage.fair.expected_ale(agent4["lef"], sc["lm"])
         assert abs(agent4["amount"] - expected) < 1e-9 and agent4["amount"] > 0, (agent4["amount"], expected)
         assert sc["annualised_by"] == "expectation" and sc["simulated_ale"] == 0.0, sc
@@ -6055,6 +6185,15 @@ def selfcheck() -> None:
                                    "writer-merges-or-tags-through-rest": 1.0,
                                    "misleading-proposal-merged-by-a-human": 0.0,
                                    "model-step-writes-a-wrong-binding-or-forecast": 0.0}, agent4["reach"]
+        # Every reach names what it was read off (decision 15: derived, not typed): the
+        # served sweep's file, cron and job for the two token paths; the tier-binding
+        # workflow AND the recompose job for the proposal path.
+        rb = agent4["reach_basis"]
+        assert SWEEP_WORKFLOW in rb["writer-pushes-a-looser-declaration"] and "5 7 * * *" in rb["writer-pushes-a-looser-declaration"] \
+            and "sweep run with contents: write" in rb["writer-pushes-a-looser-declaration"], rb
+        assert SWEEP_WORKFLOW in rb["writer-merges-or-tags-through-rest"], rb
+        assert "shift-left.yml runs shift-left/tier_binding.py" in rb["misleading-proposal-merged-by-a-human"] \
+            and "shift-left.yml recomposes the party artefact" in rb["misleading-proposal-merged-by-a-human"], rb
         res4 = agent4["residuals"]
         assert res4["baseline"] == res4["restricted"] == res4["quarantine"] == agent4["amount"], res4
         assert res4["isolated"] == 0.0, res4
@@ -6083,6 +6222,46 @@ def selfcheck() -> None:
               "selection policy %s picks %r; the Namespace fold gives %r with the line and without it"
               % (agent4["amount"], gap, sc["window_days"], agent4["lef"], agent4["policy_version"],
                  agent4["proposed_tier"], without["tier"]))
+
+        # --- the reach is READ, so a served tree that says less derives less. The same
+        # v4-pinned copy with its sweep's `contents: write` removed: the two token paths
+        # are could-not-look, every rung they stay open at has no residual, and the
+        # adopter's own policy picks the one candidate left, `isolated` (fail closed,
+        # ADR-0022). Then with the recompose gate removed from its pull-request
+        # workflow: the proposal path is could-not-look, so baseline and restricted
+        # have no residual and the pick falls to `quarantine`, the loosest rung whose
+        # open paths are all derived. ---
+        sweep_path = work / SWEEP_WORKFLOW
+        sweep_text = sweep_path.read_text()
+        assert "contents: write" in sweep_text, sweep_path
+        sweep_path.write_text(sweep_text.replace("contents: write", "contents: read"))
+        doc_ro, _ = compose(work, {**parent_trees, "feeds": feeds_work})
+        agent_ro = next(p for p in doc_ro["prices"] if p["kind"] == AGENT_CAGE_KIND)
+        assert agent_ro["amount"] is not None, agent_ro.get("could_not_look")
+        assert agent_ro["reach"]["writer-pushes-a-looser-declaration"] is None \
+            and agent_ro["reach"]["writer-merges-or-tags-through-rest"] is None, agent_ro["reach"]
+        assert "no job of its" in agent_ro["reach_basis"]["writer-pushes-a-looser-declaration"] \
+            and "cannot read" in agent_ro["reach_basis"]["writer-pushes-a-looser-declaration"], agent_ro["reach_basis"]
+        assert agent_ro["residuals"] == {"baseline": None, "restricted": None, "quarantine": None, "isolated": 0.0}, agent_ro["residuals"]
+        assert agent_ro["proposed_tier"] == "isolated", agent_ro["proposed_tier"]
+        sweep_path.write_text(sweep_text)
+        sl_path = work / ".github" / "workflows" / "shift-left.yml"
+        sl_text = sl_path.read_text()
+        assert "-- composed/" in sl_text, sl_path
+        sl_path.write_text(sl_text.replace("-- composed/", "-- elsewhere/"))
+        doc_ng, _ = compose(work, {**parent_trees, "feeds": feeds_work})
+        agent_ng = next(p for p in doc_ng["prices"] if p["kind"] == AGENT_CAGE_KIND)
+        assert agent_ng["reach"]["misleading-proposal-merged-by-a-human"] is None, agent_ng["reach"]
+        assert "recomposes the party artefact" in agent_ng["reach_basis"]["misleading-proposal-merged-by-a-human"] \
+            and "could not be derived" in agent_ng["reach_basis"]["misleading-proposal-merged-by-a-human"], agent_ng["reach_basis"]
+        assert agent_ng["residuals"]["baseline"] is None and agent_ng["residuals"]["restricted"] is None \
+            and agent_ng["residuals"]["quarantine"] == agent4["amount"] and agent_ng["residuals"]["isolated"] == 0.0, agent_ng["residuals"]
+        assert agent_ng["proposed_tier"] == "quarantine", agent_ng["proposed_tier"]
+        sl_path.write_text(sl_text)
+        print("OK agent-cage: the reach is read off the served tree -- a sweep without contents: write "
+              "leaves the token paths could-not-look and the pick falls closed to %r; a pull-request "
+              "gate without the recompose job leaves the proposal path could-not-look and the pick "
+              "falls to %r" % (agent_ro["proposed_tier"], agent_ng["proposed_tier"]))
 
     # ======================================================================
     # ticket 36: the exposure section and the premium it buys
