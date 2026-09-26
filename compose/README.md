@@ -338,6 +338,44 @@ itself needs.
   exactly the versions it composed, or a claim on a composed but uninstalled version reaches no
   cage. Each adopter's `scripts/render_composed.py reach` grades that offline.
 
+## What eco-system ticket 145 changes: the platform prices the twin agent's cage
+
+- **A new `prices[]` kind, `agent-cage`** (a `PRICE_KINDS` major the £ seam grades; ADR-0031).
+  One line per composition, `source: platform`, for a subject that is not a pod, named on the line
+  (`subject: twin-agent`). Its `proposed_tier` is the twin agent's rung on the one ladder, picked
+  by the adopter's own selection-policy package over residuals platform's twin-agent dial table
+  (`graded/cage.py` `TWIN_AGENT_TIERS`, its own `TWIN_AGENT_TABLE_VERSION`) derives. The tier fold
+  (`wargamer/wargamer.py` `select_party_tier`, `shift-left/tier_binding.py` `bind`) keys on the
+  subject, so the line never folds into a Namespace tier; `wargamer.wargame_agent_cage` is its
+  own drift row and `tier_pr.py` lands no file for it: the composed line is the declaration the
+  adopter's twin-sweep writer job reads (ticket 143 item 4), and the pull request that recomposes
+  it is the proposal a human merges. Carried beside the exposure and never summed into it
+  (`EXPOSURE_KINDS` is unchanged): its magnitude is a slice of a residual the twin line already
+  carries.
+- **The scenario is the adopter's numbers, the platform's table and feeds' frequency** (ticket 30
+  decisions 12 and 15). Loss magnitude: the gap between the adopter's residual at the loosest pod
+  rung and at its selected pod rung, read off the same composition's `source: twin` line, times
+  the hub gate's detection window (`graded/cage.py` `DETECTION_WINDOW`: one day, the truth run's
+  own schedule, with its source and what it assumes on the line). Frequency: the threat register's
+  `scheduled-agent-misuses-write-credential` row, payload major 4, read off the payload at the
+  major the adopter pins. The amount is `fair.expected_ale`, the closed-form expectation of the
+  same compound process `fair.simulate` samples, because the simulation rounds each year's event
+  count to an integer and resolves no event at a frequency this small; the line says so
+  (`scenario.annualised_by`) and carries the simulated ALE and `p_gt_0` beside it.
+- **The reductions are derived, never typed.** `graded/cage.py` `TWIN_AGENT_PATHS` names the four
+  misuse paths and the loosest rung that closes each; `_twin_agent_reach` derives what each path
+  can still land off the served tree (the pull-request workflows that run `tier_binding.py`) and
+  the composed prices (no price rests on a grade above 3); `cage.twin_agent_residuals` takes the
+  residual at a rung as what the loosest open path can land. Measured consequence: `restricted`
+  and `quarantine` carry `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung
+  and never enters the selection.
+- **An adopter that cannot price the line gets it as a named could-not-look** (`amount: null`,
+  the reason on `could_not_look`): no `source: twin` line yet (tuppence and ludlow until ticket
+  144), or a pinned register without the row (every adopter until its feeds pin moves to major 4).
+  With no rung on the line, the sweep's writer job reads none and falls closed to `isolated`
+  (ADR-0022). `verify/pound-seam/` in the hub grades the line (leg 3b) and re-derives the rung
+  through the adopter's own package.
+
 ## Run
 
 ```sh

@@ -175,6 +175,21 @@ FAIL_CLOSED = LADDER[-1]     # a governed Namespace with no tier renders isolate
 INFRA = "infra"
 DECLARABLE = LADDER + (INFRA,)
 
+# The SUBJECT a priced line's tier is about (eco-system ticket 145; ADR-0031
+# decision 6). A line that names none is about the party's governed Namespace,
+# the only subject there was until the twin agent got a dial table of its own.
+# A line naming another subject carries a rung of the same ladder for a
+# different actor, and the Namespace fold below never reads it: folding the
+# twin agent's rung into the Namespace would cage every pod for the twin's
+# doors, or hold the Namespace open for a rung selected on the twin's residual.
+NAMESPACE_SUBJECT = "namespace"
+AGENT_CAGE_KIND = "agent-cage"
+
+
+def subject_of(price):
+    """Which subject a priced line's `proposed_tier` is a rung for."""
+    return price.get("subject") or NAMESPACE_SUBJECT
+
 
 def rank(tier):
     """How TIGHT `tier` is, as an index: higher is tighter. Defined over every
@@ -249,6 +264,8 @@ def select_party_tier(prices, current=None, floor=None):
     tiers = []
     lines = {}
     for price in prices:
+        if subject_of(price) != NAMESPACE_SUBJECT:
+            continue                       # a rung for another actor (the twin agent, ticket 145) never folds into the Namespace
         tier = price.get("proposed_tier")
         if tier is None:
             continue                       # an unpriced line (a premium) selects nothing
@@ -302,6 +319,8 @@ def wargame_cage_tier(prices, org, selection=None):
     proposal WRITES is the party's tier, carried on every row (ticket 78)."""
     rows = []
     for price in prices:
+        if subject_of(price) != NAMESPACE_SUBJECT:
+            continue                       # the twin agent's line is wargame_agent_cage()'s row, not a Namespace one
         rows.append({
             "kind": "cage-tier",
             "org": org,
@@ -311,6 +330,34 @@ def wargame_cage_tier(prices, org, selection=None):
             "drift": bool(price.get("changed")),
             "price": price,
             "selection": selection,
+        })
+    return rows
+
+
+def wargame_agent_cage(prices, org):
+    """Eco-system ticket 145 (ADR-0031). Every `agent-cage` prices[] line -- the
+    platform's price of the twin agent's cage, with the rung the adopter's own
+    selection policy picked for it -- is a drift row of its own kind, in the
+    same row shape the other war-games use so proposer_bounds gates it with no
+    second formula. It never enters select_party_tier(): the subject is the
+    twin agent, not a Namespace, and the two ladders share names, not rungs.
+
+    `tolerance` is the line's amount before this composition and
+    `risk_bought_current` its amount now, the same materiality shape the
+    cage-tier rows use. The dedupe key proposer_bounds derives is
+    `<org>/agent-cage/<source>-<kind>-<subject>`."""
+    rows = []
+    for price in prices:
+        if price.get("kind") != AGENT_CAGE_KIND or subject_of(price) == NAMESPACE_SUBJECT:
+            continue
+        rows.append({
+            "kind": AGENT_CAGE_KIND,
+            "org": org,
+            "control": f"{price['source']}-{price['kind']}-{subject_of(price)}",
+            "tolerance": price.get("old_amount"),
+            "risk_bought_current": price.get("amount"),
+            "drift": bool(price.get("changed")),
+            "price": price,
         })
     return rows
 
@@ -373,6 +420,8 @@ def propose(row):
         return _propose_tier(row)
     if row["kind"] == RETIREMENT_KIND:
         return _propose_retirement(row)
+    if row["kind"] == AGENT_CAGE_KIND:
+        return _propose_agent_cage(row)
     slug = f"{row['org']}-{row['control']}".replace("@", "-").replace(".", "-")
     return {
         "branch": f"wargamer/retune-{slug}",
@@ -455,6 +504,52 @@ def _propose_tier(row):
         "merged": False,               # propose-never-dispose: the agent never merges
         "auto_merge": False,
         "disposition": "OPEN -- awaiting human review + version cross-check gate",
+    }
+
+
+def _propose_agent_cage(row):
+    """Eco-system ticket 145 (ADR-0031 decision 5): the platform prices the twin
+    agent's cage, the adopter's own selection policy selects the rung, the
+    proposer proposes it and a human merges. The rung has no declaration file
+    of its own: the composed `agent-cage` line IS the declaration the adopter's
+    twin-sweep writer job reads (eco-system ticket 143 item 4), and the pull
+    request that re-composes `composed/evidence.json` is the proposal a human
+    merges. So this proposal names that line and that file, and tier_pr.py
+    lands no edit of its own for it -- landing a hand-edited rung on a line the
+    compose-check re-derives on every pull request would be a drift the gate
+    refuses. Always a pull request, never merged by this proposer."""
+    price = row["price"]
+    slug = f"agent-cage-{row['org']}-{subject_of(price)}".replace("@", "-").replace(".", "-")
+    return {
+        "branch": f"wargamer/recage-{slug}",
+        "title": f"[war-gamer] twin-agent cage re-tune ({row['org']}, {price['source']}/{price['kind']}): "
+                 f"{price.get('old_tier')} -> {price.get('proposed_tier')}",
+        "actor": "wargamer-agent",
+        "identity": "gitsign keyless (OIDC -> Fulcio) -> Rekor transparency log, "
+                    "stamped by the landing workflow, not claimed here",
+        "from_evidence": {"source": price["source"], "kind": price["kind"],
+                           "subject": subject_of(price),
+                           "residual_basis": price.get("residual_basis")},
+        "change": {
+            "declaration": "composed/evidence.json prices[] (kind agent-cage, subject "
+                           f"{subject_of(price)}).proposed_tier",
+            "from": price.get("old_tier"),
+            "to": price.get("proposed_tier"),
+            "read_by": "the adopter's twin-sweep writer job (eco-system ticket 143 item 4)",
+        },
+        "price": {
+            "source": price["source"], "kind": price["kind"], "subject": subject_of(price),
+            "from": price.get("old_amount"), "to": price.get("amount"),
+            "currency": price.get("currency"), "perspective": price.get("perspective"),
+            "policy_version": price.get("policy_version"),
+            "residuals": price.get("residuals"),
+        },
+        "proposal_kind": "recompose",
+        "required_gate": GATE,
+        "merged": False,               # propose-never-dispose: the agent never merges
+        "auto_merge": False,
+        "disposition": "OPEN -- the rung travels on the composed line; the pull request that "
+                       "re-composes it is the proposal, and a human merges it",
     }
 
 
@@ -700,6 +795,37 @@ def selfcheck():
     assert len(cage_rows) == 1 and cage_rows[0]["drift"] is False and propose(cage_rows[0]) is None, cage_rows
     assert select_party_tier([sup, line("ico", "quarantine")], current="baseline")["tier"] == "quarantine", \
         "a supersede line proposes no tier and must not disturb the party fold"
+
+    # 7. eco-system ticket 145 (ADR-0031 decision 6): a line whose SUBJECT is the
+    #    twin agent carries a rung of the same ladder for another actor, and the
+    #    Namespace fold never reads it -- planted at every rung, looser and
+    #    tighter than the Namespace's own lines, the Namespace tier does not move.
+    agent = {"source": "platform", "kind": AGENT_CAGE_KIND, "subject": "twin-agent",
+             "name": "twin-agent", "perspective": "driftwood", "currency": "GBP",
+             "amount": 0.9, "old_amount": 0.9, "proposed_tier": "baseline",
+             "old_tier": "isolated", "changed": True}
+    without = select_party_tier(driftwood_today, current="isolated")
+    with_agent = select_party_tier(driftwood_today + [agent], current="isolated")
+    assert (with_agent["tier"], with_agent["lines"]) == (without["tier"], without["lines"]), with_agent
+    for rung in LADDER:
+        looser = select_party_tier([line("ico", "quarantine"), dict(agent, proposed_tier=rung)],
+                                   current="quarantine")
+        assert looser["tier"] == "quarantine" and looser["held"], (rung, looser)
+        assert "platform/agent-cage" not in " ".join(looser["lines"]), looser["lines"]
+        assert select_party_tier([dict(agent, proposed_tier=rung)], current="baseline")["tier"] is None, \
+            "a twin-agent line alone selects nothing for the Namespace"
+    assert not wargame_cage_tier([agent], "driftwood", selection=None), \
+        "a twin-agent line is not a cage-tier row: proposing it would edit the Namespace"
+    rows = wargame_agent_cage([agent, line("ico", "isolated"), sup], "driftwood")
+    assert len(rows) == 1 and rows[0]["kind"] == AGENT_CAGE_KIND and rows[0]["drift"] is True, rows
+    assert rows[0]["control"] == "platform-agent-cage-twin-agent", rows[0]["control"]
+    prop = propose(rows[0])
+    assert prop["change"]["from"] == "isolated" and prop["change"]["to"] == "baseline", prop["change"]
+    assert prop["proposal_kind"] == "recompose" and "posture.acme.io/tier" not in str(prop["change"]), prop
+    assert prop["merged"] is False and prop["auto_merge"] is False and "signed" not in prop, prop
+    assert propose(wargame_agent_cage([dict(agent, changed=False)], "driftwood")[0]) is None, \
+        "no rung move, no proposal"
+    assert not wargame_agent_cage([line("feeds", "isolated")], "driftwood"), "a Namespace line is not an agent-cage row"
 
     print(
         "ok  collected v1->v3 signed feed + %d-scenario library (human-seed + AI); "

@@ -103,6 +103,33 @@ def pert(lo, mode, hi, n, rng, lam=PERT_LAMBDA):
     return [lo + rng.betavariate(a, b) * span for _ in range(n)]
 
 
+def pert_mean(lo, mode, hi, lam=PERT_LAMBDA):
+    """The mean of the beta-PERT on [lo, hi] peaked at mode: (lo + lam*mode + hi) / (lam + 2)."""
+    return (float(lo) + lam * float(mode) + float(hi)) / (lam + 2.0)
+
+
+def expected_ale(lef, lm, lam=PERT_LAMBDA):
+    """The annualised loss expectancy in closed form: E[N] x sum of E[X] over the
+    magnitude sources, the expectation of the same compound process simulate()
+    samples (frequency and magnitude independent, sources additive).
+
+    Why it exists beside simulate() (eco-system ticket 145): simulate() rounds
+    each simulated year's event count to an integer, which is right for every
+    frequency this estate priced until then (all above half an event a year)
+    and resolves NO event, in any of its years, for a frequency below 0.5 -- so
+    its ALE for such a scenario is 0.0 by construction, not by measurement. A
+    caller pricing a rare event reports this expectation and says so on the
+    line; simulate()'s tail and p_gt_0 travel beside it so a reader sees the
+    resolution limit. Triples only: a severity spec has no closed form here and
+    refuses by name."""
+    sources = _sources(lm)
+    for src in sources:
+        if severity.is_spec(src):
+            raise ValueError("expected_ale prices bounded PERT triples only; a severity spec "
+                             "has no closed-form mean here")
+    return pert_mean(*lef, lam=lam) * sum(pert_mean(*src, lam=lam) for src in sources)
+
+
 def simulate(lef, lm, n=ITERATIONS, seed=SEED):
     """Aggregate annual-loss distribution.
 
@@ -260,6 +287,25 @@ def cmd_selfcheck(_args):
     assert s["tvar"] >= s["var95"] >= s["ale"], s
     assert s["carried"] >= s["tvar"], s          # risk load is non-negative
     assert s["risk_load"] > 0, s
+
+    # The closed-form expectation agrees with the simulation where the annual
+    # count resolves (eco-system ticket 145): the canonical triple's expected
+    # ALE (4.5 events x 4,333) sits inside the simulated band above and within
+    # 15% of the simulated mean; a frequency far below half an event a year
+    # simulates to 0.0 in every year (the count rounds to 0) while its
+    # expectation is positive -- the reason expected_ale() exists.
+    e = expected_ale((2, 4, 9), (1_000, 4_000, 9_000))
+    assert 14_000 < e < 21_000 and abs(e - s["ale"]) / s["ale"] < 0.15, (e, s["ale"])
+    assert abs(pert_mean(2, 4, 9) - 4.5) < 1e-9 and abs(pert_mean(1, 1, 1) - 1.0) < 1e-9
+    rare = summarize(simulate((8e-5, 8e-5, 3e-4), (3_500, 3_500, 3_500)))
+    assert rare["ale"] == 0.0 and rare["p_gt_0"] == 0.0, rare
+    assert 0.4 < expected_ale((8e-5, 8e-5, 3e-4), (3_500, 3_500, 3_500)) < 0.5
+    assert abs(expected_ale((1, 1, 1), [(10, 10, 10), (5, 5, 5)]) - 15.0) < 1e-9, "sources add"
+    try:
+        expected_ale((1, 1, 1), {"model": "lognormal-gpd"})
+        raise AssertionError("a severity spec must refuse the closed form by name")
+    except ValueError:
+        pass
 
     # Determinism: same seed -> identical distribution.
     a = simulate((2, 4, 9), (1_000, 4_000, 9_000), seed=7)

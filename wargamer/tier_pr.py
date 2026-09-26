@@ -760,6 +760,13 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
     # the Namespace, so a held tier selection does not hold it: they are
     # different questions with different ledger kinds.
     retire_rows = wargamer.wargame_retirement(prices, org) if prices else []
+    # Eco-system ticket 145 (ADR-0031 decision 5): the twin agent's rung moved.
+    # Its declaration is the composed `agent-cage` line itself, which the
+    # compose-check re-derives on every pull request, so this proposer lands no
+    # file for it: the recompose that carries the new rung is the proposal a
+    # human merges. The row is bounded and reported like every other, and the
+    # ledger keys it as `<org>/agent-cage/<line>`; it never touches the Namespace.
+    agent_rows = wargamer.wargame_agent_cage(prices, org) if prices else []
     held_rows: list[dict] = []
     if selection and selection["held"]:
         print(f"note: proposer holds -- {selection['basis']}", file=sys.stderr)
@@ -770,9 +777,9 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
                       "why": selection["basis"]}
                      for row in tier_rows if row["drift"]]
         tier_rows = []
-        if not retire_rows:
+        if not retire_rows and not agent_rows:
             return held_rows
-    rows = tier_rows + retire_rows
+    rows = tier_rows + retire_rows + agent_rows
 
     # The ledger is DERIVED from closed-unmerged PRs on this repo's own dedupe
     # branches (ADR-0024). Offline it comes back empty AND SAYS SO on STDERR.
@@ -812,6 +819,14 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
                                f"a proposal trigger, and the clock committed nothing.")
         if p.get("retirement"):
             landed.append(_land_retirement(p, adopter_dir, base, dry_run, repo))
+            continue
+        if p.get("proposal_kind") == "recompose":
+            # The twin agent's rung (ticket 145): reported, never landed here.
+            print(f"note: {p['title']} -- the rung travels on the composed agent-cage line; the "
+                  f"recompose that carries it is the proposal a human merges", file=sys.stderr)
+            landed.append({"branch": p["branch"], "proposal_kind": "recompose",
+                           "change": p["change"], "landed": "by the next recompose pull request",
+                           "why": p["disposition"]})
             continue
         if ns_error:
             landed.append({"branch": p["branch"], "proposal_kind": p["proposal_kind"],
