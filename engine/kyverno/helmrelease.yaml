@@ -12,7 +12,7 @@
 # source. Hub ADR-0033 supersedes ADR-0003's ">=1.18" floor: a policy line
 # supports exactly the engines in its `tested_engines`, and no range is
 # inferred. This reference install must be a supported engine of every served
-# line and of the machinery, and the hub's verify/engine-pins check maps this
+# line and of the machinery, and the hub's verify/estate-engines check maps this
 # chart version back through the table's chart column to assert it. A bump is a
 # reviewed PR that adds the engine to the table, and to the lines it passes on,
 # first (ADR-0033 point 5). ADR-0009's live proof ran on 1.18.2 too. Default

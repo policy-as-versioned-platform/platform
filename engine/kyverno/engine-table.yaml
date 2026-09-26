@@ -8,13 +8,14 @@
 # this table so that a grader, a workflow or an adopter can install it by checksum. Nothing is
 # inferred from it about a neighbouring patch.
 #
-# WHO READS IT
-#   computed-semver/engine_compatibility.py  no; it identifies each binary by running it.
+# WHO READS IT (computed-semver/engine_compatibility.py does not: it identifies each binary it is
+# handed by running it)
 #   engine/install-kyverno-engines.sh        installs every row's CLI by checksum (cut-release.yml,
 #                                            a local run).
+#   graded/verify-graded.sh                  refuses to grade on a CLI whose version is not a row.
 #   hub .github/workflows/truth.yml          installs every row's linux_x86_64 CLI by checksum and
 #                                            hands one binary per engine to the cage-engine check.
-#   hub verify/engine-pins/                  each estate pin must name a row here, carry the
+#   hub verify/estate-engines/               each estate pin must name a row here, carry the
 #                                            row's checksum, and be a supported engine of every
 #                                            served line and of the machinery.
 #   ticket 147 (adopters)                    an adopter's gitops/engine/kyverno.yaml must agree
