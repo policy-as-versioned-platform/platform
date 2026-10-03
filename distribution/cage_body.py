@@ -78,7 +78,7 @@ _INIT_MUTATION = {
             "          (has(c.securityContext) &&"
             " c.securityContext.?readOnlyRootFilesystem.orValue(false)),\n"
             "        runAsNonRoot: variables.dial.harden == 'true' ||\n"
-            "          (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),\n"
+            "          c.?securityContext.?runAsNonRoot.orValue(object.spec.?securityContext.?runAsNonRoot.orValue(false)),\n"
             "        allowPrivilegeEscalation: false,\n"
             "        privileged: false\n"
             "      }\n"
@@ -235,7 +235,7 @@ def hold_policy(name: str, resource_rules: list[dict], match_conditions: list[di
                        f"== '{BOTTOM_RUNG}'"),
     }]
     return {
-        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "apiVersion": "policies.kyverno.io/v1",
         "kind": "MutatingPolicy",
         "metadata": {"name": name, "labels": {IDENTITY_LABEL: IDENTITY}},
         "spec": {
@@ -311,7 +311,7 @@ def bottom_rung_policy(name: str, resource_rules: list[dict], match_conditions: 
     if namespace_selector is not None:
         constraints["namespaceSelector"] = namespace_selector
     return {
-        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "apiVersion": "policies.kyverno.io/v1",
         "kind": "MutatingPolicy",
         "metadata": {"name": name, "labels": {IDENTITY_LABEL: IDENTITY}},
         "spec": {

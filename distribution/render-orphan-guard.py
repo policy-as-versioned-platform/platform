@@ -156,7 +156,7 @@ def orphan_guard(allowed: list[str]) -> dict:
     if not allowed:
         raise SystemExit("refusing to render an orphan-guard with an empty allow-list")
     return {
-        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "apiVersion": "policies.kyverno.io/v1",
         "kind": "ValidatingPolicy",
         "metadata": {
             "name": "policy-version-orphan-guard",

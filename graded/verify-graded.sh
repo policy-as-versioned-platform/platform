@@ -196,6 +196,7 @@ kyverno test "$HERE/tests/cage-tier" >/dev/null || fail "cage-tier mutate matrix
 
 say "3. offline: reach is generated PER TIER (baseline normal, restricted/quarantine DNS-only, isolated nothing)"
 kyverno test "$HERE/tests/cage-netpol" >/dev/null || fail "cage-netpol per-tier reach matrix failed"
+python3 "$HERE/check-netpol-generation.py" || fail "cage-netpol generated-document comparison failed"
 
 say "4. offline: the Kyverno tier->dials map mirrors cage.py's TIERS (no drift), priority pair included"
 python3 - "$HERE" <<'PY'

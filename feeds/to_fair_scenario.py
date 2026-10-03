@@ -163,27 +163,52 @@ def _headline(candidates: dict[str, tuple[tuple, tuple]]) -> tuple[str, str]:
                        f"expectation; ticket 75 Q4); not priced by this line: {others}.")
 
 
+def inventory_ids(inventory: dict | None) -> set[str]:
+    """A scan is a required instrument, including an empty (clean) scan."""
+    if not isinstance(inventory, dict) or inventory.get("schema_version") != "1.0.0" or not isinstance(inventory.get("images"), list) or not inventory["images"]:
+        raise SystemExit("missing instrument: cve subscription has no committed image inventory")
+    ids = set()
+    for image in inventory["images"]:
+        if not isinstance(image, dict) or not all(image.get(k) for k in ("image", "digest", "scanner_version", "database_date")) or not isinstance(image.get("vulnerabilities"), list):
+            raise SystemExit("missing instrument: CVE image inventory lacks digest, scanner version, database date or findings")
+        if image["digest"] != image["image"].split("@")[-1] or not __import__("re").fullmatch(r"sha256:[0-9a-f]{64}", image["digest"]):
+            raise SystemExit("missing instrument: CVE inventory image is not pinned by its recorded digest")
+        for finding in image["vulnerabilities"]:
+            if not isinstance(finding, dict) or not all(k in finding for k in ("id", "package", "installed_version", "fixed_version", "severity")):
+                raise SystemExit("missing instrument: malformed CVE inventory finding")
+            ids.add(str(finding["id"]))
+    return ids
+
+
 def cve_scenario(feed: dict, cve_id: str | None = None,
-                 annual_events_if_exploited=(1, 2, 6)) -> dict:
+                 annual_events_if_exploited=(1, 2, 6), *, inventory: dict | None = None) -> dict:
+    scanned = inventory_ids(inventory)
+    available = scanned & set(feed["cves"])
+    absences = [{"id": key, "amount": None, "reason": "outside pinned KEV feed"} for key in sorted(scanned - set(feed["cves"]))]
+    common = {"version": feed["feed_version"], "absences": absences,
+              "absence_count": len(absences), "inventory_cve_count": len(scanned),
+              "intersection_count": len(available)}
+    if cve_id is not None and cve_id not in available:
+        raise SystemExit("missing instrument: named CVE is not in both the adopter inventory and pinned KEV feed: " + cve_id)
+    if not available:
+        return {**common, "name": f"cve:{feed['feed_version']} no scanned KEV intersection",
+                "note": f"No scanned CVE is in the pinned KEV feed; {len(absences)} scanned CVE(s) outside it are named absences carrying no amount.",
+                "priced_cve": None, "amount": None}
     headline = ""
     if cve_id is None:
         lo, mode, hi = annual_events_if_exploited
         cve_id, headline = _headline({
-            k: ((lo * c["epss"], mode * c["epss"], hi * c["epss"]),
-                tuple(feed["severity_lm_gbp"][c["severity"]]))
-            for k, c in feed["cves"].items()})
+            k: ((lo * feed["cves"][k]["epss"], mode * feed["cves"][k]["epss"], hi * feed["cves"][k]["epss"]),
+                tuple(feed["severity_lm_gbp"][feed["cves"][k]["severity"]])) for k in available})
         headline = " " + headline
     cve = feed["cves"][cve_id]
     lm = tuple(feed["severity_lm_gbp"][cve["severity"]])
-    # lef: epss (0..1 exploit-probability proxy) scales an editorial "if this CVE
-    # is actively exploited against us, how many loss events/yr" band.
     epss = cve["epss"]
     lo, mode, hi = annual_events_if_exploited
     lef = (lo * epss, mode * epss, hi * epss)
-    return {
-        "version": feed["feed_version"],
+    return {**common, "priced_cve": cve_id,
         "name": f"cve:{feed['feed_version']} {cve_id}",
-        "note": f"{cve['component']} CVSS {cve['cvss']} ({cve['severity']}), epss={epss}. Source: {cve['source']}.{headline}",
+        "note": f"{cve['component']} CVSS {cve['cvss']} ({cve['severity']}), epss={epss}. Source: {cve['source']}.{headline} Scanned intersection {len(available)}; {len(absences)} scanned CVE(s) outside the pinned feed carry no amount.",
         "warn": {"lef": list(lef), "lm": list(lm)},
         "deny": {"lef": list(DENY_LEF), "lm": list(lm)},
     }
@@ -232,6 +257,12 @@ def eol_scenario(feed: dict, component: str | None, as_of: str) -> dict:
 
 
 # --- selfcheck -------------------------------------------------------------------
+def _fixture_inventory(ids) -> dict:
+    return {"schema_version": "1.0.0", "images": [{"image": "fixture@sha256:" + "a" * 64,
+            "digest": "sha256:" + "a" * 64, "scanner_version": "fixture", "database_date": "2026-09-25T00:00:00Z",
+            "vulnerabilities": [{"id": key, "package": "fixture", "installed_version": "1", "fixed_version": "2", "severity": "HIGH"} for key in ids]}]}
+
+
 def selfcheck():
     import glob
     import os
@@ -252,7 +283,7 @@ def selfcheck():
         with open(path) as fh:
             feed = json.load(fh)
         for cve_id in feed["cves"]:
-            sc = cve_scenario(feed, cve_id)
+            sc = cve_scenario(feed, cve_id, inventory=_fixture_inventory(feed["cves"]))
             lo, mode, hi = sc["warn"]["lef"]
             assert lo <= mode <= hi, (path, cve_id, sc)
             checked += 1
@@ -285,11 +316,11 @@ def selfcheck():
                                         "epss": 0.10, "source": "s"},
                          "B-high-epss": {"component": "b", "cvss": 7.5, "severity": "high",
                                          "epss": 0.90, "source": "s"}}}
-    head = cve_scenario(cve_feed)
+    head = cve_scenario(cve_feed, inventory=_fixture_inventory(cve_feed["cves"]))
     # A: 2*0.10*150000 = 30000; B: 2*0.90*40000 = 72000 -> B is the headline
     assert "B-high-epss" in head["name"] and "headline entry B-high-epss of 2" in head["note"], head
     assert "not priced by this line: A-low-epss" in head["note"], head
-    assert cve_scenario(cve_feed, "A-low-epss")["note"].endswith("Source: s."), "a named entry carries no headline note"
+    assert "headline entry" not in cve_scenario(cve_feed, "A-low-epss", inventory=_fixture_inventory(cve_feed["cves"]))["note"], "a named entry carries no headline note"
     eol_feed = {"feed_version": "vX", "components": {
         "old": {"eol_date": "2020-01-01", "source": "s", "base_lef": (1, 1, 2), "base_lm_gbp": (1_000, 1_000, 2_000)},
         "big": {"eol_date": "2030-01-01", "source": "s", "base_lef": (1, 2, 4), "base_lm_gbp": (1_000, 1_000, 2_000)}}}
@@ -365,6 +396,8 @@ def main(argv=None):
     pc = sub.add_parser("cve", help="cve feed -> scenario (omit cve_id: the feed's headline entry)")
     pc.add_argument("feed")
     pc.add_argument("cve_id", nargs="?", default=None)
+    pc.add_argument("--inventory", help="adopter committed image inventory JSON")
+    pc.add_argument("--inventory-json", help="canonical inventory JSON for portable recorded replay")
     pc.add_argument("-o", "--out")
 
     pe = sub.add_parser("eol", help="eol feed -> scenario (time-varying; omit component: the headline as of --as-of)")
@@ -387,7 +420,8 @@ def main(argv=None):
     if args.cmd == "threat":
         scenario = threat_scenario(feed, args.institution)
     elif args.cmd == "cve":
-        scenario = cve_scenario(feed, args.cve_id)
+        inventory = json.loads(args.inventory_json) if args.inventory_json else (json.load(open(args.inventory)) if args.inventory else None)
+        scenario = cve_scenario(feed, args.cve_id, inventory=inventory)
     elif args.cmd == "eol":
         scenario = eol_scenario(feed, args.component, args.as_of)
     else:

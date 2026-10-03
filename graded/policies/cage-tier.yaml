@@ -58,7 +58,9 @@
 #
 # TIGHTEN-ONLY (ADR-0022). The mutation never writes a security field LOOSER
 # than the pod declared: `readOnlyRootFilesystem` and `runAsNonRoot` are ORed
-# with what the container already asked for, so a pod that declared `true` keeps
+# with what the container already asked for; runAsNonRoot falls back to the pod
+# securityContext when the container does not declare it (ticket 158), so a
+# pod that declared `true` keeps
 # `true` at every tier including baseline. `allowPrivilegeEscalation` and
 # `privileged` are written `false` unconditionally, which is the AND — `false`
 # is the tight end of both fields, so writing them can only ever tighten. Before
@@ -170,7 +172,9 @@ spec:
     # cluster-scoped request and, offline, for any `kyverno apply`/`test` run
     # that did not supply the Namespace through a CLI values file
     # (`namespaces:` list) — so every read is null-guarded.
-    # `nsGoverned` (the `policy-as-versioned.dev/governed` read) stood here
+    # Ticket 159(a): only a governed Namespace may declare a tier.
+    # A tier label on any other Namespace is ignored and falls to isolated.
+    # Historical note: `nsGoverned` (the `policy-as-versioned.dev/governed` read) stood here
     # until 2026-09-04 and was referenced by exactly one thing: the `tier`
     # ternary's else-branch, which used it to give an UNGOVERNED namespace
     # `baseline` and a governed-but-untiered one `isolated`. Ticket 63 flipped
@@ -183,7 +187,7 @@ spec:
     # on; it is simply no longer what decides a rung.
     - name: nsTier
       expression: >-
-        namespaceObject != null
+        namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
           ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('')
           : ''
     # Fail closed, everywhere. A governed Namespace with no tier, an unknown
@@ -264,7 +268,7 @@ spec:
                   readOnlyRootFilesystem: variables.dial.harden == 'true' ||
                     (has(c.securityContext) && c.securityContext.?readOnlyRootFilesystem.orValue(false)),
                   runAsNonRoot: variables.dial.harden == 'true' ||
-                    (has(c.securityContext) && c.securityContext.?runAsNonRoot.orValue(false)),
+                    c.?securityContext.?runAsNonRoot.orValue(object.spec.?securityContext.?runAsNonRoot.orValue(false)),
                   allowPrivilegeEscalation: false,
                   privileged: false
                 }

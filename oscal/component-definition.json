@@ -2,17 +2,17 @@
   "component-definition": {
     "uuid": "b0c2f0d0-0000-4000-8000-706176662d31",
     "metadata": {
-      "title": "policy-as-versioned-flux — Kyverno ValidatingPolicy component",
-      "last-modified": "2026-07-31T00:00:00Z",
-      "version": "1.0.0",
+      "title": "Policy as versioned code \u2014 served Kyverno control evidence",
+      "last-modified": "2026-10-03T00:00:00Z",
+      "version": "1.1.0",
       "oscal-version": "1.1.2",
-      "remarks": "C2P component-definition: maps each hand-authored Kyverno ValidatingPolicy (the Check_Id result2oscal string-matches against PolicyReport results[].policy, version suffix stripped) to the NIST 800-53r5 control it evidences. This is the sole policy<->control mapping for the up-flow; add a control-mapping[] entry to teach result2oscal a new policy."
+      "remarks": "C2P component-definition: maps each served Kyverno policy (the Check_Id result2oscal string-matches against PolicyReport results[].policy, version suffix stripped) to its primary NIST 800-53r5 control. Each Check_Id occurs once because this converter emits one control per check. A mapping does not imply that mutation or generation necessarily produces a PolicyReport result; the up-flow records only results actually observed."
     },
     "components": [
       {
         "uuid": "b0c2f0d0-0000-4000-8000-706176662d63",
         "type": "policy",
-        "title": "Kyverno CEL ValidatingPolicy engine",
+        "title": "Kyverno CEL policy engine",
         "description": "The single versioned Kyverno engine; one result stream (wgpolicyk8s.io PolicyReports) for both planes.",
         "control-implementations": [
           {
@@ -23,17 +23,109 @@
               {
                 "uuid": "b0c2f0d0-0001-4000-8000-706176662d01",
                 "control-id": "ac-6",
-                "description": "Least Privilege — a workload runs as non-root, or (if root) is attested + hardened.",
+                "description": "Least Privilege \u2014 a workload runs as non-root, or (if root) is attested + hardened.",
                 "props": [
-                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-nonroot" }
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "require-nonroot"
+                  }
                 ]
               },
               {
                 "uuid": "b0c2f0d0-0001-4000-8000-706176662d02",
                 "control-id": "cm-6",
-                "description": "Configuration Settings — versioned policy is pinned; unversioned workloads are rejected.",
+                "description": "Configuration Settings \u2014 an unclaimed pod in a governed Namespace runs on the isolated rung.",
                 "props": [
-                  { "name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "governed-namespace-requires-claim" }
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "governed-namespace-requires-claim"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d10",
+                "control-id": "ac-6",
+                "description": "Least Privilege \u2014 a claiming workload retains its declared hardening within its governed Namespace cage.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "cage-tier"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d11",
+                "control-id": "ac-4",
+                "description": "Information Flow Enforcement \u2014 generated reach policies restrict caged workloads by tier.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "cage-netpol"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d12",
+                "control-id": "cm-6",
+                "description": "Configuration Settings \u2014 posture is stamped from the workload policy claim.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "stamp-posture"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d13",
+                "control-id": "cm-6",
+                "description": "Configuration Settings \u2014 an unsupported version claim is reported while the orphan mutation isolates it.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "policy-version-orphan-guard"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d14",
+                "control-id": "cm-6",
+                "description": "Configuration Settings \u2014 the report records an unclaimed workload in a governed Namespace.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "governed-namespace-unclaimed-report"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d15",
+                "control-id": "cm-6",
+                "description": "Configuration Settings \u2014 orphan claims are mutated to the isolated rung.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "policy-version-orphan-cage"
+                  }
+                ]
+              },
+              {
+                "uuid": "b0c2f0d0-0001-4000-8000-706176662d16",
+                "control-id": "ac-4",
+                "description": "Information Flow Enforcement \u2014 the bottom rung generates no ingress or egress rules.",
+                "props": [
+                  {
+                    "name": "Check_Id",
+                    "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno",
+                    "value": "cage-netpol-bottom-rung"
+                  }
                 ]
               }
             ]

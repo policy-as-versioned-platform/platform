@@ -273,7 +273,8 @@ check(gnops == ["CREATE"],
 # against the second, so the patch does it unconditionally -- and the reason is
 # recorded with its scope rather than as a fact about the whole estate.
 ptb = os.path.join("..", "posture", "policies", "posture-trust-boundary.yaml")
-if os.path.exists(ptb):
+posture_resources = yaml.safe_load(open(os.path.join("..", "posture", "policies", "kustomization.yaml")))["resources"]
+if "posture-trust-boundary.yaml" in posture_resources and os.path.exists(ptb):
     d = doc(ptb); mc = conds(d)
     gated = any(cur.CLAIM_LABEL in e for e in mc.values())
     check(d["spec"]["validationActions"] == ["Deny"]
@@ -283,7 +284,9 @@ if os.path.exists(ptb):
           "a posture that does not equal its claim and is NOT gated on a version, so a patch that "
           "removed the claim and left the posture label would be refused there; both go in one patch")
 else:
-    note("the unversioned posture-trust-boundary is not in this checkout; that leg is not graded")
+    note("ticket 149 retires the unversioned Deny from the authoring set; historical served copies retain their own claim scope")
+check("posture-trust-boundary.yaml" not in posture_resources,
+      "ticket 149: the current authoring set serves the stamping mutation without the retired Deny")
 for f in platform_copies("posture-trust-boundary.yaml"):
     check(any(cur.CLAIM_LABEL in e for e in conds(doc(f)).values()),
           f"{f}: the SERVED copy IS gated on the claim, so for an adopter running only the composed "

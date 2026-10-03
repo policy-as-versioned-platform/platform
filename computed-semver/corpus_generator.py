@@ -63,7 +63,7 @@ DISTRIBUTION = REPO / "distribution"
 
 # Bumped by hand when this module's own logic changes. Not part of the
 # subject, so it cannot itself bump a policy version (spec.md, "The corpus").
-GENERATOR_VERSION = "0.2.0"
+GENERATOR_VERSION = "0.3.0"
 
 PIN_LABEL = "policy-as-versioned.dev/policy-version"
 TIER_LABEL = "posture.acme.io/tier"
@@ -83,13 +83,13 @@ OUTSIDE_PIN = "0.0.0-outside-array"  # never a real platform version
 # (which 4.0.0 fails closed to `isolated`), and a pod whose own label is a
 # DIFFERENT tier from its Namespace's (a forged tier, honoured by 3.0.0 and
 # clobbered by 4.0.0).
-NS_VALUES = ["none", "governed-no-tier", "governed-quarantine"]
+NS_VALUES = ["none", "governed-no-tier", "governed-quarantine", "governed-baseline", "ungoverned-baseline"]
 
 # What the WORKLOAD declares for itself. The cage is tighten-only from 4.0.0
 # (ADR-0022), so "the workload declared readOnlyRootFilesystem/runAsNonRoot
 # true at a rung whose dial writes false" is the case that separates the two
 # bodies, and it cannot be reached by varying the policy alone.
-DECLARES_VALUES = ["nothing", "hardened"]
+DECLARES_VALUES = ["nothing", "hardened", "pod-nonroot"]
 
 # The baseline value each axis holds at when it is NOT the one of the pair
 # being varied -- what makes "combine pairwise, not fully" concrete.
@@ -105,9 +105,11 @@ def namespace_object(ns_choice: str) -> dict | None:
     models, which is exactly CEL's `namespaceObject == null`."""
     if ns_choice == "none":
         return None
-    labels = {GOVERNED_LABEL: "true"}
+    labels = {} if ns_choice == "ungoverned-baseline" else {GOVERNED_LABEL: "true"}
     if ns_choice == "governed-quarantine":
         labels[TIER_LABEL] = "quarantine"
+    elif ns_choice.endswith("baseline"):
+        labels[TIER_LABEL] = "baseline"
     return {
         "apiVersion": "v1", "kind": "Namespace",
         "metadata": {"name": f"corpus-{ns_choice}", "labels": labels},
@@ -481,6 +483,8 @@ def generate_spine(subject_dir: Path, inside_pin: str, source_tag: str) -> list[
         _set_label(pod, PIN_LABEL, inside_pin if pin_choice == "inside" else OUTSIDE_PIN)
         if tier_choice != "absent":
             _set_label(pod, TIER_LABEL, tier_choice)
+        if declares == "pod-nonroot":
+            pod["spec"]["securityContext"] = {"runAsNonRoot": True}
         if declares == "hardened":
             # Written BEFORE the expression probe on purpose: a probe that
             # also writes these fields is the axis that owns that cell and

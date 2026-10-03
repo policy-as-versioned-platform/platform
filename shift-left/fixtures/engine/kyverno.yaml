@@ -1,0 +1,17 @@
+# A FIXTURE declaration, for verify-shift-left.sh and wargamer/propose-policy-pr.sh. NOT an adopter.
+#
+# ci-check.py runs each line only on an engine the line supports (eco-system ticket 148, hub
+# ADR-0033 point 7), and reads that engine from an adopter's gitops/engine/kyverno.yaml. The
+# fixtures in this directory belong to no adopter, so the beats hand this file to ci-check.py
+# with --engine-declaration. Its figures are the engine table's 1.18.2 row
+# (engine/kyverno/engine-table.yaml), written by engine/declaration.py's from_table().
+schema: 1
+engine: kyverno
+version: "1.18.2"
+install:
+  url: https://github.com/kyverno/kyverno/releases/download/v1.18.2/install.yaml
+  sha256: "3dcd43eaf11f0719084217148cd0c82a8fa49faa9b1a783ea5bea2cf84041bda"
+cli:
+  linux_x86_64:
+    file: kyverno-cli_v1.18.2_linux_x86_64.tar.gz
+    sha256: "cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b"
