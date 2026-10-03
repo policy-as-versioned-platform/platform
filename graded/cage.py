@@ -130,6 +130,167 @@ ORDER = ["baseline", "restricted", "quarantine", "isolated"]
 LADDER = ORDER + ["infra"]
 
 
+# --- The twin agent's dial table (ADR-0031; eco-system tickets 30 and 145) ------
+# ONE ladder, a dial table per actor class. The rung names are ORDER's; the dials
+# are the twin agent's: what it may write, whether a model step runs and whether
+# the owner's local clock runs (ticket 30 decision 11). `infra` is not a twin-agent
+# rung: it is a platform-role declaration on a Namespace and nothing here is a
+# Namespace. The subject is the adopter's twin acting with nobody at the keyboard,
+# on the GitHub sweep and on the local clock (ADR-0031 decision 1).
+#
+# `cost` is 0 GBP in cash at every rung: Actions minutes are free on a public
+# repository and the local clock runs on the owner's own subscription. It enters
+# TCoR (twin_agent_tcor) and NEVER the selection, which runs over residuals alone.
+#
+# `reduce` IS NOT ON THE ROW, on purpose (decision 15: "derived, not typed"). The
+# pod table above calls its reductions "evidenced by nothing but this comment". A
+# rung's reduction here is derived from the misuse paths the rung closes
+# (TWIN_AGENT_PATHS) and from what each path can still land on the adopter's
+# own composed prices -- `twin_agent_reduce()` computes it from a `reach` the
+# composition derives per adopter, and refuses by name where a path's reach could
+# not be derived. Nothing in this table is a number about the world.
+TWIN_AGENT_TABLE_VERSION = "1.0.0"
+TWIN_AGENT_SUBJECT = "twin-agent"
+
+TWIN_AGENT_TIERS = {
+    "baseline": {
+        # propose-only, the loosest rung that exists today (ADR-0031 decision 2)
+        "writes": ("observation-line", "proposal-branch", "pull-request"),
+        "model_step": "local-clock-grade-5",   # no override; GitHub only where a measured permission holds (none today)
+        "local_clock": True,
+        "cost": 0,
+    },
+    "restricted": {
+        "writes": ("observation-line", "proposal-branch", "pull-request"),
+        "model_step": "none",                  # lookup and deterministic render only
+        "local_clock": False,
+        "cost": 0,
+    },
+    "quarantine": {
+        "writes": ("observation-line",),        # no proposal
+        "model_step": "none",
+        "local_clock": False,
+        "cost": 0,
+    },
+    "isolated": {
+        "writes": (),                           # the twin job runs and writes only to its job log; the writer job does not run
+        "model_step": "none",
+        "local_clock": False,
+        "cost": 0,
+    },
+}
+
+# The misuse paths that remain once the twin code is pinned by hub commit and the
+# sweep is split into a read-only twin job and a writer job (ticket 30 decisions
+# 7, 8 and 15). Each is a row of the hub's twin/ecosystem-misuse-catalogue.yaml;
+# `closed_at` is the loosest rung that closes it. The writer keeps the same token
+# at every rung it runs, so the two token paths close only where the writer job
+# does not run at all.
+TWIN_AGENT_PATHS = {
+    "writer-pushes-a-looser-declaration": {
+        "closed_at": "isolated",
+        "catalogue_row": "adopter-twin-writer-pushes-a-looser-declaration",
+    },
+    "writer-merges-or-tags-through-rest": {
+        "closed_at": "isolated",
+        "catalogue_row": "adopter-twin-writer-merges-or-tags-through-rest",
+    },
+    "misleading-proposal-merged-by-a-human": {
+        "closed_at": "quarantine",
+        "catalogue_row": "adopter-merges-a-misleading-twin-proposal",
+    },
+    "model-step-writes-a-wrong-binding-or-forecast": {
+        "closed_at": "restricted",
+        "catalogue_row": "adopter-twin-model-step-writes-a-wrong-binding-or-forecast",
+    },
+}
+
+# The window the scenario's loss magnitude runs over (ticket 30 decision 12): the
+# time until the gate detects the act. Since eco-system ticket 142a the hub's
+# schedule checker (verify/schedules/lane.py) grades a push to `main` or a merge
+# made by a scheduled identity as a FAIL, and verify/tier-binding grades a served
+# declaration looser than its priced tier; both run in the hub's truth gate. The
+# figure is the gate's cadence, copied from the served workflow it names, not a
+# number about the world. A composition prints it beside the price with its basis.
+DETECTION_WINDOW = {
+    "days": 1.0,
+    "source": ("the hub's .github/workflows/truth.yml `schedule: cron: '47 5 * * *'` (once a "
+               "day), read 2026-09-26 at policy-as-versioned-flux/policy-as-versioned-flux "
+               "origin/main 9c3b1f22"),
+    "detects": ("a push to main or a merge made by a scheduled identity "
+                "(verify/schedules/lane.py, eco-system ticket 142a) and a served declaration "
+                "looser than the strictest priced line (verify/tier-binding)"),
+    "assumes": (
+        "the truth run fires once a day as scheduled; the delay GitHub adds to a cron run "
+        "(measured at up to ~5h on the estate's first firings) is not in the figure",
+        "the loss runs until detection, not until repair: a red gate is acted on the day it "
+        "is read",
+        "one day is the schedule's whole interval, the upper bound on the wait for the next "
+        "run; the mean wait is half of it",
+    ),
+}
+
+
+def detection_window_years():
+    """The window as a fraction of a year, the unit the loss magnitude is annualised in."""
+    return float(DETECTION_WINDOW["days"]) / 365.25
+
+
+def twin_agent_closed(rung):
+    """The misuse paths closed at `rung` or at a looser rung (a tighter rung keeps
+    every closure of the looser ones). Sorted, so the answer is stable."""
+    if rung not in TWIN_AGENT_TIERS:
+        sys.exit(f"unknown twin-agent rung '{rung}' (known: {', '.join(TWIN_AGENT_TIERS)})")
+    return sorted(p for p, spec in TWIN_AGENT_PATHS.items()
+                  if ORDER.index(spec["closed_at"]) <= ORDER.index(rung))
+
+
+def twin_agent_reduce(rung, reach):
+    """The share of the scenario's loss the rung removes, DERIVED from the paths it
+    closes and from what each path could still land (decision 15).
+
+    `reach` maps every path in TWIN_AGENT_PATHS to the fraction of the scenario's
+    loss that path can land on the served tree (0.0 to 1.0), or None where the
+    composition could not derive it. The residual at a rung is what the LOOSEST
+    path still open can land: the paths are doors onto one loss (a served cage
+    looser than the priced one), so they do not add, and closing a door beside an
+    open one that reaches the same loss removes nothing. reduce = 1 - max(reach of
+    the open paths); 1.0 when every path is closed. None where an open path's
+    reach could not be derived: a rung whose residual cannot be stated is not a
+    candidate, by name, never a guess (ADR-0020)."""
+    missing = sorted(set(TWIN_AGENT_PATHS) - set(reach))
+    if missing:
+        raise ValueError(f"reach names no figure for {missing}")
+    open_paths = [p for p in TWIN_AGENT_PATHS if p not in twin_agent_closed(rung)]
+    if any(reach[p] is None for p in open_paths):
+        return None
+    for p in open_paths:
+        if not 0.0 <= float(reach[p]) <= 1.0:
+            raise ValueError(f"reach for {p!r} is {reach[p]!r}, not a fraction of the loss")
+    return 1.0 - max((float(reach[p]) for p in open_paths), default=0.0)
+
+
+def twin_agent_residuals(ale, reach):
+    """The residual ALE at every twin-agent rung, `ale * (1 - reduce)`, or None at a
+    rung whose reduction could not be derived. The mapping the adopter's own
+    selection policy picks from (ADR-0021: the estate prices, the adopter's
+    versioned package selects; a None rung is simply not a candidate)."""
+    out = {}
+    for rung in ORDER:
+        reduce = twin_agent_reduce(rung, reach)
+        out[rung] = None if reduce is None else float(ale) * (1.0 - reduce)
+    return out
+
+
+def twin_agent_tcor(ale, rung, reach):
+    """TCoR of the twin agent's cage at `rung`: residual + the rung's cash cost,
+    which is 0 at every rung. Booked, never selected on."""
+    residual = twin_agent_residuals(ale, reach)[rung]
+    controls = float(TWIN_AGENT_TIERS[rung]["cost"])
+    return {"tier": rung, "residual": residual, "cost_of_controls": controls,
+            "tcor": None if residual is None else residual + controls}
+
+
 def dials(tier):
     """The deterministic tier -> dial-settings expansion. Pure lookup, no surprises."""
     if tier not in TIERS:
@@ -394,6 +555,81 @@ def cmd_selfcheck(_args):
     except ValueError:
         pass
 
+    # 7. The twin agent's dial table (ADR-0031; eco-system ticket 145). One ladder:
+    #    the same four rung names, `infra` absent (a Namespace role, not an actor's
+    #    rung), every row carrying the twin agent's own dials and a cash cost of 0.
+    assert list(TWIN_AGENT_TIERS) == ORDER, list(TWIN_AGENT_TIERS)
+    assert "infra" not in TWIN_AGENT_TIERS, "infra is not a twin-agent rung (ADR-0031)"
+    for rung, row in TWIN_AGENT_TIERS.items():
+        assert set(row) == {"writes", "model_step", "local_clock", "cost"}, (rung, row)
+        assert row["cost"] == 0, ("every rung runs for 0 GBP in cash (decision 15)", rung, row)
+        assert "reduce" not in row, ("reduce is derived, never typed (decision 15)", rung)
+    # The dials tighten one step at a time: first the model step and the local
+    # clock, then the proposal, then every write (decision 11).
+    writes = [set(TWIN_AGENT_TIERS[r]["writes"]) for r in ORDER]
+    assert all(later <= earlier for earlier, later in zip(writes, writes[1:])), writes
+    assert TWIN_AGENT_TIERS["baseline"]["model_step"] != "none" and TWIN_AGENT_TIERS["baseline"]["local_clock"]
+    assert all(TWIN_AGENT_TIERS[r]["model_step"] == "none" and not TWIN_AGENT_TIERS[r]["local_clock"]
+               for r in ORDER[1:]), TWIN_AGENT_TIERS
+    assert "pull-request" in TWIN_AGENT_TIERS["restricted"]["writes"], "restricted still proposes"
+    assert TWIN_AGENT_TIERS["quarantine"]["writes"] == ("observation-line",), "quarantine observes only"
+    assert TWIN_AGENT_TIERS["isolated"]["writes"] == (), "isolated writes nothing"
+    # Every path closes at a rung on the ladder, and a tighter rung keeps every
+    # closure of the looser ones.
+    for p, spec in TWIN_AGENT_PATHS.items():
+        assert spec["closed_at"] in ORDER, (p, spec)
+    closed = [set(twin_agent_closed(r)) for r in ORDER]
+    assert all(earlier <= later for earlier, later in zip(closed, closed[1:])), closed
+    assert closed[-1] == set(TWIN_AGENT_PATHS), "isolated closes every path"
+    assert closed[0] == set(), "baseline closes none"
+    # The reduction is DERIVED from what the open paths can still land. The two
+    # token paths reach the whole declaration gap and stay open until isolated,
+    # the proposal path reaches none of it past the served PR gate, and the
+    # model step reaches no priced figure (grade 5 never prices): so restricted
+    # AND quarantine carry the same residual as baseline, and only isolated
+    # collapses it. That is the consequence ADR-0031 records for restricted,
+    # measured here rather than asserted.
+    reach = {"writer-pushes-a-looser-declaration": 1.0, "writer-merges-or-tags-through-rest": 1.0,
+             "misleading-proposal-merged-by-a-human": 0.0,
+             "model-step-writes-a-wrong-binding-or-forecast": 0.0}
+    assert [twin_agent_reduce(r, reach) for r in ORDER] == [0.0, 0.0, 0.0, 1.0]
+    res = twin_agent_residuals(1_000.0, reach)
+    assert res["restricted"] == res["baseline"] == res["quarantine"] == 1_000.0, res
+    assert res["isolated"] == 0.0, res
+    # A path with a partial reach: closing it beside a fully-reaching open path
+    # removes nothing (doors onto one loss do not add); closing the last open
+    # path removes everything above what remains.
+    partial = dict(reach, **{"writer-pushes-a-looser-declaration": 0.4,
+                             "writer-merges-or-tags-through-rest": 0.4,
+                             "misleading-proposal-merged-by-a-human": 1.0})
+    assert [twin_agent_reduce(r, partial) for r in ORDER] == [0.0, 0.0, 0.6, 1.0]
+    # A reach that could not be derived makes every rung it is still open at a
+    # named non-candidate (None), never a guessed number; the rungs that close it
+    # still price.
+    unknown = dict(reach, **{"misleading-proposal-merged-by-a-human": None})
+    assert [twin_agent_reduce(r, unknown) for r in ORDER] == [None, None, 0.0, 1.0]
+    assert twin_agent_residuals(1_000.0, unknown)["baseline"] is None
+    for bad in (dict(reach, **{"writer-pushes-a-looser-declaration": 1.5}),
+                {k: v for k, v in reach.items() if k != "writer-merges-or-tags-through-rest"}):
+        try:
+            twin_agent_reduce("baseline", bad)
+            raise AssertionError("a reach off [0, 1] or missing a path must refuse")
+        except ValueError:
+            pass
+    # Cost enters TCoR and never the selection: the residual alone is what a
+    # selection policy reads, and the booked cost is 0 at every rung.
+    for r in ORDER:
+        t = twin_agent_tcor(1_000.0, r, reach)
+        assert t["cost_of_controls"] == 0.0 and t["tcor"] == t["residual"], t
+    assert 0 < detection_window_years() < 1 and DETECTION_WINDOW["days"] == 1.0, DETECTION_WINDOW
+    assert DETECTION_WINDOW["source"] and DETECTION_WINDOW["assumes"], "the window names its source"
+
+    print(
+        "ok  twin-agent table v%s: rungs %s, cost 0 at every rung, reduce derived from the "
+        "paths each rung closes (%d paths); restricted and quarantine carry baseline's residual, "
+        "isolated collapses it; an underived reach is a named non-candidate"
+        % (TWIN_AGENT_TABLE_VERSION, ORDER, len(TWIN_AGENT_PATHS))
+    )
     print(
         "ok  tiers %s | £ picks: band40k->%s band20k->%s band5k->%s band1k->isolated | "
         "scenario £%.0f: driftwood->%s (TCoR £%.0f), ludlow->%s (TCoR £%.0f) | "

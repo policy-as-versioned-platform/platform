@@ -1,56 +1,14 @@
-# The ladder, one pod per rung, plus the three cases ticket 26 exists for.
-#
-# The tier comes from each pod's NAMESPACE (values.yaml), never from the pod.
-# Every claiming pod is MUTATED INTO ITS CAGE, never denied — there is no
-# untouched state within the claiming population (ticket 08).
-#
-#   at-baseline/restricted/quarantine/isolated  one governed namespace per rung
-#   untiered-ns        governed, NO tier declared -> falls CLOSED to `isolated`,
-#                      never to baseline. Silence is not an exemption.
-#   forged-tier        declares `posture.acme.io/tier: baseline` on the POD while
-#                      sitting in a quarantine namespace -> the label is an
-#                      OUTPUT and is CLOBBERED to quarantine at admission.
-#   hardened-baseline  declares readOnlyRootFilesystem/runAsNonRoot TRUE and sits
-#                      in a BASELINE namespace -> keeps both true. The cage is
-#                      tighten-only; before ticket 26 baseline wrote false over it.
-#   privileged-pod     declares `privileged: true`. The cage writes `privileged:
-#                      false` in the SAME securityContext as
-#                      allowPrivilegeEscalation:false — writing only one of the
-#                      pair produced a container the API SERVER then rejected,
-#                      i.e. the cage refusing a workload (live, 2026-08-28).
-#   host-namespaces    declares hostNetwork/hostPID/hostIPC true at the BOTTOM
-#                      rung. All three are clobbered shut: NetworkPolicy does not
-#                      apply to a host-network pod, so without this the isolated
-#                      rung reached the API server and the internet (live).
-#   tighter-than-tier  declares cpu/memory limits TIGHTER than its tier's dial ->
-#                      keeps its own. The ceilings are a MIN, not an overwrite.
-#   sidecar-resident   already carries a `waf-sidecar` container, which is what
-#                      every UPDATE to an already-caged pod looks like -> the
-#                      sidecar is NOT appended twice. Appending it twice made
-#                      every update to a restricted/quarantine/isolated pod fail
-#                      admission with `duplicate entries for key [name=...]`.
-#   ungoverned-ns      sits in a namespace that is not governed at all -> renders
-#                      `isolated` since 2026-09-04 (ticket 63). It rendered
-#                      `baseline` until ADR-0022's ordering precondition was met
-#                      (infra declared on the platform's own namespaces and
-#                      asserted by distribution/verify-infra-declaration.sh);
-#                      now saying nothing buys nothing. Still decided rather
-#                      than fallen into — this fixture is the decision.
-#   unclaimed-system   claims NO policy version at all — a stand-in for
-#                      kube-system/Kyverno/Flux/COTS pods. Genuinely out of scope
-#                      (matchConditions skip), proving the gate, not prose, keeps
-#                      unversioned workloads out of this policy's reach.
 apiVersion: v1
 kind: Pod
 metadata:
   name: at-baseline
   namespace: cage-baseline
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
 apiVersion: v1
 kind: Pod
@@ -58,11 +16,11 @@ metadata:
   name: at-restricted
   namespace: cage-restricted
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
 apiVersion: v1
 kind: Pod
@@ -70,11 +28,11 @@ metadata:
   name: at-quarantine
   namespace: cage-quarantine
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
 apiVersion: v1
 kind: Pod
@@ -82,57 +40,52 @@ metadata:
   name: at-isolated
   namespace: cage-isolated
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
-# Governed, no tier on the Namespace: fails CLOSED to isolated.
 apiVersion: v1
 kind: Pod
 metadata:
   name: untiered-ns
   namespace: cage-untiered
   labels:
-    policy-as-versioned.dev/policy-version: "2.0.0"
+    policy-as-versioned.dev/policy-version: 2.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
-# Forgery: the pod says baseline, the Namespace says quarantine. The Namespace wins.
 apiVersion: v1
 kind: Pod
 metadata:
   name: forged-tier
   namespace: cage-quarantine
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
     posture.acme.io/tier: baseline
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
-# Tighten-only: declared strict, sitting at the loosest rung. It keeps its own
-# settings; the cage may only add to them.
 apiVersion: v1
 kind: Pod
 metadata:
   name: hardened-baseline
   namespace: cage-baseline
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
-      securityContext:
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
+  - name: app
+    image: nginx
+    securityContext:
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
 ---
-# Unclaimed: no `policy-as-versioned.dev/policy-version` label at all.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -140,83 +93,144 @@ metadata:
   namespace: kube-system
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
-# Never refuse, not even by making the pod invalid: privileged is clobbered false
-# alongside allowPrivilegeEscalation, so the pair the API server validates agrees.
 apiVersion: v1
 kind: Pod
 metadata:
   name: privileged-pod
   namespace: cage-baseline
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
-      securityContext:
-        privileged: true
+  - name: app
+    image: nginx
+    securityContext:
+      privileged: true
 ---
-# The host namespaces are the hole NetworkPolicy cannot cover. Clobbered shut.
 apiVersion: v1
 kind: Pod
 metadata:
   name: host-namespaces
   namespace: cage-isolated
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   hostNetwork: true
   hostPID: true
   hostIPC: true
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
 ---
-# Tighten-only applies to the dials too: a declared ceiling below the tier's is kept.
 apiVersion: v1
 kind: Pod
 metadata:
   name: tighter-than-tier
   namespace: cage-baseline
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
-      resources:
-        limits:
-          cpu: 50m
-          memory: 32Mi
+  - name: app
+    image: nginx
+    resources:
+      limits:
+        cpu: 50m
+        memory: 32Mi
 ---
-# What every UPDATE to an already-caged pod looks like: the sidecar is already there.
 apiVersion: v1
 kind: Pod
 metadata:
   name: sidecar-resident
   namespace: cage-quarantine
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
-    - name: waf-sidecar
-      image: ghcr.io/acme/coraza-waf:cage
+  - name: app
+    image: nginx
+  - name: waf-sidecar
+    image: ghcr.io/acme/coraza-waf:cage
 ---
-# Not governed at all: `isolated` by decision (ticket 63, 2026-09-04), because
-# ADR-0022's ordering precondition is met. Was `baseline` until then.
 apiVersion: v1
 kind: Pod
 metadata:
   name: ungoverned-ns
   namespace: cage-ungoverned
   labels:
-    policy-as-versioned.dev/policy-version: "1.0.0"
+    policy-as-versioned.dev/policy-version: 1.0.0
 spec:
   containers:
-    - name: app
-      image: nginx
+  - name: app
+    image: nginx
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nonroot-baseline
+  namespace: cage-baseline
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+spec:
+  containers:
+  - name: app
+    image: nginx
+  securityContext:
+    runAsNonRoot: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nonroot-restricted
+  namespace: cage-restricted
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+spec:
+  containers:
+  - name: app
+    image: nginx
+  securityContext:
+    runAsNonRoot: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nonroot-quarantine
+  namespace: cage-quarantine
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+spec:
+  containers:
+  - name: app
+    image: nginx
+  securityContext:
+    runAsNonRoot: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-nonroot-isolated
+  namespace: cage-isolated
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+spec:
+  containers:
+  - name: app
+    image: nginx
+  securityContext:
+    runAsNonRoot: true
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ungoverned-baseline
+  namespace: cage-ungoverned-baseline
+  labels:
+    policy-as-versioned.dev/policy-version: 1.0.0
+spec:
+  containers:
+  - name: app
+    image: nginx

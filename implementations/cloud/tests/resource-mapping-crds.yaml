@@ -1,0 +1,43 @@
+# Offline fixture mappings, NOT the vendor CRD schemas. Kyverno 1.18.2
+# requires a GVK->resource mapping even for JSONPatch. preserve-unknown
+# deliberately prevents this fixture from pretending to validate provider
+# fields. Live admission must use Established Upbound v2.6.0 CRDs.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: instances.rds.aws.m.upbound.io
+spec:
+  group: rds.aws.m.upbound.io
+  scope: Namespaced
+  names: {plural: instances, singular: instance, kind: Instance}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bucketserversideencryptionconfigurations.s3.aws.m.upbound.io
+spec:
+  group: s3.aws.m.upbound.io
+  scope: Namespaced
+  names: {plural: bucketserversideencryptionconfigurations, singular: bucketserversideencryptionconfiguration, kind: BucketServerSideEncryptionConfiguration}
+  versions:
+    - name: v1beta1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

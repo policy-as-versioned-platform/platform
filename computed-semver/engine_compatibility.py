@@ -412,8 +412,10 @@ def run_legacy_fixture(folder: Path, body: dict, version: str, binary: str) -> d
         result['rule'] = result['policy']
     manifest.write_text(yaml.safe_dump(test, sort_keys=False))
     ok, facts = _summary(_run([binary, 'test', str(folder), '-o', 'json']), results)
+    generation = run_generation(folder, body, binary) if (folder / 'generates.yaml').is_file() else None
     return {'family': family, 'policies': body['names'], 'fixture': 'graded/tests (adapted)',
-            'outcome': 'passed' if ok else 'failed', **facts}
+            'outcome': 'passed' if ok and (generation is None or generation['outcome'] == 'passed') else 'failed',
+            **facts, **({'generation': generation} if generation is not None else {})}
 
 
 def _grade_body(body: dict, fixture: Path | None, legacy: Path | None, version: str | None,

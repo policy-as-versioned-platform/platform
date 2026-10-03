@@ -1,0 +1,22 @@
+{
+  "component-definition": {
+    "uuid": "cf151000-0000-4000-8000-000000000001",
+    "metadata": {
+      "title": "Platform cloud implementations — RDS and S3 admission intent",
+      "last-modified": "2026-10-03T00:00:00Z", "version": "1.0.0", "oscal-version": "1.1.2",
+      "remarks": "The platform ships and claims these members (ADR-0017). A mapping is not an assessment of AWS reconciliation, an absent Bucket encryption configuration, or cloud networking. Only actual PolicyReport results enter the up-flow. Prepared publication, not a signed release claim."
+    },
+    "components": [{
+      "uuid": "cf151000-0000-4000-8000-000000000002", "type": "policy", "title": "Crossplane cloud admission",
+      "description": "Hand-authored CEL members harvest collie's control intent; mutations tighten service dials without Deny.",
+      "control-implementations": [{
+        "uuid": "cf151000-0000-4000-8000-000000000003", "source": "nist/catalog/NIST_SP-800-53_rev5.2.0_catalog.json",
+        "description": "NIST SP 800-53 Rev 5.2.0; exact bare control ids",
+        "implemented-requirements": [
+          {"uuid": "cf151000-0000-4000-8000-000000000004", "control-id": "cp-10", "description": "Observe RDS Multi-AZ and tighten availability by declared rung.", "props": [{"name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-rds-multi-az"}], "remarks": "policies/require-rds-multi-az.yaml and cloud-cage-rds.yaml; primary mapping harvested through the incumbent collie rationale."},
+          {"uuid": "cf151000-0000-4000-8000-000000000005", "control-id": "sc-28", "description": "Observe supported server-side encryption algorithms on every rule and supply AES256 when absent or invalid, preserving aws:kms.", "props": [{"name": "Check_Id", "ns": "https://oscal-compass.github.io/compliance-trestle/plugins/kyverno", "value": "require-s3-bucket-encryption"}], "remarks": "policies/require-s3-bucket-encryption.yaml and cloud-cage-s3.yaml. A configuration CR is the subject, not every Bucket."}
+        ]
+      }]
+    }]
+  }
+}
