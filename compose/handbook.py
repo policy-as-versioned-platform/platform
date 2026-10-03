@@ -516,9 +516,16 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                     "no attachment point is stated")
         regimes = exposure.get("regimes") or []
         a(f"- Regimes ({len(regimes)}):")
-        for r in regimes:
+        for i, r in enumerate(regimes):
+            if r.get("amount") is None:
+                _absent(absences, f"exposure.regimes[{i}].amount", HEADER_PATH,
+                        f"{r.get('name')} from {r.get('source')} feed {r.get('feed')} is "
+                        "unpriced; no monetary amount is stated")
+                amount_cell = "unpriced (section 6)"
+            else:
+                amount_cell = _money(r.get("amount"), exposure["currency"])
             a(f"  - `{r.get('name')}` from {r.get('source')} feed `{r.get('feed')}` "
-              f"{r.get('version')}: {_money(r.get('amount'), exposure['currency'])}, "
+              f"{r.get('version')}: {amount_cell}, "
               f"{len(r.get('controls') or [])} control(s) named")
         a("")
 

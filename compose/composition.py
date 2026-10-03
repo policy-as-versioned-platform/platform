@@ -3596,27 +3596,39 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         old_sc = _feed_scenario(name, old_version, adopter_party, tree, composition_as_of, inventory)
         new_sc = _feed_scenario(name, new_version, adopter_party, tree, composition_as_of, inventory)
 
-    # No scanned KEV intersection is a named absence, never a zero-risk price.
-    if name == "cve" and new_sc.get("priced_cve") is None:
+    # Either side of a CVE version comparison can have no scanned intersection.
+    # That converter result is a named absence, not a scenario for fair.state().
+    old_absent = name == "cve" and old_sc.get("priced_cve") is None
+    new_absent = name == "cve" and new_sc.get("priced_cve") is None
+    old_absence = ({"old_absence_only": True, "old_could_not_look": old_sc["note"]}
+                   if old_absent else {})
+    cage = _cage_engine()
+    band_native = None
+    if not (old_absent and new_absent):
+        # Select only actual scenarios, in the publisher's currency. No missing
+        # amount or tier is substituted into this comparison.
+        band_native, _ = _converted(tolerance, band_currency or reporting_currency, native,
+                                     as_of, parent_trees)
+    old = None if old_absent else cage.select(
+        old_sc, adopter_party, band_native, mode="warn", floor=floor)
+    old_price = None if old is None else _converted(
+        old["uncaged_residual"], native, reporting_currency, as_of, parent_trees)[0]
+    old_tier = None if old is None else old["tier"]
+
+    # The current line is unpriced; a known previous price remains comparable
+    # evidence, while no new price or tier movement can be measured.
+    if new_absent:
         signature = observation["pin_signature"] if observation else pin_signature_state(tree, party, name, new_version)
         return _price_entry(party, "feed", adopter_party, reporting_currency, None, perspective_doc,
                             name=name, old_version=old_version, new_version=new_version,
-                            old_price=None, new_price=None, old_tier=None, proposed_tier=None,
+                            old_price=old_price, new_price=None, old_tier=old_tier, proposed_tier=None,
                             changed=False, holes=[], total=None, hole=None, pin_signature=signature,
                             absence_only=True, could_not_look=new_sc["note"], lef=None, lef_basis=new_sc["note"],
                             priced_cve=None, absences=new_sc["absences"], absence_count=new_sc["absence_count"],
-                            inventory_cve_count=new_sc["inventory_cve_count"], intersection_count=0)
+                            inventory_cve_count=new_sc["inventory_cve_count"], intersection_count=0,
+                            **old_absence)
 
-    # The band and the residual must be one currency before either is compared:
-    # the selection happens in the publisher's currency, so the band converts
-    # into it (or refuses for want of a rate -- never refuses for want of a
-    # conversion nobody asked the fx feed for).
-    band_native, _ = _converted(tolerance, band_currency or reporting_currency, native,
-                                 as_of, parent_trees)
-    cage = _cage_engine()
-    old = cage.select(old_sc, adopter_party, band_native, mode="warn", floor=floor)
     new = cage.select(new_sc, adopter_party, band_native, mode="warn", floor=floor)
-    old_price, _ = _converted(old["uncaged_residual"], native, reporting_currency, as_of, parent_trees)
     new_price, fx = _converted(new["uncaged_residual"], native, reporting_currency, as_of, parent_trees)
 
     # The holes are computed BEFORE the entry, because the entry's amount IS
@@ -3626,8 +3638,9 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     holes = _regime_holes(payload, new_price, adopter_party, reporting_currency)
     total = _sum_prices(holes, adopter_party, reporting_currency) if holes else None
     amount = new_price
-    old_tier, new_tier = old["tier"], new["tier"]
+    new_tier = new["tier"]
     if holes:
+        assert old is not None and old_price is not None
         # Eco-system ticket 121: the partition stays whole on `holes` and
         # `total`; the entry prices the lines still open. The same open share
         # of each residual picks each tier, through the engine's own pure
@@ -3653,10 +3666,11 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         old_version=old_version, new_version=new_version,
         old_price=old_price, new_price=amount,
         old_tier=old_tier, proposed_tier=new_tier,
-        changed=old_tier != new_tier,
+        changed=old_tier is not None and old_tier != new_tier,
         lef=(new_sc.get("warn") or {}).get("lef"),
         lef_basis=str(new_sc.get("note") or "") or None,
         proposed_as=PROPOSED_AS_LABEL,
+        **old_absence,
         **fx,
     )
     if name == "cve":
@@ -5049,13 +5063,15 @@ def _portable_reason(text: str, adopter_dir: Path, parent_trees: dict[str, Path]
     into composed/evidence.json it makes the adopter's own signed bytes depend
     on whose laptop composed them, and a runner re-composing the same tree
     produces a different string. Every tree this composition read is stripped to
-    the name the estate knows it by."""
-    for prefix, label in sorted(
-            ([(str(Path(adopter_dir).resolve()), "")]
-             + [(str(Path(t).resolve()), f"<{party}>/") for party, t in parent_trees.items()]
-             + [(str(Path(t).resolve()), f"<{key[0]}>/")
-                for key, t in getattr(parent_trees, "feeds", {}).items()]),
-            key=lambda pair: -len(pair[0])):
+    the name the estate knows it by. Diagnostics can carry either the caller's
+    absolute spelling or the resolved symlink target; both name that same tree."""
+    sources = ([(Path(adopter_dir), "")]
+               + [(Path(t), f"<{party}>/") for party, t in parent_trees.items()]
+               + [(Path(t), f"<{key[0]}>/")
+                  for key, t in getattr(parent_trees, "feeds", {}).items()])
+    prefixes = [(str(prefix), label) for path, label in sources
+                for prefix in (path.absolute(), path.resolve())]
+    for prefix, label in sorted(prefixes, key=lambda pair: -len(pair[0])):
         text = text.replace(prefix + os.sep, label).replace(prefix, label.rstrip("/"))
     return text
 
