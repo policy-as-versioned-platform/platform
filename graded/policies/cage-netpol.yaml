@@ -59,7 +59,7 @@
 # and CEL infers a map's value type from its entries, so a heterogeneous k8s object
 # literal must cast each value or it will not compile. ponytail: verbose but
 # mechanical — the alternative (a data-source template) is more moving parts.
-apiVersion: policies.kyverno.io/v1alpha1
+apiVersion: policies.kyverno.io/v1
 kind: GeneratingPolicy
 metadata:
   name: cage-netpol

@@ -142,7 +142,7 @@
 # stamps, plus the tier label it clobbers, are what the per-tier NetworkPolicy
 # generate (cage-netpol.yaml) and the eviction PriorityClasses
 # (priorityclasses.yaml) key on.
-apiVersion: policies.kyverno.io/v1alpha1
+apiVersion: policies.kyverno.io/v1
 kind: MutatingPolicy
 metadata:
   name: cage-tier
@@ -243,7 +243,7 @@ spec:
           Object{
             metadata: Object.metadata{ labels: {
               "posture.acme.io/caged": "true",
-              "posture.acme.io/tier": variables.tier
+              "posture.acme.io/tier": string(variables.tier)
             } },
             spec: Object.spec{
               hostNetwork: false,
