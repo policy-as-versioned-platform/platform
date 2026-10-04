@@ -149,7 +149,7 @@ spec:
         - { version: "6.0.0", tag: "policy/v6.0.0", commit: "b18a0d8946f9dbeb5fbcf6bbe5233b9c919a7c8c", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
         # Ticket 149: v1 bodies, typed tier label, document-based generator fixture;
         # posture-trust-boundary retires here. Full supported5/6 window requires a major.
-        - { version: "7.0.0", tag: "policy/v7.0.0", commit: "", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2", "1.19.1"] } }
+        - { version: "7.0.0", tag: "policy/v7.0.0", commit: "393a40f707f2b23a3a174696a0c84a8473297ca9", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2", "1.19.1"] } }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
