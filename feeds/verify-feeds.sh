@@ -41,10 +41,29 @@ fi
 echo "ok  tampered feed correctly rejected"
 
 say "3. fair.py consumes all three feeds as pinned deps (unmodified fair.py)"
+# The legacy feed smoke uses explicitly declared synthetic inventory, not a
+# real scanner observation. The converter still requires the inventory instrument.
+python3 - "$here" "$work/inventory.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+ids = set()
+for version in ('v1', 'v2'):
+    ids.update(json.loads((root/'cve'/version/'cve-feed.json').read_text())['cves'])
+image = 'example.invalid/declared-feed-fixture@sha256:' + 'a' * 64
+Path(sys.argv[2]).write_text(json.dumps({'schema_version':'1.0.0','images':[{
+    'image':image, 'digest':'sha256:'+'a'*64,
+    'scanner_version':'declared synthetic fixture, not a Trivy observation',
+    'database_date':'2026-01-01T00:00:00Z',
+    'vulnerabilities':[{'id':identifier,'package':'fixture','installed_version':'fixture',
+                       'fixed_version':'','severity':'HIGH'} for identifier in sorted(ids)],
+}]}))
+PY
 python3 "$conv" threat "$here/threat-register/v1/register.json" tuppence -o "$work/threat-v1.json"
 python3 "$conv" threat "$here/threat-register/v2/register.json" tuppence -o "$work/threat-v2.json"
-python3 "$conv" cve "$here/cve/v1/cve-feed.json" CVE-2024-1234-envoy -o "$work/cve-v1.json"
-python3 "$conv" cve "$here/cve/v2/cve-feed.json" CVE-2024-1234-envoy -o "$work/cve-v2.json"
+python3 "$conv" cve "$here/cve/v1/cve-feed.json" CVE-2024-1234-envoy --inventory "$work/inventory.json" -o "$work/cve-v1.json"
+python3 "$conv" cve "$here/cve/v2/cve-feed.json" CVE-2024-1234-envoy --inventory "$work/inventory.json" -o "$work/cve-v2.json"
 python3 "$conv" eol "$here/eol/v1/eol-feed.json" istio-1.18 --as-of 2026-07-31 -o "$work/eol-warm.json"
 
 t1=$(ale "$work/threat-v1.json"); t2=$(ale "$work/threat-v2.json")
@@ -60,7 +79,7 @@ print(f"ok  threat-register £ rose by £{b - a:,.0f} on the v1->v2 tuppence lef
 PY
 
 c1=$(ale "$work/cve-v1.json")
-python3 "$conv" cve "$here/cve/v2/cve-feed.json" CVE-2024-8888-istiod -o "$work/cve-v2-new.json"
+python3 "$conv" cve "$here/cve/v2/cve-feed.json" CVE-2024-8888-istiod --inventory "$work/inventory.json" -o "$work/cve-v2-new.json"
 c2new=$(ale "$work/cve-v2-new.json")
 echo "ok  v2's new CVE-2024-8888-istiod prices at £$(printf '%.0f' "$c2new") ALE (didn't exist in v1)"
 

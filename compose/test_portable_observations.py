@@ -13,6 +13,7 @@ import sys
 import unittest
 
 import composition as ct
+from fixture_inventory import write_inventory_fixture
 
 # The renderers import their shared module by name; load the stable shipped
 # module before temporary fixture paths so it never points at a deleted fixture.
@@ -43,6 +44,7 @@ class PublisherFixture(unittest.TestCase):
         ct._write_fixture_adopter(self.adopter, "SMALL", extra_inherits=[{
             "party": "fixture-publisher", "kind": "feed", "name": "cve", "version": "v1",
             "since": "2026-09-01"}])
+        write_inventory_fixture(self.adopter, ['fixture'])
         for major in (1, 2, 3):
             dest = self.publisher / "cve" / f"v{major}"
             dest.mkdir(parents=True)

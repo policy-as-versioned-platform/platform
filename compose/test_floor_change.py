@@ -4,6 +4,7 @@ import unittest
 import yaml
 import composition as ct
 import test_portable_observations as fixtures
+from fixture_inventory import commit_fixture_state
 
 
 class FloorChange(unittest.TestCase):
@@ -11,6 +12,10 @@ class FloorChange(unittest.TestCase):
         self.fixture = fixtures.PortableObservations()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+
+    def save(self, rendered):
+        self.fixture.save(rendered)
+        commit_fixture_state(self.fixture.adopter, "Record the synthetic composed floor comparison")
 
     def floor(self, value):
         path = self.fixture.adopter / 'party.yaml'
@@ -24,7 +29,7 @@ class FloorChange(unittest.TestCase):
     def test_lowering_is_visible_without_changing_publisher_comparison(self):
         self.floor('isolated')
         _, rendered = self.fixture.composed()
-        self.fixture.save(rendered)
+        self.save(rendered)
         self.floor('baseline')
         doc, rendered = self.fixture.composed()
         effect = doc['floor_change']
@@ -42,7 +47,7 @@ class FloorChange(unittest.TestCase):
     def transition(self, before, after):
         self.floor(before)
         _, rendered = self.fixture.composed()
-        self.fixture.save(rendered)
+        self.save(rendered)
         self.floor(after)
         return self.fixture.composed()
 
@@ -67,7 +72,7 @@ class FloorChange(unittest.TestCase):
         self.assertEqual(doc['floor_change']['before'], {'known': False})
         self.assertIn('previous floor', doc['floor_change']['could_not_look'])
         self.assertEqual(doc['deltas'], [])
-        self.fixture.save(rendered)
+        self.save(rendered)
         again, rerender = self.fixture.composed()
         self.assertEqual(doc['floor_change'], again['floor_change'])
         self.assertEqual(rendered, rerender)
@@ -86,7 +91,7 @@ class FloorChange(unittest.TestCase):
     def test_publisher_move_is_held_at_current_inputs_for_both_floor_sides(self):
         self.floor('isolated')
         _, rendered = self.fixture.composed()
-        self.fixture.save(rendered)
+        self.save(rendered)
         path = self.fixture.publisher / 'cve/v2/feed.json'
         feed = json.loads(path.read_text())
         feed['payload']['severity_lm_gbp']['high'] = [2000, 4000, 6000]
@@ -107,7 +112,7 @@ class FloorChange(unittest.TestCase):
     def test_floor_comparison_survives_save_verify_and_detects_changed_output(self):
         doc, rendered = self.transition('isolated', None)
         self.assertIn('composed/floor-change.json', rendered)
-        self.fixture.save(rendered)
+        self.save(rendered)
         (self.fixture.adopter / 'composed/evidence.json').write_text(json.dumps(doc))
         again, rerender = self.fixture.composed()
         self.assertEqual(doc['floor_change'], again['floor_change'])
@@ -121,11 +126,12 @@ class FloorChange(unittest.TestCase):
 
     def test_malformed_recorded_history_refuses_instead_of_guessing(self):
         _, rendered = self.transition('isolated', 'baseline')
-        self.fixture.save(rendered)
+        self.save(rendered)
         path = self.fixture.adopter / 'composed/HEADER.yaml'
         header = yaml.safe_load(path.read_text())
         header['floor-comparison']['before'] = {'known': True}
         path.write_text(yaml.safe_dump(header))
+        commit_fixture_state(self.fixture.adopter, 'Record malformed synthetic floor inputs')
         doc, rendered = ct.compose(self.fixture.adopter, self.fixture.trees)
         self.assertEqual(doc['outcome'], 'refused')
         self.assertIn('invalid floor history', str(doc))
@@ -133,11 +139,12 @@ class FloorChange(unittest.TestCase):
 
     def test_explicit_null_history_is_invalid_not_an_absent_legacy_record(self):
         _, rendered = self.transition(None, 'isolated')
-        self.fixture.save(rendered)
+        self.save(rendered)
         path = self.fixture.adopter / 'composed/HEADER.yaml'
         header = yaml.safe_load(path.read_text())
         header['floor-comparison'] = None
         path.write_text(yaml.safe_dump(header))
+        commit_fixture_state(self.fixture.adopter, 'Record malformed synthetic floor inputs')
         doc, _ = ct.compose(self.fixture.adopter, self.fixture.trees)
         self.assertEqual(doc['outcome'], 'refused')
         self.assertIn('invalid floor history', str(doc))

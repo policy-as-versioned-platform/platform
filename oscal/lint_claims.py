@@ -23,10 +23,10 @@ Both claims ticket 10 originally found dangling (`cm-6`->`require-policy-version
 dropped (the same rule already lives under `require-nonroot`, claimed
 separately), and `cm-6` now claims `governed-namespace-requires-claim`
 (ADR-0014's fifth named gap, built for real). `shipped_policy_names()` below
-also recognises the two `platform-machinery` guards (orphan guard,
-governed-namespace guard) as shipped, alongside the versioned policy trees --
-neither lives under `distribution/policies/v*/`, so a plain glob would miss
-them. `KNOWN_DANGLING` stays as the empty-set regression guard: a real green
+also reads the actual `platform-machinery` policies through composition's
+shared renderer, alongside the versioned policy trees. These members do not
+live under `distribution/policies/v*/`, so a plain glob would miss them.
+Non-policy members are excluded. `KNOWN_DANGLING` stays as the empty-set regression guard: a real green
 run should stay green, and a claim breaking again should go straight to FAIL,
 not silently back to EXPECTED-RED.
 
@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -61,21 +62,24 @@ _SUFFIX = re.compile(r"-\d+-\d+-\d+$")  # the slugified-semver suffix result2osc
 # silently downgrade back to EXPECTED-RED.
 KNOWN_DANGLING: set[tuple[str, str]] = set()
 
-# The two platform-machinery guards (unversioned, cs-22's identity) --
-# neither lives under distribution/policies/v*/, so shipped_policy_names()
-# below names them explicitly rather than missing them by construction.
-PLATFORM_MACHINERY_NAMES = frozenset({
-    "policy-version-orphan-guard",
-    "governed-namespace-requires-claim",
-})
+def machinery_policy_names(platform_root: Path) -> set[str]:
+    """Read the real composed machinery through its shared public renderer."""
+    spec = importlib.util.spec_from_file_location(
+        '_claims_composition', PLATFORM_ROOT/'compose/composition.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {_SUFFIX.sub('', member['doc']['metadata']['name'])
+            for member in module.machinery_members(platform_root)
+            if member['kind'] in POLICY_KINDS}
 
 
-def shipped_policy_names(version_trees: Path = VERSION_TREES) -> set[str]:
+def shipped_policy_names(version_trees: Path = VERSION_TREES, *,
+                         platform_root: Path = PLATFORM_ROOT) -> set[str]:
     """Every policy identity (name, version suffix stripped) the version
     trees ship — the same identity the engine and result2oscal.py key on —
-    plus the platform-machinery guards, which are real, shipped, claimable
-    members but are not versioned under distribution/policies/v*/."""
-    names: set[str] = set(PLATFORM_MACHINERY_NAMES)
+    plus the actual rendered machinery policies. A removed renderer cannot
+    retain a remembered name; non-policy members are not implementations."""
+    names = machinery_policy_names(platform_root)
     for path in sorted(version_trees.glob("v*/*.yaml")):
         for doc in yaml.safe_load_all(path.read_text()):
             if not doc or doc.get("kind") not in POLICY_KINDS:

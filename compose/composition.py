@@ -6080,25 +6080,37 @@ def _real_parent_trees() -> dict[str, Path]:
 
 
 def _adopter_copy(name: str, dest: Path) -> Path:
-    """Copy a real adopter's committed tree (party.yaml + gitops/) into a
-    scratch directory, so a fixture can edit party.yaml's overlay without
-    touching the real repo, and without re-deriving party_artefact.check()'s
-    own checks against real pin files and the real baseline mirror."""
+    """Copy committed fixture inputs and genuine immutable apps objects.
+
+    This disposable fixture starts with no composed comparison. Its synthetic
+    source commit is explicitly unsigned; original apps tags are fetched from
+    the local source repository unchanged. Dirty source bytes never travel.
+    """
+    import io
+    import tarfile
+    from fixture_inventory import commit_fixture_state
     src = DEFAULT_ESTATE_CLONE / name
     work = dest / name
     work.mkdir(parents=True)
-    (work / "party.yaml").write_text((src / "party.yaml").read_text())
-    shutil.copytree(src / "gitops", work / "gitops")
+    def source_git(*args):
+        return subprocess.check_output(['git','-C',str(src),*args],stderr=subprocess.PIPE)
+    head=source_git('rev-parse','HEAD^{commit}').decode().strip()
+    selected=[path for path in ('party.yaml','gitops','.github','inventory')
+              if source_git('ls-tree','--name-only',head,'--',path).strip()]
+    archive=source_git('archive',head,*selected)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
+        tree.extractall(work,filter='data')
+    subprocess.run(['git','init','-q',str(work)],check=True,capture_output=True)
+    subprocess.run(['git','-C',str(work),'fetch','--quiet',str(src.resolve()),
+                    '+refs/heads/*:refs/remotes/source/*','+refs/tags/*:refs/tags/*'],
+                   check=True,capture_output=True)
+    commit_fixture_state(work,'Synthetic selfcheck source; original apps tag objects retained')
     # The release workflow travels too: party_artefact.check() reads it to
     # decide whether a party that declares publishes[] can actually publish
     # (ADR-0019 point 5 -- the tag signs). driftwood declares one since its
     # twin started emitting forward-intel. `twin/` deliberately does NOT
     # travel: a fixture adopter with no forward-intel feed is exactly how this
     # selfcheck proves a missing twin feed is silence, not a refusal.
-    if (src / ".github").is_dir():
-        shutil.copytree(src / ".github", work / ".github")
-    if (src / "inventory").is_dir():
-        shutil.copytree(src / "inventory", work / "inventory")
     return work
 
 
@@ -6478,11 +6490,12 @@ def _write_namespace(work: Path, name: str, *, institution: bool = True, governe
 
 
 def _commit_header(work: Path, rendered: dict[str, str]) -> None:
-    """What `cmd_compose` does for HEADER.yaml alone -- write the just-
-    composed header so the NEXT compose() call in the same test reads it
-    back as `_previous_header`."""
+    """Record the fixture header as the next committed comparison point."""
     (work / "composed").mkdir(exist_ok=True)
     (work / "composed" / "HEADER.yaml").write_text(rendered["composed/HEADER.yaml"])
+    if (work/'.git').exists():
+        from fixture_inventory import commit_fixture_state
+        commit_fixture_state(work,'Record the synthetic comparison header')
 
 
 def selfcheck() -> None:
@@ -6517,8 +6530,11 @@ def selfcheck() -> None:
     # --- prices[] is populated on the real driftwood's first-ever composition
     # too, with nothing to compare a bump against yet (an honest "no move") ---
     feed_prices = [p for p in document["prices"] if p["kind"] == "feed"]
-    assert len(feed_prices) == 2, feed_prices  # both declared feed parents
-    assert {_parent_key(p) for p in feed_prices} == {"penalty-schema", "threat-register"}
+    declared=yaml.safe_load((driftwood/'party.yaml').read_text())
+    feed_keys={(e['party'],_feed_name(e)) for e in declared['inherits']
+               if e['kind'] in FEED_KINDS and _feed_name(e) in FEED_CONVERTERS}
+    assert {(p['source'],p.get('name')) for p in feed_prices} == feed_keys
+    assert len(feed_prices) == len(feed_keys), feed_prices
     for p in feed_prices:
         assert p["old_version"] == p["new_version"], p  # nothing committed yet to bump against
         assert p["changed"] is False, p
@@ -6557,11 +6573,19 @@ def selfcheck() -> None:
     # eco-system ticket 145 (ADR-0031): the twin agent's cage
     # ======================================================================
 
-    # --- on the real driftwood, ONE agent-cage line, unpriced and saying why: the
-    # register it pins (v2) publishes no `scheduled-agent-misuses-write-credential`
+    # --- on a copy of the real declaration deliberately pinned back to v2,
+    # ONE agent-cage line is unpriced and says why. This historical fixture
+    # register publishes no `scheduled-agent-misuses-write-credential`
     # row. The line names the version, the row and the ticket the row arrives
     # with; it proposes no rung; and it moves nothing else in the document. ---
-    agents = [p for p in document["prices"] if p["kind"] == AGENT_CAGE_KIND]
+    with tempfile.TemporaryDirectory() as temporary:
+        unpriced_work=_adopter_copy('driftwood',Path(temporary))
+        for extra in ('twin','selection-policy'):
+            shutil.copytree(driftwood/extra,unpriced_work/extra)
+        _bump_feed_pin(unpriced_work,'feeds','threat-register','v2')
+        unpriced_document,_=compose(unpriced_work,parent_trees)
+        assert unpriced_document['outcome']=='composed',unpriced_document
+    agents = [p for p in unpriced_document["prices"] if p["kind"] == AGENT_CAGE_KIND]
     assert len(agents) == 1, agents
     agent = agents[0]
     assert agent["source"] == "platform" and agent["subject"] == AGENT_CAGE_SUBJECT, agent
@@ -6572,8 +6596,8 @@ def selfcheck() -> None:
     assert agent["residual_basis"] == f"platform-twin-agent-table@{_cage_engine().TWIN_AGENT_TABLE_VERSION}"
     assert agent["cost"]["amount"] == 0.0 and agent["window"]["days"] == 1.0, agent
     assert agent["kind"] not in EXPOSURE_KINDS, "the line is carried beside the exposure, never summed"
-    print("OK agent-cage: the real driftwood carries ONE twin-agent cage line, unpriced by name -- "
-          "its pinned threat-register@v2 publishes no `%s` row -- proposing no rung" % AGENT_MISUSE_THREAT)
+    print("OK agent-cage: a real-declaration fixture pinned to threat-register@v2 carries ONE "
+          "twin-agent cage line, unpriced by name: v2 publishes no `%s` row -- proposing no rung" % AGENT_MISUSE_THREAT)
 
     # --- the same driftwood with its register pin moved to a major 4 that
     # carries the row (planted here, so this check needs no published v4): the
@@ -6793,7 +6817,11 @@ def selfcheck() -> None:
     assert exposure["attachment"] == {"amount": band["amount"],
                                       "currency": band["currency"]}, exposure["attachment"]
     priced = [e for e in document["prices"] if e["kind"] in EXPOSURE_KINDS]
-    assert math.isclose(exposure["total"], sum(e["amount"] for e in priced)), exposure["total"]
+    if any(e.get('absence_only') for e in priced):
+        assert exposure['total'] is None, exposure
+        assert set(exposure['unpriced_lines']) == {e.get('name') for e in priced if e.get('absence_only')}
+    else:
+        assert math.isclose(exposure["total"], sum(e["amount"] for e in priced)), exposure["total"]
     assert len(exposure["regimes"]) == len(priced), exposure["regimes"]
     assert not any(e["kind"] == "premium" for e in document["prices"]
                     if e["amount"] in [r["amount"] for r in exposure["regimes"]])
@@ -6801,7 +6829,7 @@ def selfcheck() -> None:
     assert math.isclose(sum(c["amount"] for c in regime["controls"]), regime["amount"])
     assert {c["source"] for c in regime["controls"]} == {"nist"}, regime
     print("OK exposure: driftwood's composed artefact signs its total priced exposure "
-          "(%.2f %s), its appetite as the attachment and the %s breakdown by regime name and "
+          "(%s %s; None means an unpriced line), its appetite as the attachment and the %s breakdown by regime name and "
           "control id; the premium it buys is a cost and is not counted in it"
           % (exposure["total"], exposure["currency"], len(exposure["regimes"])))
 
@@ -6816,7 +6844,7 @@ def selfcheck() -> None:
     _t79_reds = []
     if not (exposure.get("ordinal") or "").strip():
         _t79_reds.append(
-            "exposure.total of %.2f %s carries no `ordinal` statement: nothing on the artefact "
+            "exposure.total of %s %s carries no `ordinal` statement: nothing on the artefact "
             "says the number is an ordinal, auditable comparison under one perspective and not "
             "an expected annual loss (eco-system ticket 79 item 10, ticket 75 Q4)"
             % (exposure["total"], exposure["currency"]))
@@ -6842,7 +6870,10 @@ def selfcheck() -> None:
     # REVIEW F3 and F8, planted: a tolerance in ANOTHER currency must not be
     # compared with this total, and a book where every line is untiered must
     # still name them.
-    _t79_prices = [dict(e) for e in document["prices"] if e["kind"] in EXPOSURE_KINDS]
+    # These currency/untiered cases deliberately isolate the known-priced
+    # subset. The real whole book above retains None for any absence-only line.
+    _t79_prices = [dict(e) for e in document["prices"]
+                   if e["kind"] in EXPOSURE_KINDS and e['amount'] is not None]
     _t79_usd = aggregate_section(_t79_prices, "driftwood",
                                   {"amount": 40000.0, "currency": "USD"}, "GBP",
                                   as_of=None, parent_trees=parent_trees)
@@ -6887,7 +6918,7 @@ def selfcheck() -> None:
           "untiered still returns a section, naming all %d of them."
           % (_t79_dated["tolerance_in_reporting_currency"], len(_t79_bare["not_tiered"])))
     _agg = exposure["aggregate"]
-    print("OK (e) driftwood's exposure.total of %.2f %s says what it is (%r), and the aggregate "
+    print("OK (e) driftwood's exposure.total of %s %s says what it is (%r), and the aggregate "
           "of its %d selected-tier residuals is %.2f %s against a tolerance of %.2f %s: "
           "breaches_band=%r%s"
           % (exposure["total"], exposure["currency"], exposure["ordinal"],
@@ -6969,6 +7000,8 @@ def selfcheck() -> None:
             def _commit(doc: dict, rendered: dict[str, str]) -> None:
                 _commit_header(work, rendered)
                 (work / "composed" / "evidence.json").write_text(json.dumps(doc))
+                from fixture_inventory import commit_fixture_state
+                commit_fixture_state(work,'Record synthetic comparison evidence')
 
             # 1. untagged: priced as a hole of the premium, never refused
             doc1, rendered1 = compose(work, trees)
@@ -7236,12 +7269,11 @@ def selfcheck() -> None:
 
     declared_kinds = {_parent_key(e) for e in yaml.safe_load(
         (driftwood / "party.yaml").read_text())["inherits"]}
-    assert declared_kinds == {"controls", "implementations", "penalty-schema", "threat-register",
-                              "quote-driftwood"}
-    assert len(document["parents"]) == 5
+    assert {_parent_key(e) for e in document['parents']} == declared_kinds
+    assert len(document["parents"]) == len(declared_kinds)
     for parent in document["parents"]:
         assert parent["sha"], parent
-    print("OK parents[]: all five declared parent kinds resolve to a non-empty SHA")
+    print("OK parents[]: all %d declared parent kinds resolve to a non-empty SHA" % len(declared_kinds))
 
     # --- two members of one family at one version both survive resolution ---
     members_by_version, guards = load_implementations(parent_trees["platform"])
@@ -7311,23 +7343,23 @@ def selfcheck() -> None:
     # --- the header ---
     header = yaml.safe_load(rendered["composed/HEADER.yaml"])
     assert header["policy-as-versioned.dev/composed"] is True
-    assert len(header["parents"]) == 5
+    assert len(header["parents"]) == len(declared_kinds)
     assert all(p["sha"] for p in header["parents"])
     assert header["baseline"] == "MODERATE"
     assert header["governed-namespaces"] == ["driftwood"]
-    # ticket 14: the estate starts at 285 recorded holes and refuses on
-    # none of them (spec.md's bootstrap rule -- nothing is committed for
-    # the real estate yet, so this IS the first composition every time).
-    assert len(document["holes"]) == 285, len(document["holes"])
+    # The real current machinery additionally claims ac-4. Its three covered
+    # control ids leave 284 recorded holes in this pinned MODERATE catalogue.
+    assert len(document["holes"]) == 284, len(document["holes"])
     assert all(h["status"] == "recorded" for h in document["holes"])
     assert {h["control_id"] for h in document["holes"]} == set(header["holes"])
     assert "ac-6.10" in {h["control_id"] for h in document["holes"]}
     assert "ac-6" not in {h["control_id"] for h in document["holes"]}  # claimed (even if dangling)
     assert "cm-6" not in {h["control_id"] for h in document["holes"]}  # claimed (even if dangling)
+    assert "ac-4" not in {h["control_id"] for h in document["holes"]}
     assert len(header["selected-controls"]) == 287  # MODERATE
-    print("OK HEADER.yaml/holes[]: the real estate's first composition records 285 holes, all "
+    print("OK HEADER.yaml/holes[]: the real estate's current composition records 284 holes, all "
           "recorded (none new, none refused), ac-6.10 found by walking nested controls, and "
-          "ac-6/cm-6 are covered (a claim exists, even the dangling one)")
+          "ac-6/cm-6/ac-4 are covered by the shipped claims")
 
     # ticket 15: real driftwood's own Namespace manifest already carries
     # BOTH labels (ticket 11 landed it labelled from the start) -- so the
@@ -7523,7 +7555,7 @@ def selfcheck() -> None:
             work = _adopter_copy(org, Path(td))
             historical = Path(td) / "platform-historical-deny"
             shutil.copytree(parent_trees["platform"], historical, ignore=shutil.ignore_patterns(".git", ".work", "__pycache__"))
-            _write_versions_yaml(historical, [{"version": "5.0.0"}])
+            _write_versions_yaml(historical, _version_array(parent_trees['platform']))
             old_pin = work / "gitops/platform/platform-pin.yaml"
             old_pin.write_text(old_pin.read_text().replace(live_v, "5.0.0"))
             _with_restate(work, [{
@@ -8668,6 +8700,7 @@ def selfcheck() -> None:
     # through the feeds module; same real-band 'no change' shape ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("tuppence", Path(td))
+        _bump_feed_pin(work,'feeds','threat-register','v1')
         doc0, rendered0 = compose(work, parent_trees)
         _assert_only_known_dangling(doc0["refusals"], "threat bump, before")
         _commit_header(work, rendered0)
@@ -8769,8 +8802,10 @@ def selfcheck() -> None:
         # Annualised over the pin's life: a rate, and the window it has been
         # running over, from the edge's own signed `since` and the composition's
         # own as-of. No clock is read (D1).
-        assert entry["since"] == "2026-08-28", entry
+        edge = next(e for e in feed_edges if _feed_name(e) == entry["name"])
+        assert entry["since"] == edge["since"], entry
         assert entry["as_of"] and entry["pin_life_months"] >= 0, entry
+        assert entry["pin_life_months"] == _months_apart(edge["since"], entry["as_of"]), entry
         # Nobody in this estate publishes a second feed of any of these names,
         # so the alternate set is EMPTY and said so by name -- never assumed.
         assert entry["alternates"] == [], entry
@@ -8835,7 +8870,8 @@ def selfcheck() -> None:
     # and the record must say `feeds`; one from before the move falls back to
     # platform's and the record must say `platform`. Either way the record and the
     # disk agree, which is the property that matters.
-    _tr_path = f"{vendored_rel('feeds', 'threat-register', 'v2')}/{VENDORED_PROVENANCE}"
+    _tr_edge = next(e for e in feed_edges if _feed_name(e) == "threat-register")
+    _tr_path = f"{vendored_rel(_tr_edge['party'], 'threat-register', _tr_edge['version'])}/{VENDORED_PROVENANCE}"
     _tr_record = json.loads(vendored[_tr_path])
     _tr_publisher_ships = (Path(parent_trees["feeds"]) / "threat-register"
                             / "to_fair_scenario.py").exists()
@@ -8844,7 +8880,8 @@ def selfcheck() -> None:
         vendored[_tr_path])
     # A quote feed is priced without a converter at all, so none is vendored --
     # a named absence, never an empty file that pretends to be one.
-    assert json.loads(vendored[f"{vendored_rel('insurer', 'quote-driftwood', 'v1')}/{VENDORED_PROVENANCE}"]
+    _quote_edge = next(e for e in feed_edges if _feed_name(e) == "quote-driftwood")
+    assert json.loads(vendored[f"{vendored_rel(_quote_edge['party'], _quote_edge['name'], _quote_edge['version'])}/{VENDORED_PROVENANCE}"]
                       )["converter"] is None
     header_doc = yaml.safe_load(rendered45["composed/HEADER.yaml"])
     assert sorted(v["path"] for v in header_doc["vendored-feeds"]) == \
@@ -8985,18 +9022,15 @@ def selfcheck() -> None:
                    and "2026-12-01" in r["detail"] and "2026-05-15" in r["detail"]
                    for r in doc_backwards["refusals"]), doc_backwards["refusals"]
     assert _months_apart("2026-08-28", "2026-05-15") < 0, "months must be signed"
-    # Today every edge was signed on the same day as the newest feed publication,
-    # so the window is zero months and `over_pin_life` is 0.0 on every entry. It
-    # is correct arithmetic over two signed dates, not a placeholder, and it
-    # stays 0.0 until a pinned feed publishes after the pin date. Asserted so
-    # that the day it stops being true, somebody is told.
-    assert {e["pin_life_months"] for e in doc45["prices"] if e["kind"] == "switching"} == {0}
+    # Current pins need not share one publication date. Each window is measured
+    # between that edge's signed since and the composition's signed as-of.
+    for entry in switching:
+        assert entry["pin_life_months"] == _months_apart(entry["since"], entry["as_of"]), entry
     print("OK switching: an edge signed AFTER every pinned envelope moves the composition's "
           "as-of to that day (its own life 0 months, its siblings' measured up to it), a "
           "--as-of EARLIER than a signed since refuses naming both dates rather than reporting "
-          "the window's absolute size; and on today's estate every pin was signed the day of "
-          "the newest feed publication, so the window is 0 months and over_pin_life is 0.0 -- "
-          "arithmetic over two signed dates, not a placeholder")
+          "the window's absolute size; each current pin's window is arithmetic over its own "
+          "signed since and the composition's signed as-of")
 
     # --- a feed edge with no `since` cannot be annualised over a pin's life,
     # and that is a missing instrument, not a defaulted window (ADR-0020) ---
@@ -9040,6 +9074,7 @@ def selfcheck() -> None:
         # threat-register/v3.0.0 were cut (2026-09-10), though the composer
         # was right: tuppence really is behind both publishers.
         work = _adopter_copy("tuppence", root)
+        _bump_feed_pin(work,'feeds','threat-register','v1')
         doc, rendered = compose(work, trees)
         assert doc["outcome"] == "composed", doc["refusals"]
         line = next(e for e in doc["prices"] if e["kind"] == "feed" and e.get("name") == "threat-register")
@@ -9075,9 +9110,13 @@ def selfcheck() -> None:
         assert s["proposed_tier"] is None and s["changed"] is False and s["basis"] == SUPERSEDE_BASIS, s
         assert SUPERSEDE_KIND not in EXPOSURE_KINDS
         header = yaml.safe_load(rendered["composed/HEADER.yaml"])
-        assert abs(header["exposure"]["total"] - _sum_prices(
-            [e for e in doc["prices"] if e["kind"] in EXPOSURE_KINDS], "tuppence", "GBP")) < 1e-6, \
-            "the supersede line leaked into the exposure total"
+        exposure = _sum_prices([e for e in doc["prices"] if e["kind"] in EXPOSURE_KINDS],
+                               "tuppence", "GBP")
+        if exposure is None:
+            assert header["exposure"]["total"] is None, "an unpriced exposure became a partial sum"
+        else:
+            assert math.isclose(header["exposure"]["total"], exposure), \
+                "the supersede line leaked into the exposure total"
         # --as-of respected: a year past the day the pin fell behind the ramp is 2.0
         # and the surcharge is the whole line; the day before it, zero with both dates.
         later = (_dt.date.fromisoformat(since) + _dt.timedelta(days=365)).isoformat()
@@ -9200,11 +9239,14 @@ def selfcheck() -> None:
         # exist, never a refusal -- and it prices through the cve converter.
         work_b = _adopter_copy("tuppence", root / "b")
         _add_feed_pin(work_b, "feeds", "cve", "v2", "2026-09-08")
+        from fixture_inventory import write_inventory_fixture
+        fixture_ids=list(load_feed_payload(feed_file('feeds','cve','v2',feeds_clone),'cve','v2')['cves'])
+        write_inventory_fixture(work_b,fixture_ids)
         doc_b, _ = compose(work_b, trees)
         assert doc_b["outcome"] == "composed", doc_b["refusals"]
         cve = next(e for e in doc_b["prices"] if e["kind"] == "feed" and e.get("name") == "cve")
         assert cve["source"] == "feeds" and cve["currency"] == "GBP" and cve["amount"] > 0, cve
-        assert "headline entry" in (cve["lef_basis"] or ""), cve["lef_basis"]
+        assert cve['intersection_count']==len(fixture_ids)>0, cve
         assert cve["pin_signature"]["state"] == "untagged", cve["pin_signature"]
         assert "cve/v2.x.y" in cve["pin_signature"]["detail"], cve["pin_signature"]
         hole = cve["hole"]
@@ -9213,14 +9255,21 @@ def selfcheck() -> None:
         assert "cve/v2.x.y" in hole["detail"] and "no signed tag" in hole["priced_by"], hole
         d_b = [d for d in doc_b["deltas"] if d["kind"] == "new-untagged-pin" and d["name"] == "cve"]
         assert len(d_b) == 1 and d_b[0]["amount"] == cve["amount"], doc_b["deltas"]
-        assert cve["superseded"]["state"] == "unpublished", cve["superseded"]
-        assert not [e for e in doc_b["prices"] if e["kind"] == SUPERSEDE_KIND and e["name"] == "cve"]
+        # The legacy v2 pin is untagged, but genuine signed cve majors ahead
+        # still make it behind. An unsigned pin does not hide those publications.
+        assert cve["superseded"]["state"] == "behind", cve["superseded"]
+        cve_supersede = [e for e in doc_b["prices"]
+                         if e["kind"] == SUPERSEDE_KIND and e["name"] == "cve"]
+        assert len(cve_supersede) == 1, cve_supersede
+        assert cve_supersede[0]["source"] == "feeds" and cve_supersede[0]["version"] == "v2", cve_supersede
+        assert cve_supersede[0]["base"] == cve["amount"], cve_supersede
         rec = next(r for r in doc_b["vendored"] if r["name"] == "cve")
-        assert rec["invocation"] == ["cve"] and rec["converter_from"] == "platform", rec
+        assert rec['invocation'][:2]==['cve','--inventory-json'] and rec["converter_from"] == "platform", rec
+        assert json.loads(rec['invocation'][2])==json.loads((work_b/'inventory/images.json').read_text()),rec
         assert next(e for e in doc_b["prices"] if e.get("name") == "threat-register")["pin_signature"]["state"] == "signed"
         print("OK untagged cve pin: tuppence pinned at feeds/cve@v2 composes (no refusal) with a "
               "hole of the whole line, %.2f %s, naming the tag that does not exist (%s); the "
-              "converter's headline entry is on the line, and the vendored record names the "
+              "explicit declared synthetic inventory intersects the legacy feed, and the vendored record names the "
               "real invocation %s" % (hole["amount"], hole["currency"],
                                       cve["pin_signature"]["detail"].split(" exists")[0], rec["invocation"]))
 
@@ -9286,9 +9335,9 @@ def selfcheck() -> None:
         "open at one and closed at two; every refusal carries needs_composition. TICKET 14: the "
         "baseline resolves by name exact-string, walking nested controls (ac-6.10 found); a "
         "prefixed or upper-case id is a hard failure, not a hole; the real estate's first "
-        "composition records 285 holes and refuses on none -- platform's own two formerly-"
-        "dangling claims (ac-6, cm-6) are now fixed, so a real first composition composes "
-        "clean; a new hole composes and prints as a priced delta; a closed hole is marked so; "
+        "composition covers ac-4/ac-6/cm-6 and refuses on none; platform's claims resolve "
+        "against their selected catalogue; a new hole composes and prints as a priced delta; "
+        "a closed hole is marked so; "
         "an adopter-added control is a priced hole unfilled and is filled by the adopter's own "
         "claim against its own overlay.add member; a removed control refuses and a widened "
         "baseline prints as a priced delta; a claim against a parent's policy refuses; and the "
