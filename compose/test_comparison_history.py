@@ -4,6 +4,7 @@ import unittest
 import comparison_history as ch
 import composition as ct
 import test_portable_observations as fixtures
+from fixture_inventory import commit_fixture_state
 
 
 class ComparisonHistory(unittest.TestCase):
@@ -15,6 +16,7 @@ class ComparisonHistory(unittest.TestCase):
     def save(self, doc, rendered):
         self.fixture.save(rendered)
         (self.fixture.adopter / 'composed/evidence.json').write_text(json.dumps(doc))
+        commit_fixture_state(self.fixture.adopter, 'Record the synthetic composed comparison')
 
     def test_unsigned_feed_transition_survives_saved_evidence_and_repeated_compose(self):
         self.fixture.git('tag', '-d', 'cve/v1.0.0')
@@ -48,11 +50,13 @@ class ComparisonHistory(unittest.TestCase):
             header = yaml.safe_load(original)
             header['comparison-inputs'] = bad
             path.write_text(yaml.safe_dump(header))
+            commit_fixture_state(self.fixture.adopter, 'Record malformed synthetic comparison inputs')
             result, rendered = ct.compose(self.fixture.adopter, self.fixture.trees)
             self.assertEqual(result['outcome'], 'refused')
             self.assertIn('invalid comparison history', str(result))
             self.assertEqual(rendered, {})
         path.write_text(original)
+        commit_fixture_state(self.fixture.adopter, 'Restore the synthetic comparison inputs')
         party = self.fixture.adopter / 'party.yaml'
         party.write_text(party.read_text() + '\n# new source state\n')
         self.assertFalse(ct.verify(self.fixture.adopter, self.fixture.trees)[0])
@@ -66,6 +70,7 @@ class ComparisonHistory(unittest.TestCase):
         header = yaml.safe_load(path.read_text())
         del header['comparison-inputs']
         path.write_text(yaml.safe_dump(header))
+        commit_fixture_state(self.fixture.adopter, 'Record a legacy synthetic comparison')
         self.assertFalse(ct.verify(self.fixture.adopter, self.fixture.trees)[0])
         refreshed, output = self.fixture.composed()
         self.assertEqual(refreshed['deltas'], [])
@@ -119,11 +124,13 @@ class ComparisonHistory(unittest.TestCase):
             path = self.fixture.adopter / relative
             original = path.read_text()
             path.write_text(broken)
+            commit_fixture_state(self.fixture.adopter, 'Record corrupt synthetic comparison inputs')
             result, rendered = ct.compose(self.fixture.adopter, self.fixture.trees)
             self.assertEqual(result['outcome'], 'refused')
             self.assertEqual(rendered, {})
             self.assertFalse(ct.verify(self.fixture.adopter, self.fixture.trees)[0])
             path.write_text(original)
+            commit_fixture_state(self.fixture.adopter, 'Restore synthetic comparison inputs')
 
     def test_already_replayable_legacy_artefact_keeps_legacy_verification(self):
         import yaml
