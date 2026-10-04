@@ -146,7 +146,7 @@ spec:
         - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
         # Tickets 158 and 159(a): preserve inherited non-root and ignore ungoverned tiers.
         # Uncut candidate: an empty commit is deliberate until reviewed release.
-        - { version: "6.0.0", tag: "policy/v6.0.0", commit: "", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
+        - { version: "6.0.0", tag: "policy/v6.0.0", commit: "b18a0d8946f9dbeb5fbcf6bbe5233b9c919a7c8c", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
   resourcesTemplate: |
     << range $v := (index (inputs) "versions") >>
     ---
