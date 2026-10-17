@@ -107,6 +107,36 @@ class QuoteConditionClaims(unittest.TestCase):
                                    include_switching=False, implemented={('nist', 'ac-6')})
         self.assertTrue(all(p['kind'] != 'premium' and 'quote_condition_evidence' not in p for p in prices))
 
+    def test_schema_invalid_condition_fields_are_unobserved_at_actual_quote_call(self):
+        cases = (
+            ('source-empty', 0, {'source': ''}),
+            ('id-not-string', 0, {'id': 7}),
+            ('unknown-consequence', 0, {'consequence': 'unknown'}),
+            ('unknown-field', 0, {'future-term': True}),
+            ('why-empty', 0, {'why': ''}),
+            ('void-with-malformed-money', 0, {'uplift': {'amount': 25000, 'currency': 'gbp'}}),
+            ('malformed-currency', 1, {'uplift': {'amount': 25000, 'currency': 'not-a-currency'}}),
+            ('currency-not-string', 1, {'uplift': {'amount': 25000, 'currency': 123}}),
+            ('currency-trailing-newline', 1, {'uplift': {'amount': 25000, 'currency': 'GBP\n'}}),
+            ('negative-amount', 1, {'uplift': {'amount': -1, 'currency': 'GBP'}}),
+            ('boolean-amount', 1, {'uplift': {'amount': True, 'currency': 'GBP'}}),
+            ('nonfinite-amount', 1, {'uplift': {'amount': float('inf'), 'currency': 'GBP'}}),
+            ('missing-amount', 1, {'uplift': {'currency': 'GBP'}}),
+            ('unknown-money-field', 1, {'uplift': {'amount': 25000, 'currency': 'GBP', 'future': 1}}),
+            ('missing-money', 1, {'uplift': None}),
+        )
+        for name, index, changes in cases:
+            with self.subTest(case=name):
+                quote = json.loads(fixtures.QUOTE.read_text())
+                quote['payload']['conditions'][index].update(changes)
+                self.inputs.feed.write_text(json.dumps(quote))
+                entry = self.premium({('nist', 'ac-6'), ('nist', 'cm-6')})
+                condition = entry['quote_condition_evidence']['conditions'][index]
+                self.assertEqual(condition['state'], 'unobserved')
+                self.assertIn('Unreadable', condition['basis'])
+                self.assertEqual(entry['conditions'], quote['payload']['conditions'])
+                self.assertEqual(entry['amount'], 113403.3)
+
 
 class QuoteConditionReplay(unittest.TestCase):
     def setUp(self):

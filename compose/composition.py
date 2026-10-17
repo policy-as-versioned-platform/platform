@@ -4743,14 +4743,22 @@ def _quote_condition_evidence(payload: dict, implemented: set[ControlKey] | None
     for condition in conditions:
         row = {key: condition.get(key) if isinstance(condition, dict) else None
                for key in ("source", "id", "consequence")}
-        readable = (all(isinstance(row[key], str) and row[key] for key in ("source", "id"))
-                    and row["consequence"] in ("void", "uplift"))
-        if readable and row["consequence"] == "uplift":
+        # The versioned quote payload's condition/money vocabulary. This only
+        # classifies the new evidence; legacy quote acceptance is unchanged.
+        readable = (isinstance(condition, dict)
+                    and not condition.keys() - {"source", "id", "consequence", "uplift", "why"}
+                    and all(isinstance(row[key], str) and row[key] for key in ("source", "id"))
+                    and row["consequence"] in ("void", "uplift")
+                    and ("why" not in condition
+                         or isinstance(condition["why"], str) and bool(condition["why"])))
+        if readable and ("uplift" in condition or row["consequence"] == "uplift"):
             uplift = condition.get("uplift")
-            readable = (isinstance(uplift, dict) and type(uplift.get("amount")) in (int, float)
+            readable = (isinstance(uplift, dict) and set(uplift) == {"amount", "currency"}
+                        and type(uplift.get("amount")) in (int, float)
                         and uplift["amount"] >= 0
                         and (type(uplift["amount"]) is int or math.isfinite(uplift["amount"]))
-                        and isinstance(uplift.get("currency"), str) and bool(uplift["currency"]))
+                        and isinstance(uplift.get("currency"), str)
+                        and re.fullmatch(r"[A-Z]{3}", uplift["currency"]) is not None)
         if not readable:
             row.update(state="unobserved", basis="Unreadable or unsupported quoted condition; no claim evidence was assessed.")
         elif implemented is None:
