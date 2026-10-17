@@ -35,7 +35,7 @@ def git(repo, *args):
 class Publication(unittest.TestCase):
     def setUp(self):
         temporary = self.enterContext(tempfile.TemporaryDirectory(prefix='inventory-publication-'))
-        self.root = Path(temporary)
+        self.root = Path(temporary).resolve()
         self.work, self.remote = self.root/'ludlow', self.root/'remote.git'
         self.work.mkdir()
         image = 'ghcr.io/example-institution/reports@sha256:' + 'a'*64
@@ -143,6 +143,117 @@ class Publication(unittest.TestCase):
 
     def test_update_preserves_full_change(self):
         self.assert_publication(True)
+
+    def assert_canonical_composition(self, relative):
+        # Use the genuine composer with its smallest existing fixture parents.
+        # A twin borrowing its feed's frequency makes the switching-cost absence
+        # path-sensitive when that feed is dropped, just like real Driftwood.
+        platform = Path(inventory.__file__).resolve().parents[1]
+        self.enterContext(patch.object(sys, 'path', [str(platform/'compose'), *sys.path]))
+        spec = importlib.util.spec_from_file_location('composition', platform/'compose/composition.py')
+        real = importlib.util.module_from_spec(spec)
+        self.enterContext(patch.dict(sys.modules, {'composition': real}))
+        spec.loader.exec_module(real)
+        # Machinery renderers import this shared module by name.
+        self.enterContext(patch.object(sys, 'path', [str(platform/'distribution'), *sys.path]))
+        import cage_body
+        self.enterContext(patch.dict(sys.modules, {'cage_body': cage_body}))
+        real._write_fixture_catalog(self.root/'fixture-nist')
+        real._write_fixture_platform(self.root/'fixture-platform', platform, [])
+        edge = {'party': 'fixture-publisher', 'kind': 'feed', 'name': 'threat-register',
+                'version': 'v1', 'since': '2026-09-01'}
+        real._write_fixture_adopter(self.work, 'SMALL', extra_inherits=[edge])
+        from fixture_inventory import write_inventory_fixture
+        write_inventory_fixture(self.work, ['fixture'])
+        feed = self.root/'fixture-publisher/threat-register/v1/feed.json'
+        feed.parent.mkdir(parents=True)
+        feed.write_text(json.dumps({'kind': 'feed', 'name': 'threat-register', 'version': '1.0.0',
+            'published_by': 'fixture-publisher', 'published_at': '2026-10-03T00:00:00Z',
+            'payload_schema': 'threat-register/payload.schema.json', 'payload': {
+                'currency': 'GBP', 'institutions': {'fixture-adopter14': {
+                    'lef': [1, 2, 3], 'threat': 'declared fixture', 'flavour': 'regression',
+                    'source': 'synthetic frequency', 'lm_gbp': [1000, 2000, 3000],
+                    'lm_basis': {'statement': 'declared synthetic magnitude', 'as_of': '2026-10-03'}}}}}))
+        twin = self.work/'twin/forward-intel/v1/feed.json'
+        twin.parent.mkdir(parents=True)
+        twin.write_text(json.dumps({'kind': 'feed', 'name': 'forward-intel', 'version': '1.0.0',
+            'published_by': 'fixture-adopter14', 'published_at': '2026-10-03T00:00:00Z',
+            'payload_schema': 'twin/forward-intel/payload.schema.json', 'payload': {
+                'perspective': 'fixture-adopter14', 'currency': 'GBP', 'lef': None,
+                'lm': [10, 20, 30], 'derived_from': [edge]}}))
+        policy = self.work/'selection-policy/selection_policy.py'
+        policy.parent.mkdir()
+        policy.write_text("VERSION = 'declared-fixture'\n"
+                          "def select(residuals, tolerance, floor):\n"
+                          "    return {'tier': 'isolated', 'policy_version': VERSION,\n"
+                          "            'basis': 'synthetic fixture always selects the bottom rung'}\n")
+        # Real adopters ignore caches from their dynamically loaded package.
+        (self.work/'.gitignore').write_text('__pycache__/\n')
+        # This is an unsigned disposable source, never an observed real feed.
+        git(self.work, 'add', '.'); git(self.work, 'commit', '-qm', 'Canonical composer fixture')
+        git(self.work, 'push', '-q', 'origin', 'main')
+        self.source = git(self.work, 'rev-parse', 'HEAD')
+        candidate = json.loads((self.work/'inventory/images.json').read_text())
+        extra = dict(candidate['images'][0]['vulnerabilities'][0], id='new-fixture')
+        candidate['images'][0]['vulnerabilities'].append(extra)
+        (self.root/'candidate.json').write_text(json.dumps(candidate))
+        adopter_arg = self.work.name if relative else str(self.work)
+        sys.argv[sys.argv.index('--adopter-dir')+1] = adopter_arg
+        caller = Path.cwd()
+        with contextlib.chdir(self.root):
+            self.assertEqual(inventory.main(), 0, self.stderr.getvalue())
+            self.assertEqual(Path.cwd(), self.root)
+        self.assertEqual(Path.cwd(), caller)
+        branch = json.loads(self.output.read_text())[0]['branch']
+        git(self.work, 'checkout', '-q', branch)
+        try:
+            # The published adopter wrapper forwards `.` and cwd=adopter,
+            # with estate/output paths resolved before entering that cwd.
+            output = self.root/'canonical-output'
+            with contextlib.chdir(self.work), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(real.cmd_compose(Path('.'), self.root, output), 0)
+            generated = {str(p.relative_to(output)): p.read_bytes()
+                         for p in output.rglob('*') if p.is_file()}
+            self.assertIn('composed/HANDBOOK.md', generated)
+            document = json.loads(generated['composed/evidence.json'])
+            switching = next(p for p in document['prices'] if p['kind'] == 'switching')
+            self.assertTrue(switching['could_not_look'].startswith('missing instrument: twin/'))
+            for path, expected in generated.items():
+                with self.subTest(path=path, relative=relative):
+                    self.assertEqual((self.work/path).read_bytes(), expected)
+        finally:
+            git(self.work, 'checkout', '-q', 'main')
+        self.assert_main_preserved()
+
+    def test_real_composer_matches_canonical_wrapper_from_relative_adopter(self):
+        self.assert_canonical_composition(True)
+
+    def test_real_composer_matches_canonical_wrapper_from_absolute_adopter(self):
+        self.assert_canonical_composition(False)
+
+    def test_composition_refusal_restores_caller_cwd(self):
+        import composition
+        with patch.object(composition, 'compose', return_value=(
+                {'outcome': 'refused', 'refusals': ['declared fixture refusal']}, {})):
+            caller = Path.cwd()
+            self.assertEqual(inventory.main(), 2)
+            self.assertEqual(Path.cwd(), caller)
+        self.assertIn('declared fixture refusal', self.stderr.getvalue())
+        # A refusal leaves the candidate inventory unstaged on main, as before.
+        self.assertEqual(git(self.work, 'branch', '--show-current'), 'main')
+        self.assertEqual(git(self.remote, 'rev-parse', 'main'), self.source)
+        self.assertFalse(self.output.exists())
+
+    def test_composition_exception_restores_caller_cwd(self):
+        import composition
+        with patch.object(composition, 'compose', side_effect=RuntimeError('fixture failure')):
+            caller = Path.cwd()
+            with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+                inventory.main()
+            self.assertEqual(Path.cwd(), caller)
+        self.assertEqual(git(self.work, 'branch', '--show-current'), 'main')
+        self.assertEqual(git(self.remote, 'rev-parse', 'main'), self.source)
+        self.assertFalse(self.output.exists())
 
     def assert_failure(self, message):
         os.environ['FIXTURE_PR_FAILURE'] = message
