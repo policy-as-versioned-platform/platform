@@ -5345,6 +5345,20 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     adopter_party = party_doc["party"]
     edges = party_doc.get("inherits", []) or []
 
+    # An optional separately signed cloud package must pass through this same
+    # render/verify seam; appending its YAML after composition cannot satisfy verify().
+    import cloud_composition
+    cloud_parent = None
+    cloud_rendered: dict[str, str] = {}
+    if (adopter_dir / cloud_composition.PIN).exists():
+        try:
+            versions_doc = next(doc for doc in yaml.safe_load_all((adopter_dir / 'gitops/composed/composed-set.yaml').read_text())
+                                if isinstance(doc, dict) and doc.get('kind') == 'ResourceSet')
+            served = [row['version'] for row in versions_doc['spec']['inputs'][0]['versions']]
+            cloud_parent, cloud_rendered = cloud_composition.render(adopter_dir, parent_trees.get('platform'), adopter_party, served)
+        except (ValueError, OSError, KeyError, StopIteration, yaml.YAMLError, subprocess.SubprocessError) as error:
+            return _refused(['missing instrument: cloud package: ' + str(error)]), {}
+
     observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
     missing: list[str] = []
@@ -5904,6 +5918,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         header["exposure"] = exposure
     if as_of is not None:
         header["composition-as-of"] = as_of
+    if cloud_parent is not None:
+        header['cloud-package'] = cloud_parent
+        rendered.update(cloud_rendered)
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
     rendered["composed/floor-change.json"] = json.dumps(floor_change, indent=2) + "\n"
 
@@ -5924,6 +5941,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "vendored": vendored_records,
         "engine": engine_evidence(engine, engine_pairings, baseline_source),
     }
+    if cloud_parent is not None:
+        document['cloud'] = cloud_parent
     # The handbook (ticket 34; ADR-0007's last-mile section). A pure function of `rendered` and
     # `document` -- the two things this call has just derived from the pinned parents -- so it is
     # re-derivable by anyone holding the artefact, which is what `verify-fresh.sh` grades at a tag.

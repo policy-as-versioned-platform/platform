@@ -22,5 +22,5 @@ for engine in declared:
     if result['engine'] != engine:
         raise SystemExit('FAIL: cloud engine slot ' + engine + ' holds ' + result['engine'])
     print(result)
-print('PASS: cloud CEL replay and idempotency on every declared engine; offline mapping is not vendor-schema or admission evidence')
+print('PASS: cloud CEL replay and idempotency on every declared engine using exact pinned vendor schemas; no live admission or AWS observation')
 PY

@@ -20,6 +20,7 @@ import tempfile
 import yaml
 
 from render import HERE, LABEL, render, write_tree
+from provider_schema import validate
 
 
 def resource(case: dict) -> dict:
@@ -35,9 +36,9 @@ def resource(case: dict) -> dict:
         provider.update({'engine': 'postgres', 'instanceClass': 'db.t3.micro',
                          'allocatedStorage': 20, 'username': 'ledger',
                          'publiclyAccessible': True, 'storageEncrypted': False, 'multiAz': False})
-    else:
-        provider['bucketRef'] = {'name': 'ledger-data'}
     provider.update(copy.deepcopy(case.get('provider', {})))
+    if kind != 'Instance' and not any(key in provider for key in ('bucket', 'bucketRef', 'bucketSelector')):
+        provider['bucketRef'] = {'name': 'ledger-data'}
     return {'apiVersion': f'{group}.aws.m.upbound.io/v1beta1', 'kind': kind,
             'metadata': md, 'spec': {'forProvider': provider}}
 
@@ -66,17 +67,22 @@ def check_fields(before: dict, after: dict, case: dict) -> None:
     labels = after['metadata']['labels']
     assert labels['posture.acme.io/tier'] == expected['tier'], case['name']
     assert labels['posture.acme.io/caged'] == 'true', case['name']
-    assert labels['app.kubernetes.io/name'] == 'ledger'
+    for key, value in before['metadata'].get('labels', {}).items():
+        if key not in ('posture.acme.io/tier', 'posture.acme.io/caged'):
+            assert labels[key] == value, (case['name'], key)
     fp = after['spec']['forProvider']
     assert fp['region'] == before['spec']['forProvider']['region']
     if case['kind'] == 'Instance':
         assert fp['publiclyAccessible'] is False and fp['storageEncrypted'] is True
         for key in ('multiAz', 'backupRetentionPeriod'):
             assert fp[key] == expected[key], (case['name'], key, fp[key])
-        for key in ('engine', 'instanceClass', 'allocatedStorage', 'username'):
-            assert fp[key] == before['spec']['forProvider'][key]
+        for key, value in before['spec']['forProvider'].items():
+            if key not in ('publiclyAccessible', 'storageEncrypted', 'multiAz', 'backupRetentionPeriod'):
+                assert fp[key] == value, (case['name'], key)
     else:
-        assert fp['bucketRef'] == before['spec']['forProvider']['bucketRef']
+        for key, value in before['spec']['forProvider'].items():
+            if key != 'rule':
+                assert fp[key] == value, (case['name'], key)
         for rule in fp['rule']:
             assert rule['applyServerSideEncryptionByDefault']['sseAlgorithm'] == expected['sseAlgorithm']
             if 'kmsMasterKeyId' in expected:
@@ -96,6 +102,8 @@ def replay(binary: str, package: Path = HERE) -> dict:
     cases = yaml.safe_load((package / 'tests/cases.yaml').read_text())['cases']
     with tempfile.TemporaryDirectory(prefix='cloud-replay-') as tmp:
         work = Path(tmp)
+        schemas = validate(package / 'vendor-crds', package)
+        (work / 'provider-crds.yaml').write_text(yaml.safe_dump_all([doc for doc, _ in schemas], sort_keys=False))
         write_tree(work / 'policies', docs)
         for case in cases:
             before = resource(case)
@@ -109,7 +117,7 @@ def replay(binary: str, package: Path = HERE) -> dict:
             mutate = work / 'policies' / f'cloud-cage-{service}-5-0-0.yaml'
             audit = work / 'policies' / (('require-rds-multi-az' if service == 'rds' else 'require-s3-bucket-encryption') + '-5-0-0.yaml')
             args = ['--values-file', str(work / 'values.yaml'), crd_flag,
-                    str(package / 'tests/resource-mapping-crds.yaml')]
+                    str(work / 'provider-crds.yaml')]
             result = run(binary, 'apply', str(mutate), '--resource', str(work / 'input.yaml'), *args,
                          '--output', str(work / 'mutated.yaml'))
             assert result.returncode == 0, result.stdout + result.stderr
@@ -135,7 +143,8 @@ def replay(binary: str, package: Path = HERE) -> dict:
                 assert warned + failed == 1 and passed == 0, (case['name'], result.stdout)
     return {'engine': version, 'cases': len(cases), 'mutation': 'fields-and-idempotency-pass',
             'audit': 'original-input-outcomes-pass', 'scope': descriptor['engine_scope'],
-            'limits': ['offline-not-admission', 'provider-schema-unmeasured', 'status-update-unmeasured', 'no-AWS-reconciliation']}
+            'provider_schema': [receipt for _, receipt in schemas],
+            'limits': ['offline-not-admission', 'status-update-unmeasured', 'no-AWS-reconciliation']}
 
 
 def main() -> None:
