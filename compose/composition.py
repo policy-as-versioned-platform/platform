@@ -4693,12 +4693,49 @@ def untagged_pin_deltas(prices: list[dict], perspective: str, currency: str) -> 
     return deltas
 
 
+def _quote_validity(payload: dict, as_of: str | None, instrument: str) -> dict:
+    """Dated evidence, never an insurance reduction or a read of today's date."""
+    def readable(value: object) -> bool:
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+            return False
+        year, month, day = map(int, value.split("-"))
+        return (1 <= year <= 9999 and 1 <= month <= 12
+                and 1 <= day <= monthrange(year, month)[1])
+
+    for field in ("valid_from", "valid_until"):
+        if not readable(payload.get(field)):
+            raise Refused(f"missing instrument: {instrument} has no readable {field} "
+                          "calendar date (YYYY-MM-DD)")
+    start, end = payload["valid_from"], payload["valid_until"]
+    if start > end:
+        raise Refused(f"missing instrument: {instrument} valid_until {end} precedes valid_from {start}")
+    if not readable(as_of):
+        state = "unobserved"
+        basis = "No readable composition date was observed; quote validity and retention are not assessed."
+    elif as_of < start or as_of > end:
+        state = "not-yet-valid" if as_of < start else "lapsed"
+        basis = ("The examined composition date is outside the quote's inclusive validity window; "
+                 "no insurance reduction is applied to the existing exposure quantities.")
+    else:
+        state = "within-window"
+        basis = ("The examined composition date is inside the quote's inclusive validity window; "
+                 "retention is not assessed by dates alone.")
+    outside = state in ("not-yet-valid", "lapsed")
+    return {"schema": 1, "as_of": as_of, "state": state,
+            "retention": "fully-retained" if outside else "not-assessed",
+            "basis": basis + " Conditions, priced_against matching and claim payability are not "
+                     "assessed here; no transfer credit or retained-loss amount is calculated. "
+                     "The contractual premium is unchanged."}
+
+
 def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  perspective_doc: dict, reporting_currency: str,
                  prev_version: str | None,
                  parent_trees: dict[str, Path] | None = None,
                  prev_prices: list[dict] | None = None,
-                 observation: dict | None = None) -> dict:
+                 observation: dict | None = None,
+                 composition_as_of: str | None = None,
+                 quote_validity_schema: int | None = 1) -> dict:
     """One `kind: premium` prices[] entry, read off the insurer's own signed
     quote feed. There is no arithmetic here on purpose: the premium is a
     CONTRACT COST -- what this adopter pays, booked under its own perspective
@@ -4708,13 +4745,11 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
 
     Refuses (missing instrument, ADR-0020) only where the quote cannot be read
     as this party's own cover: another adopter's quote, or a premium booked on
-    somebody else's balance sheet. A stale `priced_against` and a lapsed
-    `valid_until` are FACTS carried onto the entry, not refusals -- a pin past
-    the expiry is lapsed cover the composition prices as fully retained, and
-    this module may not read a clock to decide that (D1). ponytail ceiling:
-    the lapse is recorded, not yet priced; the upgrade path is the composition's
-    own as-of date reaching this function, which ticket 37 (insurance round 2)
-    is the place to decide."""
+    somebody else's balance sheet. Ticket 37 records validity against the
+    composition's own as-of, never a clock. Outside the window the existing
+    exposure quantities remain fully retained; inside it dates alone establish
+    no fulfilled condition, priced_against match, payable claim or transfer.
+    The quoted premium remains a contract cost in every state."""
     name = _feed_name(edge)
     tree = Path(tree) if tree is not None else PLATFORM_DIR
     path = feed_file(edge["party"], name, edge["version"], tree)
@@ -4763,6 +4798,9 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
         conditions=payload.get("conditions") or [],
         valid_from=payload.get("valid_from"),
         valid_until=payload.get("valid_until"),
+        **({"quote_validity": _quote_validity(
+            payload, composition_as_of, f"{name}@{edge['version']}")}
+           if quote_validity_schema == 1 else {}),
         priced_against=payload.get("priced_against") or [],
         pin_signature=signature,
         hole=hole,
@@ -5088,7 +5126,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        prev_prices: list[dict] | None, full_prices: list[dict],
                        as_of: str | None = None,
                        observations: dict | None = None,
-                       implemented: set[ControlKey] | None = None) -> list[dict]:
+                       implemented: set[ControlKey] | None = None,
+                       quote_validity_schema: int | None = 1) -> list[dict]:
     """One `switching` entry per substitutable parent edge, under the adopter's
     own perspective and in the adopter's own reporting currency.
 
@@ -5170,7 +5209,7 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
                 include_switching=False, as_of=as_of_override, observations=observations,
-                implemented=implemented)
+                implemented=implemented, quote_validity_schema=quote_validity_schema)
         except Refused as e:
             could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
@@ -5222,7 +5261,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                     prev_prices: list[dict] | None = None,
                     include_switching: bool = True, as_of: str | None = None,
                     observations: dict | None = None,
-                    implemented: set[ControlKey] | None = None) -> list[dict]:
+                    implemented: set[ControlKey] | None = None,
+                    quote_validity_schema: int | None = 1) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -5251,7 +5291,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                 edge, adopter_party, edge_tree(edge, parent_trees),
                 perspective_doc=perspective_doc, reporting_currency=reporting,
                 prev_version=prev_version, parent_trees=parent_trees,
-                prev_prices=prev_prices, observation=observation))
+                prev_prices=prev_prices, observation=observation,
+                composition_as_of=comp_as_of, quote_validity_schema=quote_validity_schema))
             continue
         entry = price_parent(
             edge, adopter_party, tolerance, edge_tree(edge, parent_trees), prev_version,
@@ -5294,7 +5335,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             edges, adopter_party, tolerance, parent_trees, prev_header,
             adopter_dir=adopter_dir, perspective_doc=perspective_doc,
             band_currency=band_currency, floor=floor, prev_prices=prev_prices,
-            full_prices=prices, as_of=as_of, observations=observations, implemented=implemented)
+            full_prices=prices, as_of=as_of, observations=observations, implemented=implemented,
+            quote_validity_schema=quote_validity_schema)
     return prices
 
 
@@ -5457,6 +5499,15 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     comparison_before = comparison["before"]
     prev_header = comparison_before["header"]
     prev_prices = comparison_before["prices"]
+    # Ticket 37: a versioned evidence contract. Historical signed artifacts that
+    # predate it replay their recorded absence; only fresh composition adds it.
+    # A present unsupported version refuses rather than silently downgrading.
+    quote_validity_schema = 1
+    if replay_observations:
+        quote_validity_schema = (recorded_header or {}).get("quote-validity-schema")
+        if "quote-validity-schema" in (recorded_header or {}) and (
+                type(quote_validity_schema) is not int or quote_validity_schema != 1):
+            return _refused(["missing instrument: unsupported quote-validity-schema; expected 1"]), {}
 
     refusals: list[dict] = check_diamonds(edges)
 
@@ -5736,7 +5787,7 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
             prev_prices=prev_prices, as_of=as_of, observations=observations,
-            implemented=implemented)
+            implemented=implemented, quote_validity_schema=quote_validity_schema)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -5803,7 +5854,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                 adopter_dir=adopter_dir, perspective_doc=party_doc,
                 band_currency=band.get("currency"), floor=floor_inputs["before"]["value"],
                 prev_prices=prev_prices, as_of=as_of,
-                observations=observations, include_switching=False, implemented=implemented)
+                observations=observations, include_switching=False, implemented=implemented,
+                quote_validity_schema=quote_validity_schema)
         floor_change = floor_change_evidence(floor_inputs, before_prices, prices)
     except Refused as e:
         return _refused([str(e)]), {}
@@ -5928,6 +5980,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # Fresh composition always records history; present invalid history never falls back.
     if not replay_observations or (recorded_header and "comparison-inputs" in recorded_header):
         header["comparison-inputs"] = comparison
+    if quote_validity_schema == 1 and any(p.get("kind") == "premium" for p in prices):
+        header["quote-validity-schema"] = 1
     # Which versioned rule picked the tier (ADR-0021). Recorded only where the
     # adopter actually ships a selection-policy package -- a null key on an
     # adopter that ships none would be noise in a rendered, Flux-applied file.

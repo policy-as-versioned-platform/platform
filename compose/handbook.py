@@ -355,6 +355,24 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{'yes' if p.get('changed') else 'no'} | {tier_cell} |")
         a("")
         for i, p in enumerate(prices):
+            # Ticket 37: pre-contract signed handbooks retain their old bytes.
+            # Under schema1, a missing historical assessment is named, never guessed.
+            if p.get("kind") == "premium" and (
+                    "quote-validity-schema" in header or "quote_validity" in p):
+                validity = p.get("quote_validity")
+                if validity is None:
+                    _absent(absences, f"prices[{i}].quote_validity", EVIDENCE_PATH,
+                            "this historical premium carries no dated validity assessment")
+                else:
+                    if (not isinstance(validity, dict) or type(validity.get("schema")) is not int
+                            or validity["schema"] != 1):
+                        raise CannotRender(f"prices[{i}].quote_validity carries no supported schema1")
+                    for key in ("state", "retention", "basis"):
+                        if not validity.get(key):
+                            raise CannotRender(f"prices[{i}].quote_validity carries no {key}")
+                    a(f"- **{p.get('source')}/{p.get('name')}** — validity schema1, "
+                      f"as of {validity.get('as_of') or 'unobserved'}: {validity['state']}; "
+                      f"retention: {validity['retention']}. {validity['basis']}")
             if p.get("publisher_observation_scope"):
                 a(f"- **{p.get('source')}/{p.get('name')}** — {p['publisher_observation_scope']}")
             if p.get("kind") == "supersede":

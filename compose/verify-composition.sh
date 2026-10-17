@@ -34,6 +34,9 @@ python3 -m unittest discover -s "$HERE" -p test_priority_classes.py || fail "pri
 say "0d. an unsupported engine pairing is priced, never refused (ticket 148, hub ADR-0033 point 3)"
 python3 -m unittest discover -s "$HERE" -p test_engine_pairing.py || fail "engine pairing"
 
+say "0e. quote validity uses composed input dates and conserves contract costs (ticket 37)"
+python3 -m unittest discover -s "$HERE" -p test_quote_validity.py || fail "quote validity"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal, the regulator's withdrawal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

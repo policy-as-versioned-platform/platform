@@ -221,6 +221,24 @@ itself needs.
   the normal release workflow. Invalid snapshots or snapshots belonging to another feed or SHA
   also refuse. This does not retroactively make an old artefact portable under a newer renderer.
 
+- **Quote validity is dated evidence, not a transfer credit (ticket 37).** A fresh composition
+  passes its existing composed as-of into quote pricing and records `quote_validity` schema1
+  beside the unchanged premium. `valid_from` and `valid_until` are inclusive calendar dates:
+  before the window is `not-yet-valid`, after it is `lapsed`, and both record `fully-retained`
+  existing exposure quantities. `within-window` and an unreadable/missing as-of (`unobserved`)
+  record `not-assessed` retention. Dates alone establish no fulfilled conditions, current
+  `priced_against` match, payable claim or transfer credit. No retained-loss amount, distribution,
+  TVaR or new price is calculated. Missing, malformed or backwards contractual dates refuse by
+  instrument name; the compiler never substitutes its clock.
+
+  `HEADER.yaml` records `quote-validity-schema: 1` for this contract. Verification with no marker
+  preserves a pre-contract artifact's recorded absence and original handbook bytes; it does not
+  backfill a historical assessment. A present unsupported marker refuses. Under schema1 the
+  handbook prints the evidence, or names a historical premium's missing assessment. Fresh
+  composition always records schema1; this compatibility applies only to replay. The registered
+  `test_quote_validity.py` checks the actual pricing call site, boundaries, money conservation,
+  handbook and saved replay, including a handbook tamper and unsupported-version negatives.
+
 - **Every feed line carries `pin_signature` and `hole`** (ticket 69's rule reaching past the
   premium): an untagged feed pin is a hole of the whole line, naming the tag that does not exist.
 - The proposer reads the `supersede` line: `wargamer.wargame_retirement()` and `tier_pr.py`'s
