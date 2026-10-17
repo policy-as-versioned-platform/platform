@@ -640,3 +640,12 @@ verification retains the v3.1 baseline contract, so this fix is a software patch
 candidate relative to v3.1.0, not a claim of byte-compatible v3.0 output. The
 existing v3.0-to-v3.1 floor refresh requirement still applies. Release approval and signed publication
 remain separate from this implementation.
+# Optional cloud package
+
+`gitops/cloud/platform-cloud-pin.yaml`, where present, declares a separate platform
+`cloud/v<semver>` tag and full commit in GitRepository shape. The ordinary composition seam
+verifies that tag under cloud-release.yml's exact identity before executing its package
+renderer. The renderer checks pinned vendor schemas and incumbent workload fidelity, then
+produces cloud policies, CRDs, workload and source receipts. `verify` reproduces them all.
+Without this pin, existing composition and the accepted Pod policy window are unchanged.
+The cloud pin does not move an engine or accept a Pod implementation major.

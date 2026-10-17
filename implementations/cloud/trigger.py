@@ -28,7 +28,10 @@ gitsign's offline Rekor mode. Missing evidence returns no trigger.
     def git(*args: str) -> str:
         return subprocess.check_output(['git', '-C', str(repository), *args], text=True, stderr=subprocess.DEVNULL).strip()
     path = 'talk/captures/' + CAPTURE
-    refs = [exact_record] if exact_record else git('log', '--since=2026-09-25', '--format=%H', 'origin/main', '--', path).splitlines()
+    # Path-history simplification can drop a recovered clock's side parent
+    # when a later merge retains another capture tree. Its signed object and
+    # exact recorded line remain qualifying ancestors, so traverse all parents.
+    refs = [exact_record] if exact_record else git('log', '--full-history', '--since=2026-09-25', '--format=%H', 'origin/main', '--', path).splitlines()
     for record in refs:
         if not re.fullmatch(r'[0-9a-f]{40}', record):
             raise ValueError('trigger record must be a full immutable commit')
@@ -50,7 +53,7 @@ gitsign's offline Rekor mode. Missing evidence returns no trigger.
                 continue
             subprocess.run(['git', '-C', str(repository), 'merge-base', '--is-ancestor', record, 'origin/main'], check=True, capture_output=True)
             env = dict(os.environ, GITSIGN_REKOR_MODE='offline')
-            verified = subprocess.run(['gitsign', 'verify-commit', record,
+            verified = subprocess.run(['gitsign', 'verify', record,
                                        '--certificate-identity-regexp=' + IDENTITY,
                                        '--certificate-oidc-issuer=https://token.actions.githubusercontent.com'],
                                       cwd=repository, env=env, capture_output=True, text=True, timeout=30)
