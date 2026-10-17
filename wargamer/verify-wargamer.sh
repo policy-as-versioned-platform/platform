@@ -9,6 +9,9 @@ platform="$here/.."
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo; echo "== $* =="; }
 
+say "0. the inventory CLI publishes review data and preserves actionable errors"
+python3 "$here/verify-inventory-publication.py" || fail "inventory CLI publication regression failed"
+
 say "1. the signed feed-change fixture verifies offline (the war-gamer's drift input)"
 key="$platform/feeds/keys/feeds-signing-key.pub.pem"
 f="$here/fixtures/threat-register/v3/register.json"

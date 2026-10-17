@@ -192,12 +192,25 @@ def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', rep
     p = disposition['proposal']
     if not p:
         return [{'proposal_kind': 'inventory', **disposition}]
+    # Inventory ID maps are review data, not a readable PR/commit subject.
+    p['title'] = f'[war-gamer] update served image inventory ({org})'
     p['proposal_kind'] = 'inventory'
     p['ledger_marker'] = rejection_ledger.marker(key, shape['curve_hash'], shape['policy_version'])
     if dry_run:
         return [{**p, 'landed': 'dry-run'}]
     def git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(['git', '-C', str(adopter), *args], text=True, capture_output=True, check=True)
+    def gh_pr(*args: str) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(['gh', 'pr', *args] + (['--repo', repo] if repo else []),
+                                  text=True, capture_output=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or '').strip() or 'no diagnostic on stderr'
+            for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+                token = os.environ.get(name)
+                if token:
+                    detail = detail.replace(token, '<REDACTED>')
+            raise InstrumentFault(f'gh pr {args[0]} failed (exit {exc.returncode}): {detail}') from None
     git('checkout', '-B', p['branch'], 'origin/' + base)
     try:
         path = adopter / INVENTORY_PATH; path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,14 +227,15 @@ def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', rep
         git('add', '--', INVENTORY_PATH, 'composed')
         git('commit', '-m', p['title'])
         git('push', '--force-with-lease', 'origin', p['branch'])
-        gh = ['gh', 'pr']; repo_args = ['--repo', repo] if repo else []
-        listed = subprocess.run(gh + ['list', '--head', p['branch'], '--state', 'open', '--json', 'number', '-q', '.[0].number'] + repo_args, text=True, capture_output=True, check=True)
+        listed = gh_pr('list', '--head', p['branch'], '--state', 'open', '--json', 'number', '-q', '.[0].number')
         number = listed.stdout.strip()
-        body = 'Updates only the digest-pinned served image inventory when an image CVE id set changes. Scanner/database metadata changes alone open no PR. Carries the composed re-render through the independently pinned, verified platform tools tag. Human review and the ordinary compose gate remain required.\n\n' + p['ledger_marker']
+        body = ('Updates only the digest-pinned served image inventory when an image CVE id set changes. Scanner/database metadata changes alone open no PR. Carries the composed re-render through the independently pinned, verified platform tools tag. Human review and the ordinary compose gate remain required.\n\n'
+                + 'Complete inventory ID-set change:\n\n```json\n'
+                + json.dumps(p['change'], indent=2, sort_keys=True) + '\n```\n\n' + p['ledger_marker'])
         with tempfile.NamedTemporaryFile('w', suffix='.md') as fh:
             fh.write(body); fh.flush()
             args = ['edit', number] if number else ['create', '--head', p['branch'], '--base', base]
-            result = subprocess.run(gh + args + ['--title', p['title'], '--body-file', fh.name] + repo_args, text=True, capture_output=True, check=True)
+            result = gh_pr(*args, '--title', p['title'], '--body-file', fh.name)
         return [{**p, 'landed': {'action': 'updated' if number else 'created', 'number': number, 'url': result.stdout.strip()}}]
     finally:
         git('checkout', base)
@@ -238,6 +252,7 @@ def main() -> int:
     try:
         if args.command == 'check':
             validate(args.adopter_dir, json.loads((args.adopter_dir / INVENTORY_PATH).read_text())); print('PASS: inventory matches all served image digests'); return 0
+        output: dict | list[dict]
         if args.command == 'scan':
             output = scan(args.adopter_dir, args.scanner)
         else:
