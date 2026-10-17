@@ -28,6 +28,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from factors import ALLOW, DENY, FACTORS, STEP_UP
+
 # Operation → required assurance level. The £ of the op sets the bar; expressed
 # as tiers over dials (PSS-style presets), the tier picked by risk. Break-glass
 # and cluster-admin sit at the top: they demand an attested device AND a passkey.
@@ -47,10 +49,6 @@ OP_TIER = {
 # 1..N *cumulatively* (not N-of-any): OIDC is the floor (a known human), then
 # phishing-resistant WebAuthn, then an attested device. So each higher-risk op
 # demands a strictly stronger set, never a mere swap of one factor for another.
-FACTORS = ("oidc", "webauthn", "device_svid")
-DENY, STEP_UP, ALLOW = "DENY", "STEP_UP", "ALLOW"
-
-
 def required_factors(op: str) -> set[str]:
     tier = OP_TIER.get(op)
     if tier is None:

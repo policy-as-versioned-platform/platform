@@ -28,11 +28,12 @@ def check(cond, msg):
     print(("  ok   " if cond else "  FAIL ") + msg)
 
 # The engine reuses the estate's two load-bearing modules — not a parallel model.
-import fair, access
+import fair, factors as assurance_factors
 check(bg.fair is fair, "reuses ../fair/fair.py for the £ (no second risk engine)")
-check(bg.CAGE not in (access.DENY, access.STEP_UP, access.ALLOW)
-      and bg.DENY == access.DENY and bg.ALLOW == access.ALLOW,
-      "reuses access.py's decision vocabulary, adds only the CAGE rung")
+check(bg.assurance_factors is assurance_factors
+      and bg.CAGE not in (assurance_factors.DENY, assurance_factors.STEP_UP, assurance_factors.ALLOW)
+      and bg.DENY == assurance_factors.DENY and bg.ALLOW == assurance_factors.ALLOW,
+      "reuses the shared assurance vocabulary, adds only the CAGE rung")
 
 bands = bg.load_bands()
 check(bands["step_up_at"] < bands["attest_at"] < bands["no_cage_at"],
@@ -65,5 +66,8 @@ if fails:
     sys.exit(f"\n{len(fails)} invariant(s) broken")
 print("  -- all offline invariants hold --")
 PY
+
+echo "== offline: independence from the legacy operation selector =="
+python3 "$HERE/test_factors.py"
 
 echo "verify-break-glass: done (offline; rides on the access plane — see ../access/verify-access.sh for the live IAP checks)"
