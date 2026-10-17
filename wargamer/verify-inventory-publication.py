@@ -52,6 +52,7 @@ class Publication(unittest.TestCase):
         (self.work/'inventory').mkdir(); (self.work/'composed').mkdir()
         (self.work/'inventory/images.json').write_text(json.dumps(self.old))
         (self.work/'composed/HEADER.yaml').write_text('synthetic: source\n')
+        (self.work/'composed/evidence.json').write_text('{"coverage": "stale source"}\n')
         (self.work/'party.yaml').write_text('party: ludlow\n')
         git(self.work, 'init', '-q', '-b', 'main')
         for key, value in [('commit.gpgsign', 'false'), ('core.hooksPath', '/dev/null'),
@@ -69,8 +70,11 @@ class Publication(unittest.TestCase):
         self.enterContext(patch.object(sys, 'argv', [str(Path(inventory.__file__)), 'propose',
             '--adopter-dir', str(self.work), '--org', 'ludlow', '--candidate', str(candidate),
             '--prior-proposals', str(prior), '--out', str(self.output)]))
+        self.document = {'outcome': 'composed', 'coverage': {'count': 388, 'note': 'café'}}
+        self.generated = {'composed/HEADER.yaml': 'synthetic: proposal\n',
+                          'composed/generated/policy.yaml': 'synthetic: generated policy\n'}
         composition = SimpleNamespace(_default_parent_trees=lambda *args: {},
-            compose=lambda *args: ({'outcome': 'composed'}, {'composed/HEADER.yaml': 'synthetic: proposal\n'}))
+            compose=lambda *args: (self.document, self.generated))
         self.enterContext(patch.dict(sys.modules, {'composition': composition}))
         tools = self.root/'bin'; tools.mkdir()
         (tools/'gh').write_text(f'#!{sys.executable}\n' +
@@ -120,8 +124,18 @@ class Publication(unittest.TestCase):
         branch = proposed['branch']
         self.assertEqual(git(self.work, 'show', branch+':inventory/images.json'),
                          json.dumps(self.new, indent=2, sort_keys=True))
+        # The real compose CLI writes this separately returned document after
+        # generated files. Exercise the actual proposal commit, not a helper.
+        expected_evidence = (b'{\n  "outcome": "composed",\n  "coverage": {\n'
+                             b'    "count": 388,\n    "note": "caf\\u00e9"\n  }\n}')
+        self.assertEqual(subprocess.check_output(['git', '-C', str(self.work), 'show',
+                                                 branch+':composed/evidence.json']), expected_evidence)
+        for relative, body in self.generated.items():
+            self.assertEqual(subprocess.check_output(['git', '-C', str(self.work), 'show',
+                                                     branch+':'+relative]), body.encode())
         self.assertEqual(git(self.work, 'diff', '--name-only', self.source, branch).splitlines(),
-                         ['composed/HEADER.yaml', 'inventory/images.json'])
+                         ['composed/HEADER.yaml', 'composed/evidence.json',
+                          'composed/generated/policy.yaml', 'inventory/images.json'])
         self.assert_main_preserved()
 
     def test_create_preserves_full_change(self):

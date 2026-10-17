@@ -224,6 +224,8 @@ def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', rep
             raise InstrumentFault('inventory proposal composition refused: ' + json.dumps(document.get('refusals')))
         for rel, body in files.items():
             out = adopter / rel; out.parent.mkdir(parents=True, exist_ok=True); out.write_text(body)
+        # compose returns evidence separately from generated files; mirror its CLI.
+        (adopter / 'composed/evidence.json').write_text(json.dumps(document, indent=2))
         git('add', '--', INVENTORY_PATH, 'composed')
         git('commit', '-m', p['title'])
         git('push', '--force-with-lease', 'origin', p['branch'])
