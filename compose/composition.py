@@ -6609,6 +6609,28 @@ def _commit_header(work: Path, rendered: dict[str, str]) -> None:
         commit_fixture_state(work,'Record the synthetic comparison header')
 
 
+def _historical_platform_copy(source: Path, dest: Path, adopter: Path) -> Path:
+    """Mutable Pod fixture bytes plus the genuine cloud object its adopter pins.
+
+    Only the cloud tag is imported into private metadata. Policy bodies still
+    come from the copied files; no branch, remote or signed object is created.
+    """
+    shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git", ".work", "__pycache__"))
+    _write_versions_yaml(dest, _version_array(source))
+    import cloud_composition
+    pin = adopter / cloud_composition.PIN
+    if pin.exists():
+        ref = yaml.safe_load(pin.read_text())["spec"]["ref"]
+        tag, commit = ref["tag"], ref["commit"]
+        command = ["git", "-C", str(dest), "-c", "core.hooksPath=/dev/null"]
+        subprocess.run([*command, "init", "-q"], check=True, capture_output=True)
+        subprocess.run([*command, "fetch", "--quiet", "--no-tags", str(source.resolve()),
+                        f"refs/tags/{tag}:refs/tags/{tag}"], check=True, capture_output=True)
+        resolved = subprocess.check_output([*command, "rev-parse", tag + "^{commit}"], text=True).strip()
+        assert resolved == commit, "the fixture must retain its actual pinned cloud target"
+    return dest
+
+
 def selfcheck() -> None:
     driftwood = DEFAULT_ESTATE_CLONE / "driftwood"
     parent_trees = _real_parent_trees()
@@ -7664,9 +7686,20 @@ def selfcheck() -> None:
                                 ("ludlow", "quarantine")):
         with tempfile.TemporaryDirectory() as td:
             work = _adopter_copy(org, Path(td))
-            historical = Path(td) / "platform-historical-deny"
-            shutil.copytree(parent_trees["platform"], historical, ignore=shutil.ignore_patterns(".git", ".work", "__pycache__"))
-            _write_versions_yaml(historical, _version_array(parent_trees['platform']))
+            historical = _historical_platform_copy(
+                parent_trees["platform"], Path(td) / "platform-historical-deny", work)
+            # Genuine cloud objects must not make this mutable policy fixture
+            # silently read immutable tag bodies instead of the intended files.
+            policy = historical / "distribution/policies/v5.0.0/posture-trust-boundary.yaml"
+            original = policy.read_text()
+            try:
+                planted = yaml.safe_load(original)
+                planted["spec"]["validationActions"] = ["Audit"]
+                policy.write_text(yaml.safe_dump(planted, sort_keys=False))
+                members, _ = load_implementations(historical)
+                assert members["5.0.0"][("posture", "posture-trust-boundary")]["action"] == "Audit"
+            finally:
+                policy.write_text(original)
             old_pin = work / "gitops/platform/platform-pin.yaml"
             old_pin.write_text(old_pin.read_text().replace(live_v, "5.0.0"))
             _with_restate(work, [{
