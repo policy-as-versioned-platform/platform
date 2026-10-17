@@ -187,6 +187,8 @@ class Publication(unittest.TestCase):
                           "def select(residuals, tolerance, floor):\n"
                           "    return {'tier': 'isolated', 'policy_version': VERSION,\n"
                           "            'basis': 'synthetic fixture always selects the bottom rung'}\n")
+        # Real adopters ignore caches from their dynamically loaded package.
+        (self.work/'.gitignore').write_text('__pycache__/\n')
         # This is an unsigned disposable source, never an observed real feed.
         git(self.work, 'add', '.'); git(self.work, 'commit', '-qm', 'Canonical composer fixture')
         git(self.work, 'push', '-q', 'origin', 'main')
