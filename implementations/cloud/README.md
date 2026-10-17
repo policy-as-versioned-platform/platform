@@ -22,16 +22,22 @@ immutable cloud setting; no provider reconciliation is part of this admission pr
 
 Run `KYVERNO_ENGINE_DIR=<local binaries> ./verify-cloud-package.sh`. The real CLI replays
 every fixture on exact 1.18.2 and 1.19.1, checks mutated fields and idempotency, and grades
-the Audit outcomes separately. The preserve-unknown fixture CRDs supply offline GVK
-mapping only. They are not vendor schema evidence. CLI oldObject/status exclusion compiles;
+the Audit outcomes separately. `vendor-crds/` contains the two original upstream v2.6.0
+documents, pinned to commit `857b535dd0eb9b8242ad9d7c4e54aaa3e4616d60` and SHA256 in
+`provider-crds.yaml`. Replay and composition verify those bytes and their field shapes.
+The old preserve-unknown fixtures are negative controls, not vendor schema evidence.
+CLI oldObject/status exclusion compiles;
 the CLI supplies no oldObject, so the status-only runtime behavior is not claimed as tested.
 
 `render.py --claim <served claim> --served-claims <all composed claims> --source-commit
 <full SHA> --output <tree>` renders the package without publication. Tuppence's `gitops/cloud/
-prepare.py` extracts an exact identity-verified cloud tag, verifies supplied vendor CRD
-field shapes and refuses the fixture CRDs, then emits the cloud-only composed paths.
-The current S3 field shape comes from locally available incumbent policy fixtures; if the
-actual vendor schema differs, preparation refuses it and the CEL must be updated and replayed.
+prepare.py` extracts an exact identity-verified cloud tag and emits the cloud-only composed
+paths from its `composition.build()` module. The ordinary compiler invokes that same module
+when an adopter declares `gitops/cloud/platform-cloud-pin.yaml`, so compose and verify both
+reproduce every cloud YAML and receipt. This is a separate pin, not an implementation-major
+or engine move. It must be used with a genuine compiler release containing the optional adapter.
+The incumbent snapshot is checked against its source receipt; only its declared namespace and
+policy-claim mapping changes. Provider controllers and credentials remain absent.
 
 The hub's `verify/cloud-plane/verify-cloud-plane.sh` grades actual delivery and server
 admission separately. It first requires a modern step-4 PASS from an immutable signed clock

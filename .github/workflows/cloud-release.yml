@@ -50,7 +50,8 @@ jobs:
           git config user.email cloud-release@users.noreply.github.com
           git config gpg.format x509
           git config gpg.x509.program gitsign
-          git tag -s "cloud/v${VERSION}" -m "$RELEASE_MESSAGE"
+          # Verification cannot add a missing log proof after the tag is signed.
+          git -c gitsign.rekorMode=offline tag -s "cloud/v${VERSION}" -m "$RELEASE_MESSAGE"
           GITSIGN_REKOR_MODE=offline gitsign verify-tag "cloud/v${VERSION}" --certificate-identity-regexp="$EXPECTED_IDENTITY_REGEXP" --certificate-oidc-issuer="$EXPECTED_ISSUER"
       - name: Publish verified tag and release
         env:

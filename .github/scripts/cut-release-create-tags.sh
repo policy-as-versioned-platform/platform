@@ -18,7 +18,9 @@ jq -c '.[]' "$tags_json" | while IFS= read -r entry; do
   if [ "${CUT_RELEASE_TEST_MODE:-}" = "1" ]; then
     git tag -a "${tag}" -m "${message}"
   else
+    # Embed the signed log proof before creating the immutable tag.
     git -c gpg.format=x509 -c gpg.x509.program=gitsign \
+      -c gitsign.rekorMode=offline \
       -c user.name="policy-as-versioned release bot" \
       -c user.email="releases@${GITHUB_REPOSITORY_OWNER}.invalid" \
       tag -s "${tag}" -m "${message}"

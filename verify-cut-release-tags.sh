@@ -17,6 +17,9 @@ trap 'rm -rf "$scratch"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo; echo "== $* =="; }
 
+# Probe the production signing boundary before the unsigned transport fixtures.
+python3 "$here/verify-release-signing.py"
+
 export CUT_RELEASE_TEST_MODE=1
 
 # a bare "remote" and a working clone, so `git push` really pushes

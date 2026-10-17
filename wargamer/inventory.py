@@ -27,7 +27,8 @@ DIGEST = re.compile(r'^.+@sha256:[0-9a-f]{64}$')
 class InstrumentFault(ValueError):
     pass
 
-def served_images(adopter: Path, *, repository: Path | None = None) -> list[str]:
+def served_documents(adopter: Path, *, repository: Path | None = None,
+                     strict_claims: bool = False) -> list[dict]:
     """Read the apps source's exact tag+commit and Kustomization path, never HEAD.
 
     A checker may archive the declaration tree and explicitly supply its original
@@ -60,13 +61,51 @@ def served_images(adopter: Path, *, repository: Path | None = None) -> list[str]
                  and d.get('spec', {}).get('sourceRef', {}).get('kind', 'GitRepository') == 'GitRepository']
         if len(syncs) != 1:
             raise InstrumentFault('apps source must have exactly one matching Kustomization')
+        if strict_claims and set(syncs[0]['spec']) - {
+                'interval', 'retryInterval', 'timeout', 'sourceRef', 'path', 'prune', 'wait',
+                'dependsOn', 'healthChecks', 'targetNamespace', 'suspend', 'serviceAccountName',
+                'deletionPolicy', 'force'}:
+            raise InstrumentFault('served policy claims require rendered input for Flux transforms')
         root = syncs[0]['spec']['path']
         if not isinstance(root, str) or root.startswith('/') or '..' in root.split('/'):
             raise InstrumentFault('apps source Kustomization path leaves its pinned tree')
     except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
         raise InstrumentFault('apps source pin or Kustomization is unreadable: ' + str(exc)) from exc
-    images: set[str] = set()
+    documents: list[dict] = []
     seen: set[str] = set()
+    def visit(target: str) -> None:
+        target = posixpath.normpath(target)
+        if target.startswith('/') or target == '..' or target.startswith('../'):
+            raise InstrumentFault('apps resource leaves its pinned tree')
+        if target in seen:
+            return
+        seen.add(target)
+        if git('cat-file', '-t', commit+':'+target) == 'tree':
+            target = posixpath.join(target, 'kustomization.yaml')
+        entry = git('ls-tree', commit, '--', target)
+        if not entry.startswith(('100644 blob ', '100755 blob ')):
+            raise InstrumentFault('apps resource is not a pinned manifest file: ' + target)
+        for doc in yaml.safe_load_all(git('show', commit+':'+target)):
+            if not isinstance(doc, dict):
+                continue
+            if doc.get('kind') == 'Kustomization' and ('resources' in doc or strict_claims):
+                if strict_claims and (set(doc) - {'apiVersion', 'kind', 'metadata', 'resources', 'namespace'} or
+                                      not isinstance(doc.get('resources'), list)):
+                    raise InstrumentFault('served policy claims require rendered input for Kustomize transforms')
+                if any(key in doc for key in ('images', 'patches', 'patchesStrategicMerge', 'replacements')):
+                    raise InstrumentFault('served image transforms require rendered inventory input; refusing an unrendered guess')
+                for entry in doc['resources']:
+                    if not isinstance(entry, str):
+                        raise InstrumentFault('apps resource path is malformed')
+                    visit(posixpath.join(posixpath.dirname(target), entry))
+            else:
+                documents.append(doc)
+    visit(root)
+    return documents
+
+def served_images(adopter: Path, *, repository: Path | None = None) -> list[str]:
+    """Digest-pinned images from the same immutable apps walk other checkers consume."""
+    images: set[str] = set()
     def containers(node: Any) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
@@ -83,31 +122,8 @@ def served_images(adopter: Path, *, repository: Path | None = None) -> list[str]
         elif isinstance(node, list):
             for item in node:
                 containers(item)
-    def visit(target: str) -> None:
-        target = posixpath.normpath(target)
-        if target.startswith('/') or target == '..' or target.startswith('../'):
-            raise InstrumentFault('apps resource leaves its pinned tree')
-        if target in seen:
-            return
-        seen.add(target)
-        if git('cat-file', '-t', commit+':'+target) == 'tree':
-            target = posixpath.join(target, 'kustomization.yaml')
-        entry = git('ls-tree', commit, '--', target)
-        if not entry.startswith(('100644 blob ', '100755 blob ')):
-            raise InstrumentFault('apps resource is not a pinned manifest file: ' + target)
-        for doc in yaml.safe_load_all(git('show', commit+':'+target)):
-            if not isinstance(doc, dict):
-                continue
-            if doc.get('kind') == 'Kustomization' and 'resources' in doc:
-                if any(key in doc for key in ('images', 'patches', 'patchesStrategicMerge', 'replacements')):
-                    raise InstrumentFault('served image transforms require rendered inventory input; refusing an unrendered guess')
-                for entry in doc['resources']:
-                    if not isinstance(entry, str):
-                        raise InstrumentFault('apps resource path is malformed')
-                    visit(posixpath.join(posixpath.dirname(target), entry))
-            else:
-                containers(doc)
-    visit(root)
+    for document in served_documents(adopter, repository=repository):
+        containers(document)
     if not images:
         raise InstrumentFault('served manifests name no image to scan')
     return sorted(images)

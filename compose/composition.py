@@ -377,6 +377,7 @@ import pin_content  # noqa: E402
 sys.path.insert(0, str(HERE))
 import handbook  # noqa: E402
 import comparison_history  # noqa: E402
+import consumer_retirement  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -1334,7 +1335,7 @@ def machinery_members(root: Path) -> list[dict]:
     return _load_guards(root)
 
 
-def _load_guards(root: Path) -> list[dict]:
+def _load_guards(root: Path, retained: list[str] | None = None) -> list[dict]:
     """`_load_guards_from`, with the parent's OWN `cage_body` bound under that shared module name
     for the duration and the previous binding put back afterwards (ticket 111).
 
@@ -1349,7 +1350,7 @@ def _load_guards(root: Path) -> list[dict]:
             module = importlib.util.module_from_spec(spec)
             sys.modules["cage_body"] = module
             spec.loader.exec_module(module)
-        return _load_guards_from(root)
+        return _load_guards_from(root, retained)
     finally:
         if previous is not None:
             sys.modules["cage_body"] = previous
@@ -1357,7 +1358,7 @@ def _load_guards(root: Path) -> list[dict]:
             sys.modules.pop("cage_body", None)
 
 
-def _load_guards_from(root: Path) -> list[dict]:
+def _load_guards_from(root: Path, retained: list[str] | None = None) -> list[dict]:
     """Every `platform-machinery` member: the orphan guard and its CAGE (both ranged from
     the version array), the governed-namespace cage and its paired report (static,
     ADR-0014's fifth named gap), and the bottom-rung reach cage. All load through the
@@ -1374,6 +1375,10 @@ def _load_guards_from(root: Path) -> list[dict]:
     allowed = (orphan_twin.served_versions(versions_yaml)
                if hasattr(orphan_twin, "served_versions")
                else orphan_twin.versions(versions_yaml))
+    if retained is not None:
+        # An explicit, validated consumer retirement removes versions from every
+        # ranged machinery member too. Default inheritance remains byte-identical.
+        allowed = [version for version in allowed if version in retained]
     orphan_doc = orphan_twin.orphan_guard(allowed)
     governed_twin = _load_module(root, "render-governed-namespace-guard.py", "render_governed_namespace_guard")
     governed_doc = governed_twin.governed_namespace_guard()
@@ -5344,6 +5349,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     party_doc = yaml.safe_load(party_yaml.read_text())
     adopter_party = party_doc["party"]
     edges = party_doc.get("inherits", []) or []
+    try:
+        retirement_records = consumer_retirement.read_records(
+            adopter_dir, {edge['party'] for edge in edges if edge['kind'] == 'implementations'})
+    except consumer_retirement.InvalidRetirement as error:
+        return _refused([str(error)]), {}
+    consumer_retirements: list[dict] = []
 
     observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
@@ -5488,6 +5499,26 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                          if p["party"] == impl_party and p["kind"] == "implementations")
         impl_root = Path(parent_trees[impl_party])
         members_by_version, this_guards = load_implementations(impl_root)
+        if impl_party in retirement_records:
+            try:
+                retirement = consumer_retirement.select(
+                    adopter_dir, retirement_records[impl_party], adopter_party, impl_party,
+                    str(impl_version), impl_sha, impl_root, sorted(members_by_version))
+                inventory_spec = importlib.util.spec_from_file_location(
+                    '_retirement_apps_reader', PLATFORM_DIR / 'wargamer/inventory.py')
+                if inventory_spec is None or inventory_spec.loader is None:
+                    raise consumer_retirement.InvalidRetirement('immutable apps reader is unavailable')
+                inventory_reader = importlib.util.module_from_spec(inventory_spec)
+                inventory_spec.loader.exec_module(inventory_reader)
+                consumer_retirement.require_claims(
+                    retirement, inventory_reader.served_documents(adopter_dir, strict_claims=True))
+                consumer_retirement.require_delivered(adopter_dir, retirement)
+                members_by_version = {version: members for version, members in members_by_version.items()
+                                      if version in retirement['retained']}
+                this_guards = _load_guards(impl_root, retirement['retained'])
+                consumer_retirements.append(retirement)
+            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError) as error:
+                return _refused(['consumer retirement: ' + str(error)]), {}
         source_ref = f"{impl_party}@{impl_version}"
         try:
             engine_lines += engine_subjects(impl_party, str(impl_version), impl_root, members_by_version)
@@ -5534,8 +5565,25 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     # restatement (ADR-0016's own consequence: "It is a new member, not a
     # restatement").
     for key, meta in load_overlay_add(party_doc).items():
+        if any(key[0] in retirement['retired'] for retirement in consumer_retirements):
+            return _refused(['consumer retirement: overlay adds a retired version']), {}
         merged.setdefault(key, dict(meta, source_party=adopter_party, source_sha=None,
                                      source_ref=f"{adopter_party} (overlay)"))
+
+    # Cloud claims use the same effective policy window that will actually be
+    # rendered, after validated retirements, conflicts and overlay additions.
+    # A caller's old ResourceSet is a delivery pointer, not authority to put a
+    # retired claim back into the newly composed cloud workload.
+    import cloud_composition
+    cloud_parent = None
+    cloud_rendered: dict[str, str] = {}
+    if (adopter_dir / cloud_composition.PIN).exists():
+        try:
+            served = sorted({key[0] for key in merged})
+            cloud_parent, cloud_rendered = cloud_composition.render(
+                adopter_dir, parent_trees.get('platform'), adopter_party, served)
+        except (ValueError, OSError, KeyError, StopIteration, yaml.YAMLError, subprocess.SubprocessError) as error:
+            return _refused(['missing instrument: cloud package: ' + str(error)]), {}
 
     # The adopter's own control claims -- next to the party artefact it
     # signs (ADR-0017), never mixed with a parent's.
@@ -5895,6 +5943,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     selection_policy = _selection_policy_version(adopter_dir)
     if selection_policy is not None:
         header["selection-policy"] = selection_policy
+    if consumer_retirements:
+        header['consumer-retirements'] = consumer_retirements
     # The exposure lands on the RENDERED header, not only in the evidence
     # document, so `composition.py verify` re-derives it byte for byte from
     # the same parents: an exposure an insurer prices a layer against is a
@@ -5904,6 +5954,9 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         header["exposure"] = exposure
     if as_of is not None:
         header["composition-as-of"] = as_of
+    if cloud_parent is not None:
+        header['cloud-package'] = cloud_parent
+        rendered.update(cloud_rendered)
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
     rendered["composed/floor-change.json"] = json.dumps(floor_change, indent=2) + "\n"
 
@@ -5924,6 +5977,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         "vendored": vendored_records,
         "engine": engine_evidence(engine, engine_pairings, baseline_source),
     }
+    if consumer_retirements:
+        document['consumer_retirements'] = consumer_retirements
+    if cloud_parent is not None:
+        document['cloud'] = cloud_parent
     # The handbook (ticket 34; ADR-0007's last-mile section). A pure function of `rendered` and
     # `document` -- the two things this call has just derived from the pinned parents -- so it is
     # re-derivable by anyone holding the artefact, which is what `verify-fresh.sh` grades at a tag.
