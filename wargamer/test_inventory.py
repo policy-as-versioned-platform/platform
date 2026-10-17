@@ -41,6 +41,44 @@ def test_every_container_is_scanned_without_a_policy_label(tmp_path):
     image='example@sha256:'+'a'*64
     assert m.served_images(adopter(tmp_path,image)) == [image]
 
+@pytest.mark.parametrize('transform', ['commonLabels', 'labels', 'patchesJson6902'])
+def test_consumer_retirement_refuses_unrendered_kustomize_claim_transforms(tmp_path, transform):
+    repo = adopter(tmp_path, 'example@sha256:'+'a'*64)
+    path = repo/'gitops/apps/kustomization.yaml'
+    doc = yaml.safe_load(path.read_text())
+    doc[transform] = {'policy-as-versioned.dev/policy-version': '5.0.0'}
+    path.write_text(yaml.safe_dump(doc))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'Synthetic transform counterfactual')
+    commit = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'tag', 'v2.0.0')
+    pin(repo, 'v2.0.0', commit)
+    with pytest.raises(m.InstrumentFault, match='Kustomize transforms'):
+        m.served_documents(repo, strict_claims=True)
+
+@pytest.mark.parametrize('transform', ['patches', 'commonMetadata', 'postBuild'])
+def test_consumer_retirement_refuses_unrendered_flux_claim_transforms(tmp_path, transform):
+    repo = adopter(tmp_path, 'example@sha256:'+'a'*64)
+    path = repo/'gitops/flux-system/gotk-sync.yaml'
+    documents = list(yaml.safe_load_all(path.read_text()))
+    documents[1]['spec'][transform] = {'policy-as-versioned.dev/policy-version': '5.0.0'}
+    path.write_text(yaml.safe_dump_all(documents))
+    with pytest.raises(m.InstrumentFault, match='Flux transforms'):
+        m.served_documents(repo, strict_claims=True)
+
+@pytest.mark.parametrize('transform', ['components', 'generators'])
+def test_claim_reader_does_not_skip_a_kustomization_without_resources(tmp_path, transform):
+    repo = adopter(tmp_path, 'example@sha256:'+'a'*64)
+    path = repo/'gitops/apps/kustomization.yaml'
+    path.write_text(yaml.safe_dump({'kind': 'Kustomization', transform: ['retired-component']}))
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'Synthetic hidden component counterfactual')
+    commit = git(repo, 'rev-parse', 'HEAD')
+    git(repo, 'tag', 'v2.0.0')
+    pin(repo, 'v2.0.0', commit)
+    with pytest.raises(m.InstrumentFault, match='Kustomize transforms'):
+        m.served_documents(repo, strict_claims=True)
+
 def test_the_served_tag_rejects_an_unpinned_image(tmp_path):
     adopter(tmp_path, 'nginx')
     with pytest.raises(m.InstrumentFault,match='digest'):
