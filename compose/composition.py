@@ -6254,10 +6254,29 @@ def _insurer_clone(dest: Path) -> Path:
 def _feeds_clone(dest: Path) -> Path:
     """Ticket 84's fixture: a real `git clone` of the feeds publisher, so its
     OWN signed tags travel -- threat-register/v1.x.y and v2.x.y, cut by its
-    release workflow -- and nothing invented. Against it a pin at v1 is really
-    behind a really published v2, and a cve or eol pin is really untagged."""
+    release workflow -- and nothing invented. A historical untagged fixture
+    must isolate its tag view explicitly; a genuine later release travels too."""
     subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "feeds"), str(dest)],
                    check=True, capture_output=True)
+    return dest
+
+
+def _historical_eol_view(tree: Path, dest: Path) -> Path:
+    """Ticket 84's disposable pre-release view, never a publisher checkout.
+
+    Keep every payload and original object; hide only matching EOL v2 refs in
+    this private clone. Other genuine tags remain, so an absent EOL tag is an
+    observation rather than an unfetched namespace. No remote is written.
+    """
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(tree), str(dest)],
+                   check=True, capture_output=True)
+    origin = subprocess.check_output(["git", "-C", str(tree), "remote", "get-url", "origin"], text=True).strip()
+    subprocess.run(["git", "-C", str(dest), "remote", "set-url", "origin", origin], check=True)
+    refs = subprocess.check_output(["git", "-C", str(dest), "for-each-ref",
+                                    "--format=%(refname:short)", "refs/tags"], text=True)
+    for tag in refs.splitlines():
+        if _pin_tag_pattern("eol", "v2").match(tag):
+            subprocess.run(["git", "-C", str(dest), "update-ref", "-d", f"refs/tags/{tag}"], check=True)
     return dest
 
 
@@ -9417,32 +9436,65 @@ def selfcheck() -> None:
               "real invocation %s" % (hole["amount"], hole["currency"],
                                       cve["pin_signature"]["detail"].split(" exists")[0], rec["invocation"]))
 
-        # (c) eol: the composition date reaches the converter as --as-of, the
-        # override reaches it too, and the CLI passes it through.
+        # (c) eol: the original historical hole and the genuinely released v2
+        # are separate observations of identical payloads (2026-10-17, ticket
+        # 84 delegated fixture amendment). Both retain the same date and price.
         work_c = _adopter_copy("ludlow", root / "c")
         _add_feed_pin(work_c, "feeds", "eol", "v2", "2026-09-08")
-        doc_c, _ = compose(work_c, trees)
+        current_c, _ = compose(work_c, trees)
+        assert current_c["outcome"] == "composed", current_c["refusals"]
+        current_eol = next(e for e in current_c["prices"] if e["kind"] == "feed" and e.get("name") == "eol")
+        assert current_eol["pin_signature"]["state"] == "signed" and current_eol["hole"] is None, current_eol
+        signed_tag = current_eol["pin_signature"]["tag"]
+        assert _pin_tag_pattern("eol", "v2").match(signed_tag), signed_tag
+        signed_object = subprocess.check_output(["git", "-C", str(feeds_clone), "rev-parse", f"refs/tags/{signed_tag}"], text=True).strip()
+        signed_bytes = subprocess.check_output(["git", "-C", str(feeds_clone), "cat-file", "-p", signed_object])
+        assert subprocess.check_output(["git", "-C", str(feeds_clone), "show", f"{signed_tag}:eol/v2/feed.json"]) == (feeds_clone / "eol/v2/feed.json").read_bytes()
+        assert not any(d["kind"] == "new-untagged-pin" and d.get("name") == "eol" for d in current_c["deltas"]), current_c["deltas"]
+        historical_feeds = _historical_eol_view(feeds_clone, root / "feeds-before-eol-release")
+        historical_trees = {**trees, "feeds": historical_feeds}
+        assert (historical_feeds / "eol/v2/feed.json").read_bytes() == (feeds_clone / "eol/v2/feed.json").read_bytes()
+        assert subprocess.check_output(["git", "-C", str(historical_feeds), "cat-file", "-p", signed_object]) == signed_bytes
+        doc_c, _ = compose(work_c, historical_trees)
         assert doc_c["outcome"] == "composed", doc_c["refusals"]
         eol = next(e for e in doc_c["prices"] if e["kind"] == "feed" and e.get("name") == "eol")
         as_of_c = _composition_as_of(_edges(work_c), trees)
         assert as_of_c and f"as_of={as_of_c}" in (eol["lef_basis"] or ""), (as_of_c, eol["lef_basis"])
         assert eol["pin_signature"]["state"] == "untagged" and eol["hole"]["status"] == "new", eol
+        # Only the tag-derived observations differ; every monetary, scenario,
+        # date and contractual field remains the same.
+        observations = ("pin_signature", "hole", "superseded")
+        assert {k: v for k, v in current_eol.items() if k not in observations} == {k: v for k, v in eol.items() if k not in observations}, (current_eol, eol)
         rec_c = next(r for r in doc_c["vendored"] if r["name"] == "eol")
         assert rec_c["invocation"] == ["eol", "--as-of", as_of_c], rec_c
-        eol2 = next(e for e in compose(work_c, trees, as_of=later)[0]["prices"]
+        assert next(r for r in current_c["vendored"] if r["name"] == "eol")["invocation"] == rec_c["invocation"]
+        eol2 = next(e for e in compose(work_c, historical_trees, as_of=later)[0]["prices"]
                     if e["kind"] == "feed" and e.get("name") == "eol")
         assert f"as_of={later}" in (eol2["lef_basis"] or "") and eol2["amount"] > eol["amount"], (eol2, eol)
         estate = root / "estate"
         estate.mkdir()
         for name in ("driftwood", "nist", "ico", "platform", "insurer"):
             (estate / name).symlink_to(DEFAULT_ESTATE_CLONE / name)
-        (estate / "feeds").symlink_to(feeds_clone)
+        (estate / "feeds").symlink_to(historical_feeds)
         out_c = root / "out-c"
         assert cmd_compose(work_c, estate, out_c, as_of=later) == 0
         ev = json.loads((out_c / "composed" / "evidence.json").read_text())
         assert f"as_of={later}" in next(e for e in ev["prices"] if e.get("name") == "eol")["lef_basis"]
         assert next(r for r in ev["vendored"] if r["name"] == "eol")["invocation"] == ["eol", "--as-of", later]
-        print("OK eol: ludlow pinned at feeds/eol@v2 prices its headline component as of the "
+        # An annotated local fixture without a signature marker still signs
+        # nothing. This creates no signature and never touches the real ref.
+        subprocess.run(["git", "-C", str(historical_feeds), "-c", "tag.gpgsign=false",
+                        "-c", "user.name=unsigned selfcheck fixture", "-c", "user.email=fixture@invalid",
+                        "tag", "-a", signed_tag, "-m", "Unsigned local selfcheck annotation; no signature marker"],
+                       check=True, capture_output=True)
+        unsigned_eol = next(e for e in compose(work_c, historical_trees)[0]["prices"]
+                            if e["kind"] == "feed" and e.get("name") == "eol")
+        assert unsigned_eol["pin_signature"]["state"] == "untagged" and unsigned_eol["hole"]["status"] == "new", unsigned_eol
+        assert unsigned_eol["amount"] == eol["amount"] and unsigned_eol["lef_basis"] == eol["lef_basis"], unsigned_eol
+        assert subprocess.check_output(["git", "-C", str(feeds_clone), "rev-parse", f"refs/tags/{signed_tag}"], text=True).strip() == signed_object
+        assert subprocess.check_output(["git", "-C", str(feeds_clone), "cat-file", "-p", signed_object]) == signed_bytes
+        print("OK eol: genuine signed v2 has no hole; isolated historical and unsigned views "
+              "retain the new hole at the identical price; ludlow prices its headline component as of the "
               "composition's own %s (the invocation the vendored record carries), ramps higher "
               "under --as-of %s, and the CLI passes --as-of through" % (as_of_c, later))
 
