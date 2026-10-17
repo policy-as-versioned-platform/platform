@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
@@ -89,14 +90,14 @@ def _official(path: str) -> dict:
     return value
 
 
-def _signature(root: Path, commit: str, repository: str, source: str) -> None:
-    identity = f'https://github.com/{repository}/.github/workflows/drift-sample.yml@refs/heads/main'
+def _signature(root: Path, commit: str, repository: str, source: str, branch: str) -> None:
+    identity = f'https://github.com/{repository}/.github/workflows/drift-sample.yml@refs/heads/{branch}'
     _command(['gitsign', 'verify', commit,
               '--certificate-identity=' + identity,
               '--certificate-oidc-issuer=' + ISSUER,
               '--certificate-github-workflow-sha=' + source,
               '--certificate-github-workflow-repository=' + repository,
-              '--certificate-github-workflow-ref=refs/heads/main',
+              '--certificate-github-workflow-ref=refs/heads/' + branch,
               '--certificate-github-workflow-trigger=schedule'], root,
              env=dict(os.environ, GITSIGN_REKOR_MODE='offline'))
 
@@ -173,8 +174,20 @@ def _engine(data: bytes) -> str:
         raise InvalidRetirement('baseline engine declaration is unavailable') from exc
 
 
+def _default_branch(adopter: Path, repository: str, official: Callable[[str], dict]) -> str:
+    metadata = official(f'repos/{repository}')
+    if metadata.get('full_name') != repository:
+        raise InvalidRetirement('official metadata does not name the exact adopter repository')
+    branch = _text(metadata.get('default_branch'), 'actual public default branch')
+    try:
+        _git(adopter, 'check-ref-format', 'refs/heads/' + branch)
+    except InvalidRetirement as error:
+        raise InvalidRetirement('actual public default branch is malformed') from error
+    return branch
+
+
 def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
-              verify_signature: Callable[[Path, str, str, str], None]) -> dict:
+              verify_signature: Callable[[Path, str, str, str, str], None]) -> dict:
     baseline = _object(record['baseline'], {'original_commit', 'source_commit', 'run_id',
                                            'attempt', 'appends'}, 'baseline')
     original = _text(baseline['original_commit'], 'baseline original commit', SHA)
@@ -183,24 +196,25 @@ def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
     if type(run_id) is not int or type(attempt) is not int or run_id < 1 or attempt < 1:
         raise InvalidRetirement('baseline requires positive integer run_id and attempt')
     repository = record['repository']
+    branch = _default_branch(adopter, repository, official)
     run = official(f'repos/{repository}/actions/runs/{run_id}/attempts/{attempt}')
     if (run.get('id') != run_id or run.get('run_attempt') != attempt or
-            run.get('event') != 'schedule' or run.get('head_branch') != 'main' or
+            run.get('event') != 'schedule' or run.get('head_branch') != branch or
             run.get('head_sha') != source or run.get('status') != 'completed' or
             run.get('path') != '.github/workflows/drift-sample.yml' or
             (run.get('repository') or {}).get('full_name') != repository):
-        raise InvalidRetirement('official attempt is not the exact scheduled main baseline')
-    public = official(f'repos/{repository}/compare/{original}...main')
+        raise InvalidRetirement('official attempt is not the exact scheduled default-branch baseline')
+    public = official(f'repos/{repository}/compare/{original}...{quote(branch, safe="")}')
     if (public.get('status') not in {'ahead', 'identical'} or
             (public.get('merge_base_commit') or {}).get('sha') != original):
-        raise InvalidRetirement('original scheduled baseline is not on the actual public main')
+        raise InvalidRetirement('original scheduled baseline is not on the actual public default')
     parent_line = _git(adopter, 'rev-list', '--parents', '-n', '1', original).decode().split()
     if parent_line != [original, source]:
         raise InvalidRetirement('baseline original must retain its one measured-source parent')
     _ancestor(adopter, original, 'HEAD', 'tree under composition')
     if _engine(_show(adopter, source, ENGINE_FILE)) != record['engine']['from']:
         raise InvalidRetirement('baseline source engine does not match the declared transition')
-    verify_signature(adopter, original, repository, source)
+    verify_signature(adopter, original, repository, source, branch)
     appends = _object(baseline['appends'], set(LANE), 'baseline appends')
     paths = _git(adopter, 'diff-tree', '--no-commit-id', '--name-only', '-r', original).decode().splitlines()
     if set(paths) != set(LANE):
@@ -261,7 +275,7 @@ def _support(declaration: Any, engines: set[str], where: str) -> None:
 def select(adopter: Path, record: dict, party: str, publisher: str, parent_version: str,
            parent_sha: str, parent_root: Path, versions: list[str], *,
            official: Callable[[str], dict] = _official,
-           verify_signature: Callable[[Path, str, str, str], None] = _signature,
+           verify_signature: Callable[[Path, str, str, str, str], None] = _signature,
            verify_tag: Callable[[Path, str, str], None] = _tag_signature) -> dict:
     """Validate one explicit selection and return its immutable evidence, or refuse.
 
@@ -354,33 +368,35 @@ def require_delivered(adopter: Path, retirement: dict, *, official: Callable[[st
     if _engine((adopter / ENGINE_FILE).read_bytes()) != retirement['engine']['to']:
         return
     repository = retirement['repository']
-    response = official(f'repos/{repository}/contents/{DIRECTORY}/{retirement["publisher"]}.yaml?ref=main')
+    branch = _default_branch(adopter, repository, official)
+    query = '?ref=' + quote(branch, safe='')
+    response = official(f'repos/{repository}/contents/{DIRECTORY}/{retirement["publisher"]}.yaml{query}')
     try:
         public_record = yaml.safe_load(base64.b64decode(response['content']))
     except (KeyError, ValueError, yaml.YAMLError) as exc:
-        raise InvalidRetirement('engine move requires the exact retirement decision already on public main') from exc
+        raise InvalidRetirement('engine move requires the exact retirement decision already on public default') from exc
     if public_record != retirement:
         raise InvalidRetirement('engine move cannot introduce or change the retirement decision')
-    public_engine_response = official(f'repos/{repository}/contents/{ENGINE_FILE}?ref=main')
+    public_engine_response = official(f'repos/{repository}/contents/{ENGINE_FILE}{query}')
     try:
         public_engine = _engine(base64.b64decode(public_engine_response['content']))
     except (KeyError, ValueError) as exc:
-        raise InvalidRetirement('engine transition requires the actual public main declaration') from exc
+        raise InvalidRetirement('engine transition requires the actual public default declaration') from exc
     if public_engine not in set(retirement['engine'].values()):
-        raise InvalidRetirement('public main engine differs from the authorized transition')
+        raise InvalidRetirement('public default engine differs from the authorized transition')
     source_docs = list(yaml.safe_load_all((adopter / 'gitops/composed/composed-set.yaml').read_text()))
     source = next((doc for doc in source_docs if isinstance(doc, dict) and doc.get('kind') == 'GitRepository'), {})
     ref = source.get('spec', {}).get('ref', {})
     tag, commit = ref.get('tag'), ref.get('commit')
     _text(commit, 'delivered composition commit', SHA)
     _text(tag, 'delivered composition tag')
-    public_source = official(f'repos/{repository}/contents/gitops/composed/composed-set.yaml?ref=main')
+    public_source = official(f'repos/{repository}/contents/gitops/composed/composed-set.yaml{query}')
     try:
         public_documents = list(yaml.safe_load_all(base64.b64decode(public_source['content'])))
         public_pin = next(doc['spec']['ref'] for doc in public_documents
                           if isinstance(doc, dict) and doc.get('kind') == 'GitRepository')
     except (KeyError, ValueError, StopIteration, yaml.YAMLError) as exc:
-        raise InvalidRetirement('engine move requires the signed composition pointer already on public main') from exc
+        raise InvalidRetirement('engine move requires the signed composition pointer already on public default') from exc
     if public_engine == retirement['engine']['from'] and public_pin != ref:
         raise InvalidRetirement('engine move cannot introduce the retirement delivery pointer')
     if _git(adopter, 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}').decode().strip() != commit:
@@ -401,7 +417,7 @@ def require_delivered(adopter: Path, retirement: dict, *, official: Callable[[st
 
 def admit(adopter: Path, parent_root: Path, base_ref: str, head_ref: str, *,
           official: Callable[[str], dict] = _official,
-          verify_signature: Callable[[Path, str, str, str], None] = _signature,
+          verify_signature: Callable[[Path, str, str, str, str], None] = _signature,
           verify_tag: Callable[[Path, str, str], None] = _tag_signature) -> dict:
     """Exact retirement admission beside the adopter's unchanged computed major."""
     if _git(adopter, 'rev-parse', head_ref + '^{commit}') != _git(adopter, 'rev-parse', 'HEAD'):

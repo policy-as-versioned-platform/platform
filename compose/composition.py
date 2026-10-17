@@ -5356,20 +5356,6 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         return _refused([str(error)]), {}
     consumer_retirements: list[dict] = []
 
-    # An optional separately signed cloud package must pass through this same
-    # render/verify seam; appending its YAML after composition cannot satisfy verify().
-    import cloud_composition
-    cloud_parent = None
-    cloud_rendered: dict[str, str] = {}
-    if (adopter_dir / cloud_composition.PIN).exists():
-        try:
-            versions_doc = next(doc for doc in yaml.safe_load_all((adopter_dir / 'gitops/composed/composed-set.yaml').read_text())
-                                if isinstance(doc, dict) and doc.get('kind') == 'ResourceSet')
-            served = [row['version'] for row in versions_doc['spec']['inputs'][0]['versions']]
-            cloud_parent, cloud_rendered = cloud_composition.render(adopter_dir, parent_trees.get('platform'), adopter_party, served)
-        except (ValueError, OSError, KeyError, StopIteration, yaml.YAMLError, subprocess.SubprocessError) as error:
-            return _refused(['missing instrument: cloud package: ' + str(error)]), {}
-
     observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
     missing: list[str] = []
@@ -5583,6 +5569,21 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             return _refused(['consumer retirement: overlay adds a retired version']), {}
         merged.setdefault(key, dict(meta, source_party=adopter_party, source_sha=None,
                                      source_ref=f"{adopter_party} (overlay)"))
+
+    # Cloud claims use the same effective policy window that will actually be
+    # rendered, after validated retirements, conflicts and overlay additions.
+    # A caller's old ResourceSet is a delivery pointer, not authority to put a
+    # retired claim back into the newly composed cloud workload.
+    import cloud_composition
+    cloud_parent = None
+    cloud_rendered: dict[str, str] = {}
+    if (adopter_dir / cloud_composition.PIN).exists():
+        try:
+            served = sorted({key[0] for key in merged})
+            cloud_parent, cloud_rendered = cloud_composition.render(
+                adopter_dir, parent_trees.get('platform'), adopter_party, served)
+        except (ValueError, OSError, KeyError, StopIteration, yaml.YAMLError, subprocess.SubprocessError) as error:
+            return _refused(['missing instrument: cloud package: ' + str(error)]), {}
 
     # The adopter's own control claims -- next to the party artefact it
     # signs (ADR-0017), never mixed with a parent's.

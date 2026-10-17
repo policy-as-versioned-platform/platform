@@ -127,7 +127,8 @@ class RetirementAuthority(unittest.TestCase):
                     'path': '.github/workflows/drift-sample.yml',
                     'repository': {'full_name': 'fixture/adopter'}}
         self.public = {'status': 'ahead', 'merge_base_commit': {'sha': self.original}}
-        self.official = Mock(side_effect=lambda path: self.run if '/actions/runs/' in path else self.public)
+        self.metadata = {'full_name': 'fixture/adopter', 'default_branch': 'main'}
+        self.official = Mock(side_effect=self.official_read)
         self.signature = Mock()
         self.tag_signature = Mock()
 
@@ -147,6 +148,11 @@ class RetirementAuthority(unittest.TestCase):
         self.git(repository, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'explicit synthetic fixture')
         return self.git(repository, 'rev-parse', 'HEAD')
 
+    def official_read(self, path):
+        if path == 'repos/fixture/adopter':
+            return self.metadata
+        return self.run if '/actions/runs/' in path else self.public
+
     def select(self):
         return retirement.select(self.adopter, self.record, 'fixture-adopter', 'fixture-platform',
                                  '5.0.0', self.parent_sha, self.parent, self.versions,
@@ -155,11 +161,36 @@ class RetirementAuthority(unittest.TestCase):
 
     def test_exact_record_reads_official_attempt_and_public_ancestry_then_verifies_original_claims(self):
         self.assertEqual(self.select(), self.record)
-        self.assertEqual(self.official.call_args_list[0].args,
-                         ('repos/fixture/adopter/actions/runs/123/attempts/1',))
+        self.assertEqual(self.official.call_args_list[0].args, ('repos/fixture/adopter',))
         self.assertEqual(self.official.call_args_list[1].args,
+                         ('repos/fixture/adopter/actions/runs/123/attempts/1',))
+        self.assertEqual(self.official.call_args_list[2].args,
                          (f'repos/fixture/adopter/compare/{self.original}...main',))
-        self.signature.assert_called_once_with(self.adopter, self.original, 'fixture/adopter', self.source)
+        self.signature.assert_called_once_with(self.adopter, self.original, 'fixture/adopter', self.source, 'main')
+
+    def test_a_non_main_default_binds_the_run_comparison_and_certificate_ref(self):
+        self.metadata['default_branch'] = 'release/current'
+        self.run['head_branch'] = 'release/current'
+        self.git(self.adopter, 'branch', 'release/current', self.original)
+        self.assertEqual(self.select(), self.record)
+        self.signature.assert_called_once_with(
+            self.adopter, self.original, 'fixture/adopter', self.source, 'release/current')
+        self.assertIn(f'repos/fixture/adopter/compare/{self.original}...release%2Fcurrent',
+                      [call.args[0] for call in self.official.call_args_list])
+        with patch.object(retirement, '_command') as command:
+            retirement._signature(self.adopter, self.original, 'fixture/adopter', self.source, 'release/current')
+        self.assertIn('--certificate-github-workflow-ref=refs/heads/release/current', command.call_args.args[0])
+        self.assertIn('--certificate-identity=https://github.com/fixture/adopter/.github/workflows/'
+                      'drift-sample.yml@refs/heads/release/current', command.call_args.args[0])
+
+    def test_actual_default_metadata_is_exact_and_ref_well_formed(self):
+        for metadata in ({'full_name': 'other/repo', 'default_branch': 'main'},
+                         {'full_name': 'fixture/adopter', 'default_branch': 'bad branch'},
+                         {'full_name': 'fixture/adopter'}):
+            with self.subTest(metadata=metadata):
+                self.metadata = metadata
+                with self.assertRaises(retirement.InvalidRetirement):
+                    self.select()
 
     def test_dispatched_wrong_source_wrong_attempt_or_unlanded_original_cannot_supply_baseline(self):
         for field, value in [('event', 'workflow_dispatch'), ('head_sha', 'a' * 40),
@@ -171,14 +202,14 @@ class RetirementAuthority(unittest.TestCase):
                     self.select()
                 self.run = previous
         self.public['status'] = 'behind'
-        with self.assertRaisesRegex(retirement.InvalidRetirement, 'actual public main'):
+        with self.assertRaisesRegex(retirement.InvalidRetirement, 'actual public default'):
             self.select()
 
     def test_an_official_read_failure_or_invalid_gitsign_is_not_an_asserted_success_receipt(self):
         self.official.side_effect = retirement.InvalidRetirement('official unavailable')
         with self.assertRaisesRegex(retirement.InvalidRetirement, 'official unavailable'):
             self.select()
-        self.official.side_effect = lambda path: self.run if '/actions/runs/' in path else self.public
+        self.official.side_effect = self.official_read
         self.signature.side_effect = retirement.InvalidRetirement('signature did not verify')
         with self.assertRaisesRegex(retirement.InvalidRetirement, 'signature'):
             self.select()
@@ -230,7 +261,7 @@ class RetirementAuthority(unittest.TestCase):
 
     def test_engine_move_cannot_introduce_its_own_retirement_authorization(self):
         self.write(self.adopter, retirement.ENGINE_FILE, 'version: "1.19.1"\n')
-        with self.assertRaisesRegex(retirement.InvalidRetirement, 'already on public main'):
+        with self.assertRaisesRegex(retirement.InvalidRetirement, 'actual|public|repository'):
             retirement.require_delivered(self.adopter, self.record, official=lambda path: {})
 
     def test_dirty_parent_cannot_borrow_the_signed_tag_support_declaration(self):
@@ -262,6 +293,8 @@ class RetirementAuthority(unittest.TestCase):
         def encoded(data):
             return {'content': base64.b64encode(data).decode()}
         def official(path):
+            if path == 'repos/fixture/adopter':
+                return self.metadata
             if '/implementation-retirements/' in path:
                 return encoded(yaml.safe_dump(self.record).encode())
             if '/gitops/engine/' in path:
@@ -277,6 +310,36 @@ class RetirementAuthority(unittest.TestCase):
                     return encoded(b'version: "1.19.1"\n')
                 return official(path)
             retirement.require_delivered(self.adopter, self.record, official=after_move)
+
+    def test_first_engine_transition_reads_every_authority_file_from_actual_default(self):
+        self.metadata['default_branch'] = 'release/current'
+        self.write(self.adopter, 'composed/evidence.json', json.dumps({
+            'members': [{'version': '7.0.0'}], 'consumer_retirements': [self.record],
+            'engine': {'declared': {'version': '1.18.2'}}}))
+        delivery = self.commit(self.adopter)
+        self.git(self.adopter, 'tag', 'v9.0.0')
+        source = yaml.safe_dump({'kind': 'GitRepository', 'spec': {'ref': {
+            'tag': 'v9.0.0', 'commit': delivery}}}).encode()
+        self.write(self.adopter, 'gitops/composed/composed-set.yaml', source.decode())
+        self.write(self.adopter, retirement.ENGINE_FILE, 'version: "1.19.1"\n')
+        calls = []
+        def official(path):
+            calls.append(path)
+            if path == 'repos/fixture/adopter':
+                return self.metadata
+            if not path.endswith('?ref=release%2Fcurrent'):
+                raise AssertionError('reader used stale main instead of the actual default')
+            if '/implementation-retirements/' in path:
+                data = yaml.safe_dump(self.record).encode()
+            elif '/gitops/engine/' in path:
+                data = b'version: "1.18.2"\n'
+            else:
+                data = source
+            return {'content': base64.b64encode(data).decode()}
+        with patch.object(retirement, '_tag_signature'):
+            retirement.require_delivered(self.adopter, self.record, official=official)
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(path.endswith('?ref=release%2Fcurrent') for path in calls[1:]))
 
     def test_duplicate_record_keys_cannot_silently_replace_authorization(self):
         directory = self.adopter / retirement.DIRECTORY
