@@ -24,9 +24,10 @@ ticket flagged as its upgrade path, now built:
      read-only peek is the breach, where it is denied. `none` is always denied at a
      device-requiring tier: you cannot cage trust that never existed.
 
-Reuses ../fair/fair.py (the £ maths) and ../access/access.py (the factor set and
-DENY/STEP_UP/ALLOW vocabulary). Adds only the £→band map, the CAGE rung, and
-posture currency. No new risk engine, no second factor model.
+Reuses ../fair/fair.py (the £ maths) and ../access/factors.py (the factor set and
+DENY/STEP_UP/ALLOW vocabulary), without the static operation selector. Adds only
+the £→band map, the CAGE rung, and posture currency. No new risk engine, no second
+factor model.
 
 Deps: none. Run `break-glass.py selfcheck` for the runnable asserts.
 
@@ -49,11 +50,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "fair"))
 sys.path.insert(0, os.path.join(HERE, "..", "access"))
 import fair    # noqa: E402  — the £ maths
-import access  # noqa: E402  — FACTORS + DENY/STEP_UP/ALLOW vocabulary
+import factors as assurance_factors  # noqa: E402 — shared vocabulary, no operation selector
 
 DEFAULT_BANDS = os.path.join(HERE, "assurance-bands.json")
 
-DENY, ALLOW, STEP_UP = access.DENY, access.ALLOW, access.STEP_UP
+DENY, ALLOW, STEP_UP = assurance_factors.DENY, assurance_factors.ALLOW, assurance_factors.STEP_UP
 CAGE = "CAGE"  # a retained but read-only/scoped session — the graded rung access.py lacks
 
 # Device posture currency (research 16): a device SVID's freshness, not its mere
@@ -88,7 +89,7 @@ def decide(scenario, oidc, webauthn, device, bands):
         raise ValueError(f"device must be one of {DEVICE_STATES}, got {device!r}")
     gbp = carried_gbp(scenario)
     tier = required_tier(gbp, bands)
-    need = set(access.FACTORS[:tier])  # oidc / +webauthn / +device_svid, cumulative
+    need = set(assurance_factors.FACTORS[:tier])  # oidc / +webauthn / +device_svid, cumulative
 
     def out(decision, reason):
         return {

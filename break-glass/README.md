@@ -1,5 +1,13 @@
 # platform/break-glass — posture-gated human access, priced by £
 
+**Scope,2026-10-17 (ecosystem ticket27).** This is an offline decision fixture,
+not an observed live access-control integration. The actor identity/access plane
+is shelved for this build (hub ticket90). The existing global assurance bands
+are not a per-party mapping derived from `party.yaml`. Shared factor names and
+decision constants now live in `../access/factors.py`; this engine no longer
+imports the legacy static operation selector. That selector remains available
+for its shelved callers, and ticket27 remains open.
+
 **Ticket 19** (blocked by 06, 18). A risky operation — break-glass, or a `ludlow`
 patient-data read — demands **current device posture** + **higher identity
 assurance**, *proportional to the operation's £*. A stale or unattested device is
@@ -29,10 +37,10 @@ that path:
 | Scenarios | `scenarios/*.json` | single-state FAIR triples: `driftwood-read` (T1) · `tuppence-write` (T2) · `driftwood-bulk-export` (T3-cage) · `ludlow-patient-data` (T3-deny) |
 | Verify | `verify-break-glass.sh` | offline asserts + structural invariants (reuse, band ordering, per-scenario tier) |
 
-No cluster resources of its own — it **rides on the access plane** (ticket 18:
-Pomerium Core + Dex OIDC + SPIRE `tpm_devid` device SVID). In a live estate this
-engine is the forward-auth / external-authz decision a Pomerium route calls; the
-IAP wiring and its live checks live in `../access/`.
+No cluster resources of its own. Calling this engine from Pomerium forward-auth /
+external-authz is a proposed integration, not something the included verifier
+observes. The IAP wiring and live checks in `../access/` are shelved with the
+actor identity plane; this verifier grades only the offline fixture.
 
 ## The gradient (proportional to £)
 
@@ -82,16 +90,16 @@ estate/platform/access/up.sh            # Dex + Pomerium + device SVID (the plan
 estate/platform/break-glass/verify-break-glass.sh   # offline asserts (no cluster needed)
 ```
 
-## Calibration knobs (real-world, not constants)
+## Existing fixture inputs and limits
 
-- **`assurance-bands.json`** — `step_up_at` / `attest_at` / `no_cage_at` in £/yr.
-  Calibrated against the estate's appetite ordering (each party's own signed
-  `party.yaml` `appetite.tolerance`; `../risk/appetite.json` is retired, ADR-0021 —
-  ludlow strictest). Bump to re-tour; the tier boundaries move with them.
+- **`assurance-bands.json`** — existing global `step_up_at` / `attest_at` /
+  `no_cage_at` fixture thresholds in £/yr. No per-party assurance mapping or
+  derivation from `party.yaml`'s appetite is implemented. The current values
+  stay unchanged; selecting a new mapping requires its own recorded financial
+  authority and review, not an inferred multiplier.
 - **Scenario triples** — each op's `(min, mode, max)` loss magnitude is an
   estimate; a reassessment (as in `../risk/` ticket 06) can push an op across a
   band and change its required assurance, in a reviewable PR justified by the £.
-- **Posture currency source** — `fresh`/`stale`/`none` is supplied live by the
-  currency controller (ticket 16) reading the device SVID's renewal; the shorter
-  the SVID TTL (`../access/` sets `1h`/`5m`), the faster a retired laptop goes
-  `stale` then `none`.
+- **Posture currency source** — `fresh`/`stale`/`none` is an explicit CLI input
+  here. Reading it from a live device SVID belongs to the shelved actor lane;
+  the offline verifier does not observe device attestation or renewal.
