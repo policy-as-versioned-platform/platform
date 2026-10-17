@@ -7,6 +7,7 @@ run through the independently authenticated platform tools checkout.
 """
 from __future__ import annotations
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -170,6 +171,7 @@ def validate(adopter: Path, inventory: dict, *, repository: Path | None = None) 
 
 def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', repo: str | None = None,
             dry_run: bool = False, prior_proposals: list[dict] | None = None) -> list[dict]:
+    adopter = adopter.resolve()
     sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent / 'honesty'))
     import proposer_bounds, rejection_ledger
     committed = adopter / INVENTORY_PATH
@@ -219,7 +221,12 @@ def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', rep
         sys.path.insert(0, str(HERE.parent / 'compose'))
         import composition
         party = yaml.safe_load((adopter / 'party.yaml').read_text())
-        document, files = composition.compose(adopter, composition._default_parent_trees(party, adopter.parent))
+        parent_trees = {name: tree.resolve() for name, tree in
+                        composition._default_parent_trees(party, adopter.parent).items()}
+        # Match the adopter tools wrapper: diagnostics use `.` from its root.
+        # Resolve parents first; this synchronous CLI restores cwd on every exit.
+        with contextlib.chdir(adopter):
+            document, files = composition.compose(Path('.'), parent_trees)
         if document['outcome'] != 'composed':
             raise InstrumentFault('inventory proposal composition refused: ' + json.dumps(document.get('refusals')))
         for rel, body in files.items():
