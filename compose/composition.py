@@ -4728,6 +4728,40 @@ def _quote_validity(payload: dict, as_of: str | None, instrument: str) -> dict:
                      "The contractual premium is unchanged."}
 
 
+def _quote_condition_evidence(payload: dict, implemented: set[ControlKey] | None) -> dict:
+    """Counted implementation claims, never fulfilled cover conditions."""
+    evidence: dict = {
+        "schema": 1, "conditions": [],
+        "basis": "Implementation claims counted for this composition's selected baseline; "
+                 "not observed enforcement or fulfilled insurance conditions. No eligibility, "
+                 "claim payability, priced_against matching or transfer credit is assessed. "
+                 "Quoted consequences, contractual premium and retention are unchanged."}
+    conditions = payload.get("conditions", [])
+    if not isinstance(conditions, list):
+        evidence["unreadable"] = "Quote conditions are not a list; no condition claim evidence was assessed."
+        return evidence
+    for condition in conditions:
+        row = {key: condition.get(key) if isinstance(condition, dict) else None
+               for key in ("source", "id", "consequence")}
+        readable = (all(isinstance(row[key], str) and row[key] for key in ("source", "id"))
+                    and row["consequence"] in ("void", "uplift"))
+        if readable and row["consequence"] == "uplift":
+            uplift = condition.get("uplift")
+            readable = (isinstance(uplift, dict) and type(uplift.get("amount")) in (int, float)
+                        and uplift["amount"] >= 0
+                        and (type(uplift["amount"]) is int or math.isfinite(uplift["amount"]))
+                        and isinstance(uplift.get("currency"), str) and bool(uplift["currency"]))
+        if not readable:
+            row.update(state="unobserved", basis="Unreadable or unsupported quoted condition; no claim evidence was assessed.")
+        elif implemented is None:
+            row.update(state="unobserved", basis="The composition's counted implementation-claim set was not observed.")
+        else:
+            row["state"] = ("counted-implementation-claim" if (row["source"], row["id"]) in implemented
+                            else "no-counted-implementation-claim")
+        evidence["conditions"].append(row)
+    return evidence
+
+
 def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  perspective_doc: dict, reporting_currency: str,
                  prev_version: str | None,
@@ -4735,7 +4769,9 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
                  prev_prices: list[dict] | None = None,
                  observation: dict | None = None,
                  composition_as_of: str | None = None,
-                 quote_validity_schema: int | None = 1) -> dict:
+                 quote_validity_schema: int | None = 1,
+                 implemented: set[ControlKey] | None = None,
+                 quote_condition_schema: int | None = 1) -> dict:
     """One `kind: premium` prices[] entry, read off the insurer's own signed
     quote feed. There is no arithmetic here on purpose: the premium is a
     CONTRACT COST -- what this adopter pays, booked under its own perspective
@@ -4801,6 +4837,8 @@ def price_quote(edge: dict, adopter_party: str, tree: Path | None, *,
         **({"quote_validity": _quote_validity(
             payload, composition_as_of, f"{name}@{edge['version']}")}
            if quote_validity_schema == 1 else {}),
+        **({"quote_condition_evidence": _quote_condition_evidence(payload, implemented)}
+           if quote_condition_schema == 1 else {}),
         priced_against=payload.get("priced_against") or [],
         pin_signature=signature,
         hole=hole,
@@ -5127,7 +5165,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                        as_of: str | None = None,
                        observations: dict | None = None,
                        implemented: set[ControlKey] | None = None,
-                       quote_validity_schema: int | None = 1) -> list[dict]:
+                       quote_validity_schema: int | None = 1,
+                       quote_condition_schema: int | None = 1) -> list[dict]:
     """One `switching` entry per substitutable parent edge, under the adopter's
     own perspective and in the adopter's own reporting currency.
 
@@ -5209,7 +5248,8 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
                 prev_header, adopter_dir=adopter_dir, perspective_doc=perspective_doc,
                 band_currency=band_currency, floor=floor, prev_prices=prev_prices,
                 include_switching=False, as_of=as_of_override, observations=observations,
-                implemented=implemented, quote_validity_schema=quote_validity_schema)
+                implemented=implemented, quote_validity_schema=quote_validity_schema,
+                quote_condition_schema=quote_condition_schema)
         except Refused as e:
             could_not_look = _portable_reason(str(e), adopter_dir, parent_trees)
         amount = None if could_not_look else full_exposure - exposure_of(without)
@@ -5262,7 +5302,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                     include_switching: bool = True, as_of: str | None = None,
                     observations: dict | None = None,
                     implemented: set[ControlKey] | None = None,
-                    quote_validity_schema: int | None = 1) -> list[dict]:
+                    quote_validity_schema: int | None = 1,
+                    quote_condition_schema: int | None = 1) -> list[dict]:
     """prices[] -- one entry per declared feed edge, plus the twin edge when the
     adopter's own repo carries forward intelligence. Computed EVERY run, not
     only when a version actually moved: "for each party it prints the old price,
@@ -5292,7 +5333,9 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
                 perspective_doc=perspective_doc, reporting_currency=reporting,
                 prev_version=prev_version, parent_trees=parent_trees,
                 prev_prices=prev_prices, observation=observation,
-                composition_as_of=comp_as_of, quote_validity_schema=quote_validity_schema))
+                composition_as_of=comp_as_of, quote_validity_schema=quote_validity_schema,
+                quote_condition_schema=quote_condition_schema,
+                implemented=implemented))
             continue
         entry = price_parent(
             edge, adopter_party, tolerance, edge_tree(edge, parent_trees), prev_version,
@@ -5336,7 +5379,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             adopter_dir=adopter_dir, perspective_doc=perspective_doc,
             band_currency=band_currency, floor=floor, prev_prices=prev_prices,
             full_prices=prices, as_of=as_of, observations=observations, implemented=implemented,
-            quote_validity_schema=quote_validity_schema)
+            quote_validity_schema=quote_validity_schema,
+            quote_condition_schema=quote_condition_schema)
     return prices
 
 
@@ -5508,6 +5552,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         if "quote-validity-schema" in (recorded_header or {}) and (
                 type(quote_validity_schema) is not int or quote_validity_schema != 1):
             return _refused(["missing instrument: unsupported quote-validity-schema; expected 1"]), {}
+    quote_condition_schema: int | None = 1
+    if replay_observations:
+        quote_condition_schema = (recorded_header or {}).get("quote-condition-schema")
+        if "quote-condition-schema" in (recorded_header or {}) and (
+                type(quote_condition_schema) is not int or quote_condition_schema != 1):
+            return _refused(["missing instrument: unsupported quote-condition-schema; expected 1"]), {}
 
     refusals: list[dict] = check_diamonds(edges)
 
@@ -5787,7 +5837,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             band_currency=band.get("currency"),
             floor=(party_doc.get("overlay", {}) or {}).get("floor"),
             prev_prices=prev_prices, as_of=as_of, observations=observations,
-            implemented=implemented, quote_validity_schema=quote_validity_schema)
+            implemented=implemented, quote_validity_schema=quote_validity_schema,
+            quote_condition_schema=quote_condition_schema)
     except Refused as e:
         # ADR-0020: a missing instrument (no appetite band, no price for a
         # declared regime, no FX rate for the date) refuses and NAMES what is
@@ -5855,7 +5906,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                 band_currency=band.get("currency"), floor=floor_inputs["before"]["value"],
                 prev_prices=prev_prices, as_of=as_of,
                 observations=observations, include_switching=False, implemented=implemented,
-                quote_validity_schema=quote_validity_schema)
+                quote_validity_schema=quote_validity_schema,
+                quote_condition_schema=quote_condition_schema)
         floor_change = floor_change_evidence(floor_inputs, before_prices, prices)
     except Refused as e:
         return _refused([str(e)]), {}
@@ -5982,6 +6034,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         header["comparison-inputs"] = comparison
     if quote_validity_schema == 1 and any(p.get("kind") == "premium" for p in prices):
         header["quote-validity-schema"] = 1
+    if quote_condition_schema == 1 and any(p.get("kind") == "premium" for p in prices):
+        header["quote-condition-schema"] = 1
     # Which versioned rule picked the tier (ADR-0021). Recorded only where the
     # adopter actually ships a selection-policy package -- a null key on an
     # adopter that ships none would be noise in a rendered, Flux-applied file.

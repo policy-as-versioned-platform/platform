@@ -37,6 +37,9 @@ python3 -m unittest discover -s "$HERE" -p test_engine_pairing.py || fail "engin
 say "0e. quote validity uses composed input dates and conserves contract costs (ticket 37)"
 python3 -m unittest discover -s "$HERE" -p test_quote_validity.py || fail "quote validity"
 
+say "0f. quote conditions name counted implementation claims without granting cover (ticket 37)"
+python3 -m unittest discover -s "$HERE" -p test_quote_conditions.py || fail "quote condition claims"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal, the regulator's withdrawal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

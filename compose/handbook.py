@@ -373,6 +373,29 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                     a(f"- **{p.get('source')}/{p.get('name')}** — validity schema1, "
                       f"as of {validity.get('as_of') or 'unobserved'}: {validity['state']}; "
                       f"retention: {validity['retention']}. {validity['basis']}")
+            if p.get("kind") == "premium" and (
+                    "quote-condition-schema" in header or "quote_condition_evidence" in p):
+                claims = p.get("quote_condition_evidence")
+                if claims is None:
+                    _absent(absences, f"prices[{i}].quote_condition_evidence", EVIDENCE_PATH,
+                            "this historical premium carries no counted-condition claim evidence")
+                else:
+                    if (not isinstance(claims, dict) or type(claims.get("schema")) is not int
+                            or claims["schema"] != 1 or not isinstance(claims.get("conditions"), list)
+                            or not claims.get("basis")):
+                        raise CannotRender(f"prices[{i}].quote_condition_evidence carries no supported schema1")
+                    a(f"- **{p.get('source')}/{p.get('name')}** — condition evidence schema1. {claims['basis']}")
+                    if claims.get("unreadable"):
+                        a(f"  Unreadable: {claims['unreadable']}")
+                    for condition in claims["conditions"]:
+                        if not isinstance(condition, dict) or condition.get("state") not in (
+                                "counted-implementation-claim", "no-counted-implementation-claim", "unobserved"):
+                            raise CannotRender(f"prices[{i}].quote_condition_evidence carries no supported condition state")
+                        source = condition.get("source")
+                        control = condition.get("id")
+                        key = (f"{source}/{control}" if isinstance(source, str) and isinstance(control, str)
+                               else "unreadable condition")
+                        a(f"  {key}: {condition['state']}. {condition.get('basis') or ''}")
             if p.get("publisher_observation_scope"):
                 a(f"- **{p.get('source')}/{p.get('name')}** — {p['publisher_observation_scope']}")
             if p.get("kind") == "supersede":
