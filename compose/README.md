@@ -667,3 +667,21 @@ renderer. The renderer checks pinned vendor schemas and incumbent workload fidel
 produces cloud policies, CRDs, workload and source receipts. `verify` reproduces them all.
 Without this pin, existing composition and the accepted Pod policy window are unchanged.
 The cloud pin does not move an engine or accept a Pod implementation major.
+
+## Quote condition claim evidence (ticket 37)
+
+Fresh premium entries carry schema1 `quote_condition_evidence`. The existing
+`compute_prices` counted `(source, id)` set names implementation claims counted
+for the selected baseline: a matching claim, no counted claim, or an unobserved
+set (`None`, distinct from an explicit empty set). It is not observed enforcement,
+fulfilled insurance conditions, eligibility or claim payability. Unsupported or
+unreadable condition vocabulary is named as unobserved; the original conditions
+and existing malformed-quote refusals remain unchanged.
+
+The handbook shows these limits beside the premium. No uplift, transfer credit,
+retained-loss amount or change to money, tiers, quote validity or retention follows
+from a counted claim. A party that pins no quote gains no premium or condition
+entry. `quote-condition-schema: 1` in the generated header versions the evidence;
+historical artifacts without that marker replay their recorded absence, while a
+present unsupported marker refuses. Ticket37 remains open: this does not implement
+exposure binding, sub-limits, carrier capital, TVaR settlement or condition pricing.
