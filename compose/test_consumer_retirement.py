@@ -183,6 +183,31 @@ class RetirementOfficialReads(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertTrue(unavailable.exception.__cause__.closed)
 
+    def test_native_https_handler_excludes_environment_proxy_authentication(self):
+        self.fixture_gh(4)
+        requests = []
+        def fixture_transport(handler, request):
+            headers = {key.lower(): value for key, value in request.header_items()}
+            self.assertNotIn('authorization', headers)
+            self.assertNotIn('proxy-authorization', headers)
+            self.assertEqual(request.full_url, self.expected_url)
+            self.assertEqual(request.host, 'api.github.com')
+            self.assertEqual(request.get_method(), 'GET')
+            requests.append(request)
+            response = urllib.response.addinfourl(BytesIO(self.http_body), Message(), request.full_url, 200)
+            response.msg = 'explicit synthetic HTTPS fixture'
+            self.addCleanup(response.close)
+            return response
+        for proxy_name in ('HTTPS_PROXY', 'https_proxy'):
+            with self.subTest(proxy_name=proxy_name):
+                environment = {proxy_name: 'http://synthetic-user:synthetic-proxy-secret@proxy.fixture.invalid:8443'}
+                with patch.dict(os.environ, environment), \
+                        patch.object(urllib.request.HTTPSHandler, 'https_open', autospec=True,
+                                     side_effect=fixture_transport):
+                    value = retirement._official('repos/fixture/adopter')
+                self.assertEqual(value, {'full_name': 'fixture/adopter', 'default_branch': 'main'})
+        self.assertEqual(len(requests), 2)
+
     def test_native_object_still_requires_the_exact_repository_and_default_branch(self):
         self.fixture_gh(4)
         for body in (b'{}', b'{"full_name":"fixture/other","default_branch":"main"}',

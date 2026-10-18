@@ -104,7 +104,8 @@ def _official(path: str) -> dict:
                 'User-Agent': 'policy-as-versioned-platform',
                 'X-GitHub-Api-Version': '2022-11-28',
             })
-            with urllib.request.build_opener(_NoOfficialRedirect()).open(request, timeout=60) as response:
+            with urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}), _NoOfficialRedirect()).open(request, timeout=60) as response:
                 if response.status != 200:
                     raise ValueError('official public GET did not return HTTP 200')
                 data = response.read()
