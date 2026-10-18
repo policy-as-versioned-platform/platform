@@ -378,6 +378,7 @@ sys.path.insert(0, str(HERE))
 import handbook  # noqa: E402
 import comparison_history  # noqa: E402
 import consumer_retirement  # noqa: E402
+import quote_assessment  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -5566,6 +5567,12 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         if "quote-condition-schema" in (recorded_header or {}) and (
                 type(quote_condition_schema) is not int or quote_condition_schema != 1):
             return _refused(["missing instrument: unsupported quote-condition-schema; expected 1"]), {}
+    quote_assessment_schema: int | None = 1
+    if replay_observations:
+        quote_assessment_schema = (recorded_header or {}).get("quote-assessment-schema")
+        if "quote-assessment-schema" in (recorded_header or {}) and (
+                type(quote_assessment_schema) is not int or quote_assessment_schema != 1):
+            return _refused(["missing instrument: unsupported quote-assessment-schema; expected 1"]), {}
 
     refusals: list[dict] = check_diamonds(edges)
 
@@ -6073,6 +6080,30 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     if cloud_parent is not None:
         header['cloud-package'] = cloud_parent
         rendered.update(cloud_rendered)
+    # Assess only after the complete premium-free exposure and policy bodies
+    # exist. The contract price is immutable; the modeled view is consumed by
+    # the rendered sheet and authenticates its own exact observation inputs.
+    if quote_assessment_schema == 1:
+        for premium in prices:
+            if premium.get("kind") != "premium" or not premium.get("conditions"):
+                continue
+            edge = next(e for e in edges if e.get("party") == premium["source"]
+                        and _feed_name(e) == premium["name"])
+            try:
+                quote_tree = edge_tree(edge, parent_trees)
+                if quote_tree is None:
+                    raise Refused("missing instrument: the exact quote tree is unavailable for condition assessment")
+                quote_path = feed_file(edge["party"], premium["name"], edge["version"], quote_tree)
+                premium["conditional_cost_view"] = quote_assessment.assess(
+                    premium, adopter_dir, exposure=exposure, parents=parents,
+                    parent_trees=parent_trees, rendered=rendered, quote_path=quote_path,
+                    convert=lambda amount, currency: _converted(
+                        amount, currency, reporting, _feed_as_of(quote_path), parent_trees)[0])
+            except (quote_assessment.InvalidAssessment, Refused) as error:
+                refusals.append({"kind": "missing-instrument", "subject": premium["name"],
+                                 "detail": str(error), "needs_composition": True})
+        if any("conditional_cost_view" in p for p in prices):
+            header["quote-assessment-schema"] = 1
     rendered["composed/HEADER.yaml"] = HEADER_COMMENT + yaml.safe_dump(header, **YAML_KWARGS)
     rendered["composed/floor-change.json"] = json.dumps(floor_change, indent=2) + "\n"
 

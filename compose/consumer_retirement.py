@@ -215,16 +215,22 @@ def _default_branch(adopter: Path, repository: str, official: Callable[[str], di
     return branch
 
 
-def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
-              verify_signature: Callable[[Path, str, str, str, str], None]) -> dict:
-    baseline = _object(record['baseline'], {'original_commit', 'source_commit', 'run_id',
+def read_scheduled_original(adopter: Path, baseline: dict, repository: str,
+                            official: Callable[[str], dict] = _official,
+                            verify_signature: Callable[[Path, str, str, str, str], None] = _signature,
+                            *, expected_engine: str | None = None) -> dict:
+    """Authenticate exact scheduled append bytes; a selector never admits itself.
+
+    Retirement retains its engine-transition check via expected_engine. Other
+    consumers share every origin, signature, official-run and append check.
+    """
+    baseline = _object(baseline, {'original_commit', 'source_commit', 'run_id',
                                            'attempt', 'appends'}, 'baseline')
     original = _text(baseline['original_commit'], 'baseline original commit', SHA)
     source = _text(baseline['source_commit'], 'baseline source commit', SHA)
     run_id, attempt = baseline['run_id'], baseline['attempt']
     if type(run_id) is not int or type(attempt) is not int or run_id < 1 or attempt < 1:
         raise InvalidRetirement('baseline requires positive integer run_id and attempt')
-    repository = record['repository']
     branch = _default_branch(adopter, repository, official)
     run = official(f'repos/{repository}/actions/runs/{run_id}/attempts/{attempt}')
     if (run.get('id') != run_id or run.get('run_attempt') != attempt or
@@ -241,13 +247,14 @@ def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
     if parent_line != [original, source]:
         raise InvalidRetirement('baseline original must retain its one measured-source parent')
     _ancestor(adopter, original, 'HEAD', 'tree under composition')
-    if _engine(_show(adopter, source, ENGINE_FILE)) != record['engine']['from']:
+    if expected_engine is not None and _engine(_show(adopter, source, ENGINE_FILE)) != expected_engine:
         raise InvalidRetirement('baseline source engine does not match the declared transition')
     verify_signature(adopter, original, repository, source, branch)
     appends = _object(baseline['appends'], set(LANE), 'baseline appends')
     paths = _git(adopter, 'diff-tree', '--no-commit-id', '--name-only', '-r', original).decode().splitlines()
     if set(paths) != set(LANE):
         raise InvalidRetirement('baseline original changed paths outside its exact observation lane')
+    observed_rows: dict[str, list[dict]] = {}
     for path, (kind, count) in LANE.items():
         digest = _text(appends[path], 'baseline append digest', DIGEST)
         mode = _git(adopter, 'ls-tree', original, '--', path).decode().split()[0]
@@ -273,6 +280,7 @@ def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
         committed = _show(adopter, 'HEAD', path)
         if committed != current:
             raise InvalidRetirement('baseline lane bytes differ from committed history')
+        observed_rows[path] = []
         for line in lines:
             number = current_lines.index(line) + 1
             attribution = _git(adopter, 'blame', '--line-porcelain', '-L', f'{number},{number}',
@@ -292,7 +300,15 @@ def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
                     row['report_count'] < 1 or row.get('report_read_errors') != [] or
                     not isinstance(row.get('assessment_results'), dict) or not row['assessment_results']):
                 raise InvalidRetirement('scheduled baseline did not capture usable PolicyReports')
-    return dict(baseline)
+            observed_rows[path].append(row)
+    return {'baseline': dict(baseline), 'run': run, 'rows': observed_rows}
+
+
+def _baseline(adopter: Path, record: dict, official: Callable[[str], dict],
+              verify_signature: Callable[[Path, str, str, str, str], None]) -> dict:
+    return read_scheduled_original(
+        adopter, record['baseline'], record['repository'], official, verify_signature,
+        expected_engine=record['engine']['from'])['baseline']
 
 
 def _support(declaration: Any, engines: set[str], where: str) -> None:

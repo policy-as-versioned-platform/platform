@@ -45,6 +45,7 @@ Code skill whose output lands by its own pull request, outside `composed/`
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Mapping
 
 import yaml
@@ -355,6 +356,29 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{'yes' if p.get('changed') else 'no'} | {tier_cell} |")
         a("")
         for i, p in enumerate(prices):
+            if "conditional_cost_view" in p:
+                view = p["conditional_cost_view"]
+                if not isinstance(view, dict) or type(view.get("schema")) is not int or view["schema"] != 1:
+                    raise CannotRender(f"prices[{i}].conditional_cost_view has no supported schema1")
+                if (view.get("profile") != "served-policy-conditions/v1"
+                        or view.get("state") not in ("met", "breached", "unobserved")
+                        or view.get("retention") not in ("not-assessed", "fully-retained")
+                        or not isinstance(view.get("basis"), str) or not view["basis"]):
+                    raise CannotRender(f"prices[{i}].conditional_cost_view lacks its technical state and limits")
+                effective = view.get("effective_premium")
+                if (effective is not None and (not isinstance(effective, dict)
+                        or set(effective) != {"amount", "currency"}
+                        or type(effective["amount"]) not in (int, float)
+                        or not math.isfinite(effective["amount"]) or effective["amount"] < 0
+                        or effective["currency"] != p.get("currency"))):
+                    raise CannotRender(f"prices[{i}].conditional_cost_view has no finite reporting-currency cost")
+                if (view["state"] == "unobserved") != (effective is None):
+                    raise CannotRender(f"prices[{i}].conditional_cost_view conceals an unknown cost")
+                cost = (_money(effective["amount"], effective["currency"])
+                        if isinstance(effective, dict) else "unobserved")
+                a(f"- **Modeled conditional cost — {p.get('source')}/{p.get('name')}**: "
+                  f"{cost}; state: {view.get('state')}; retention: {view.get('retention')}. "
+                  f"{view.get('basis')}")
             # Ticket 37: pre-contract signed handbooks retain their old bytes.
             # Under schema1, a missing historical assessment is named, never guessed.
             if p.get("kind") == "premium" and (
