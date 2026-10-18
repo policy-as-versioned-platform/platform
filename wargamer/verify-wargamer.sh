@@ -42,6 +42,8 @@ say "3b. the proposer can only tighten (ticket 78): party fold, floor, current d
 # line is what gets written, the declared floor clamps it up, and the current
 # tier is read off the Namespace rather than the price line's old_tier.
 python3 "$here/tier_pr.py" selfcheck || fail "tier_pr selfcheck failed (the proposer loosened, or landed a held proposal)"
+# Synthetic public CLI/Git/transport fixtures; self-proof, never a measured tier move.
+python3 "$here/verify-tier-move-evidence.py" || fail "Namespace move evidence disagrees with the actual proposal"
 python3 - "$here" <<'PY' || fail "select_party_tier does not fold the party tighten-only"
 import sys
 sys.path.insert(0, sys.argv[1])
