@@ -1924,6 +1924,15 @@ def _enforce():
     return _cage_engine().enforce
 
 
+def _captured_adopter(adopter_dir: Path,
+                      parent_trees: dict[str, Path] | None) -> dict | None:
+    """The active monetary invocation's own captured declaration, if any."""
+    quality = getattr(parent_trees, 'publisher_quality', None)
+    if quality is not None and Path(adopter_dir).resolve() == quality.adopter.resolve():
+        return quality.declaration
+    return None
+
+
 def _appetite(party: str, adopter_dir: Path | None = None,
                parent_trees: dict[str, Path] | None = None) -> dict:
     """`appetite.tolerance` = {amount, currency} off the PARTY'S OWN signed
@@ -1933,6 +1942,9 @@ def _appetite(party: str, adopter_dir: Path | None = None,
     enforce = _enforce()
     path = str(_party_yaml(party, adopter_dir, parent_trees)) if adopter_dir is not None else None
     try:
+        captured = _captured_adopter(adopter_dir, parent_trees) if adopter_dir is not None else None
+        if captured is not None and captured.get('party') == party:
+            return enforce.appetite_from_document(party, captured, path)
         return enforce.appetite_money(party, path)
     except enforce.MissingInstrument as e:
         raise Refused(f"missing instrument: {e}") from None
@@ -1944,7 +1956,11 @@ def _party_yaml(party: str, adopter_dir: Path, parent_trees: dict[str, Path] | N
     parent trees, or the party's sibling checkout."""
     adopter_dir = Path(adopter_dir)
     candidate = adopter_dir / "party.yaml"
-    if candidate.exists():
+    captured = _captured_adopter(adopter_dir, parent_trees)
+    if captured is not None:
+        if captured.get('party') == party:
+            return candidate
+    elif candidate.exists():
         doc = yaml.safe_load(candidate.read_text()) or {}
         if doc.get("party") == party:
             return candidate
@@ -1958,6 +1974,9 @@ def _party_doc(party: str, adopter_dir: Path,
                 parent_trees: dict[str, Path] | None = None) -> dict:
     """The named party's own signed artefact, or {} when this composition
     cannot see one. Never invents a fact about another party."""
+    captured = _captured_adopter(adopter_dir, parent_trees)
+    if captured is not None and captured.get('party') == party:
+        return captured
     path = _party_yaml(party, adopter_dir, parent_trees)
     if not path.exists():
         return {}
@@ -2432,15 +2451,15 @@ ADOPTER_CLAIMS_FILE = "component-definition.json"
 ControlKey = tuple[str, str]   # (source party, bare catalogue id)
 
 
-def _catalog_dir(root: Path) -> Path:
+def _catalog_dir(root: Path, *, declaration: dict | None = None) -> Path:
     """Where a controls party's catalogue lives in its own tree: the path its
     party.yaml `publishes[]` declares for `kind: controls` (ADR-0019, the
     discovery record), else `catalog/` -- nist's layout, and the default an
     adopter's own small bespoke catalogue uses."""
     root = Path(root)
     party_yaml = root / "party.yaml"
-    if party_yaml.exists():
-        doc = yaml.safe_load(party_yaml.read_text()) or {}
+    if declaration is not None or party_yaml.exists():
+        doc = declaration if declaration is not None else yaml.safe_load(party_yaml.read_text()) or {}
         declared = next((e.get("path") for e in doc.get("publishes") or []
                          if e.get("kind") == "controls" and e.get("path")), None)
         if declared:
@@ -2448,7 +2467,7 @@ def _catalog_dir(root: Path) -> Path:
     return root / "catalog"
 
 
-def _catalog_controls(root: Path) -> dict[str, dict[str, str]]:
+def _catalog_controls(root: Path, *, declaration: dict | None = None) -> dict[str, dict[str, str]]:
     """Every control id a controls party's catalogue carries, mapped to its
     props by name, walking nested (enhancement) controls so `ac-6.10` is
     found by a group-level scan -- the same walk as nist/scripts/
@@ -2456,7 +2475,7 @@ def _catalog_controls(root: Path) -> dict[str, dict[str, str]]:
     catalog_control_ids(). Duplicated on purpose: each reader stays self-
     contained (lint_claims.py's own docstring names this convention). The
     props are what a bespoke control names its scenario in (ticket 38)."""
-    catalog_dir = _catalog_dir(root)
+    catalog_dir = _catalog_dir(root, declaration=declaration)
     meta = json.loads((catalog_dir / "CATALOG_VERSION.json").read_text())
     catalog_doc = json.loads((catalog_dir / meta["file"]).read_bytes())
     controls: dict[str, dict[str, str]] = {}
@@ -5675,11 +5694,12 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
         identity_inputs = (adopter_dir, parents, list(observations.values()),
                            _composition_as_of(edges, parent_trees, as_of),
                            _namespace_facts(adopter_dir))
+        identity_party_raw = (party_raw if parent_trees.publisher_quality is not None else None)
         comparison = comparison_history.resolve(
-            comparison_history.identity(*identity_inputs),
+            comparison_history.identity(*identity_inputs, party_raw=identity_party_raw),
             recorded_header, recorded_prices, recorded_cages,
             replay=replay_observations,
-            legacy=lambda: comparison_history.v330_identity(*identity_inputs))
+            legacy=lambda: comparison_history.v330_identity(*identity_inputs, party_raw=identity_party_raw))
     except comparison_history.InvalidHistory as error:
         return _refused([str(error)]), {}
     comparison_before = comparison["before"]
@@ -5882,8 +5902,11 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
     controls_edges = [e for e in edges if e["kind"] == "controls"]
     controls_edge = next((e for e in controls_edges if e["party"] != adopter_party), None)
     catalog_props: dict[str, dict[str, dict[str, str]]] = {}
-    for e in controls_edges:
-        catalog_props[e["party"]] = _catalog_controls(Path(parent_trees[e["party"]]))
+    for control_edge in controls_edges:
+        controls_root = Path(parent_trees[control_edge["party"]])
+        captured = (_captured_adopter(controls_root, parent_trees)
+                    if control_edge["party"] == adopter_party else None)
+        catalog_props[control_edge["party"]] = _catalog_controls(controls_root, declaration=captured)
     nist_root: Path | None = None
     baseline_source: str | None = controls_edge["party"] if controls_edge else None
     baseline_ids: set[str] = set()
