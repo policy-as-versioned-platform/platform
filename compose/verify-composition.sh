@@ -43,6 +43,9 @@ python3 -m unittest discover -s "$HERE" -p test_quote_conditions.py || fail "quo
 say "0f1. quote conditions authenticate served evidence and consume modeled consequences"
 python3 -m unittest discover -s "$HERE" -p test_quote_assessment.py || fail "modeled quote conditions"
 
+say "0f2. monetary publisher quality preserves absent behavior and renders its exact evidence"
+python3 -m unittest discover -s "$HERE" -p test_publisher_reliability_consumer.py || fail "publisher monetary quality"
+
 say "0g. consumer retirement keeps its exact authority checks with credential-free public reads"
 python3 -m unittest discover -s "$HERE" -p test_consumer_retirement.py || fail "consumer retirement"
 

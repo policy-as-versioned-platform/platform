@@ -120,7 +120,7 @@ jobs:
           echo "${KYVERNO_SHA256}  kyverno.tar.gz" | sha256sum -c -
           tar xzf kyverno.tar.gz kyverno && chmod +x kyverno && sudo mv kyverno /usr/local/bin/kyverno
 
-          pip install --quiet pyyaml
+          pip install --quiet pyyaml jsonschema
 
       - name: normalize the single-tag or multi-tag dispatch into tags.json
         # Inputs go through `env:`, not interpolated straight into the run

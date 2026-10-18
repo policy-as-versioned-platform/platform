@@ -75,10 +75,19 @@ def appetite_money(org, party_path=DEFAULT_APPETITE):
     except OSError:
         raise MissingInstrument(
             f"no risk appetite for '{org}': no party artefact at {path}") from None
-    tolerance = (doc.get("appetite") or {}).get("tolerance")
+    return appetite_from_document(org, doc, path)
+
+
+def appetite_from_document(org, document, source_path):
+    """Interpret the same appetite from an already captured party declaration.
+
+    Composition's captured current context and the legacy file reader share
+    the one tolerance interpretation, including its missing-instrument errors.
+    """
+    tolerance = (document.get("appetite") or {}).get("tolerance")
     if not isinstance(tolerance, dict) or "amount" not in tolerance:
         raise MissingInstrument(
-            f"no risk appetite for '{org}': {path} declares no appetite.tolerance")
+            f"no risk appetite for '{org}': {source_path} declares no appetite.tolerance")
     return {"amount": float(tolerance["amount"]), "currency": tolerance.get("currency")}
 
 

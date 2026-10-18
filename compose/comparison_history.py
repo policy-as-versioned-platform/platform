@@ -147,7 +147,8 @@ def _in_lane(relative: Path, lanes: list[str]) -> bool:
     return any(parts[:len(lane)] == lane for lane in (PurePosixPath(x).parts for x in lanes))
 
 
-def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object) -> str:
+def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object,
+             *, party_raw: bytes | None = None) -> str:
     # Source bytes, not checkout paths, Git HEAD, generated artefacts or Python
     # caches. Include every non-hidden source file: a source edit deliberately
     # starts a new comparison, even if it does not change the selected tier.
@@ -165,13 +166,17 @@ def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of
             continue
         if _in_lane(relative, lanes) and path.suffix not in COMPOSER_READS:
             continue
-        sources[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if party_raw is None or relative != Path('party.yaml'):
+            sources[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if party_raw is not None:
+        sources['party.yaml'] = hashlib.sha256(party_raw).hexdigest()
     return _digest({'sources': sources, 'parents': parents, 'observations': observations,
                     'as_of': as_of, 'namespace_facts': namespace_facts,
                     'observation-lanes': lanes})
 
 
-def v330_identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object) -> str:
+def v330_identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object,
+                  *, party_raw: bytes | None = None) -> str:
     """The identity tools v3.3.0 recorded, which hashed the lane files too.
 
     Kept for one migration only (ticket 134): an artefact recorded under the
@@ -199,7 +204,10 @@ def v330_identity(adopter: Path, parents: list[dict], observations: list[dict], 
             continue
         if at and _in_lane(relative, lanes) and path.suffix not in COMPOSER_READS:
             continue
-        sources[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if party_raw is None or relative != Path('party.yaml'):
+            sources[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if party_raw is not None:
+        sources['party.yaml'] = hashlib.sha256(party_raw).hexdigest()
     if at:
         listed = _git(adopter, 'ls-tree', '-r', '-z', '--name-only', at, '--', *lanes)
         if listed.returncode != 0:

@@ -67,6 +67,18 @@ party (`twin/evidence-ladder.yaml`'s `pricing_threshold` and `path_admission_thr
 every price the twin emits shows the weakest grade it rests on. The adopter's emitter reads it
 with the hub's `twin.evidence.declared_threshold(party)` and hands it to `Overlay.load(...)`.
 
+`appetite.publisher_reliability` optionally declares a separate monetary forecast
+quality policy for each exact inherited feed edge. Each closed record names its
+report and publisher-owned profile/widening sources by tag, commit, path and Git
+blob; its unit, minimum eligible case count, exact nonpositive decimal bar and
+`money-empirical-crps/v1` criterion are explicit. The report must have one declared
+`publisher-reliability` subscription and come from a different publisher. Duplicate
+target policies refuse. The schema supplies no financial defaults. Omitting the
+collection preserves existing behavior. Structural validation does not authenticate
+those sources or establish a monetary observation; the composition consumer does
+the source checks and comparison before any adjustment. The evidence-grade
+`pricing_threshold` above retains its existing meaning and allowed values.
+
 `pricing` and `threat` were separate parent kinds until ticket 21. Both are now `feed` with a free
 `name`, so a new publisher ships a new feed with no platform change (ADR-0019 point 3).
 

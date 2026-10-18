@@ -78,7 +78,7 @@ jobs:
           echo "${KYVERNO_SHA256}  kyverno.tar.gz" | sha256sum -c -
           tar xzf kyverno.tar.gz kyverno && chmod +x kyverno && sudo mv kyverno /usr/local/bin/kyverno
 
-          pip install --quiet pyyaml
+          pip install --quiet pyyaml jsonschema
 
       - name: shift-left offline proof (release gate)
         # ponytail: this is the one offline, no-cluster proof exercised as a
