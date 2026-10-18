@@ -4736,7 +4736,7 @@ def _quote_condition_evidence(payload: dict, implemented: set[ControlKey] | None
                  "not observed enforcement or fulfilled insurance conditions. No eligibility, "
                  "claim payability, priced_against matching or transfer credit is assessed. "
                  "Quoted consequences, contractual premium and retention are unchanged."}
-    conditions = payload.get("conditions", [])
+    conditions = payload.get("conditions")
     if not isinstance(conditions, list):
         evidence["unreadable"] = "Quote conditions are not a list; no condition claim evidence was assessed."
         return evidence

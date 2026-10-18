@@ -107,6 +107,23 @@ class QuoteConditionClaims(unittest.TestCase):
                                    include_switching=False, implemented={('nist', 'ac-6')})
         self.assertTrue(all(p['kind'] != 'premium' and 'quote_condition_evidence' not in p for p in prices))
 
+    def test_missing_required_conditions_is_not_an_explicit_empty_set(self):
+        quote = json.loads(fixtures.QUOTE.read_text())
+        quote['payload']['conditions'] = []
+        self.inputs.feed.write_text(json.dumps(quote))
+        explicit_empty = self.premium({('nist', 'ac-6')})
+        self.assertEqual(explicit_empty['quote_condition_evidence']['conditions'], [])
+        self.assertNotIn('unreadable', explicit_empty['quote_condition_evidence'])
+        del quote['payload']['conditions']
+        self.inputs.feed.write_text(json.dumps(quote))
+        missing = self.premium({('nist', 'ac-6')})
+        self.assertIn('unreadable', missing['quote_condition_evidence'])
+        self.assertEqual(missing['quote_condition_evidence']['conditions'], [])
+        # Legacy quote acceptance and every monetary/contract field stay exact.
+        missing.pop('quote_condition_evidence')
+        explicit_empty.pop('quote_condition_evidence')
+        self.assertEqual(missing, explicit_empty)
+
     def test_schema_invalid_condition_fields_are_unobserved_at_actual_quote_call(self):
         cases = (
             ('source-empty', 0, {'source': ''}),
