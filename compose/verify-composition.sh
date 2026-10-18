@@ -40,6 +40,9 @@ python3 -m unittest discover -s "$HERE" -p test_quote_validity.py || fail "quote
 say "0f. quote conditions name counted implementation claims without granting cover (ticket 37)"
 python3 -m unittest discover -s "$HERE" -p test_quote_conditions.py || fail "quote condition claims"
 
+say "0g. consumer retirement keeps its exact authority checks with credential-free public reads"
+python3 -m unittest discover -s "$HERE" -p test_consumer_retirement.py || fail "consumer retirement"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal, the regulator's withdrawal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 
