@@ -356,6 +356,40 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
               f"{'yes' if p.get('changed') else 'no'} | {tier_cell} |")
         a("")
         for i, p in enumerate(prices):
+            if 'publisher_reliability_effect' in p:
+                effect = p['publisher_reliability_effect']
+                if (not isinstance(effect, dict) or effect.get('schema') != 'publisher-reliability/effect-v1' or
+                        effect.get('state') not in ('unmeasured', 'insufficient', 'accepted', 'widened') or
+                        effect.get('criterion') != 'money-empirical-crps/v1' or
+                        type(effect.get('eligible_cases')) is not int or effect['eligible_cases'] < 0 or
+                        type(effect.get('minimum_cases')) is not int or effect['minimum_cases'] < 1 or
+                        not isinstance(effect.get('bar'), str) or not isinstance(effect.get('causes'), list) or
+                        any(c not in ('score-below-bar', 'release-degraded') for c in effect['causes'])):
+                    raise CannotRender(f'prices[{i}].publisher_reliability_effect lacks its supported monetary semantics')
+                for side in ('base', 'effective'):
+                    if (not isinstance(effect.get(side), dict) or
+                            not isinstance(effect[side].get('uncaged_price'), str) or
+                            not isinstance(effect[side].get('tier'), str)):
+                        raise CannotRender(f'prices[{i}].publisher_reliability_effect has no actual {side} price/tier')
+                score = effect.get('score')
+                if score is None:
+                    score_text = 'unmeasured'
+                elif isinstance(score, dict) and set(score) == {'numerator', 'denominator'}:
+                    score_text = f"{score['numerator']}/{score['denominator']}"
+                else:
+                    raise CannotRender(f'prices[{i}].publisher_reliability_effect has no exact score')
+                a(f"- **Publisher monetary quality — {p.get('source')}/{p.get('name')}**: "
+                  f"{effect['state']}; {effect['criterion']}, score {score_text}, bar {effect['bar']}; "
+                  f"eligible {effect['eligible_cases']}, required {effect['minimum_cases']}; "
+                  f"current-context base {p['currency']} {effect['base']['uncaged_price']} "
+                  f"({effect['base']['tier']}); effective {p['currency']} "
+                  f"{effect['effective']['uncaged_price']} ({effect['effective']['tier']}); "
+                  f"financial as of {effect.get('financial_as_of')}; "
+                  f"evidence cutoff {effect.get('reliability_evidence_as_of')}. "
+                  f"Causes: {', '.join(effect['causes']) or 'none'}. "
+                  f"{effect.get('reason') or ''} "
+                  "This comparison is separate from the old/new publisher-version fields; "
+                  "it supplies no insurance credit, calibration guarantee or evidence-grade change.")
             if "conditional_cost_view" in p:
                 view = p["conditional_cost_view"]
                 if not isinstance(view, dict) or type(view.get("schema")) is not int or view["schema"] != 1:

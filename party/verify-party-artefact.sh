@@ -17,6 +17,8 @@ have python3 || fail "python3 required"
 
 say "1. party_artefact.py's own asserts (schema.json + the tag/baseline/publish checks)"
 python3 "$HERE/party_artefact.py" --selfcheck || fail "party_artefact.py --selfcheck"
+python3 -m unittest discover -s "$HERE" -p test_publisher_reliability.py \
+  || fail "publisher reliability declarations"
 
 # The platform is a party like any other, so its own artefact is checked by
 # its own checker -- not exempted from the format it ships (ticket 21).

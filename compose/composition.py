@@ -379,6 +379,7 @@ import handbook  # noqa: E402
 import comparison_history  # noqa: E402
 import consumer_retirement  # noqa: E402
 import quote_assessment  # noqa: E402
+import publisher_reliability  # noqa: E402
 
 ADMISSION_KINDS = ("ValidatingPolicy", "MutatingPolicy", "GeneratingPolicy")
 VERSION_SUFFIX = re.compile(r"-\d+-\d+-\d+$")
@@ -1070,6 +1071,13 @@ class ParentTrees(dict[str, Path]):
     def __init__(self, trees: dict[str, Path] | None = None) -> None:
         super().__init__(trees or {})
         self.feeds: dict[tuple[str, str, str], Path] = dict(getattr(trees, "feeds", {}))
+        self.publisher_quality = getattr(trees, "publisher_quality", None)
+        self.monetary_sources = dict(getattr(trees, 'monetary_sources', {}))
+
+
+def _diagnostic(edge: dict, trees: dict[str, Path]) -> bool:
+    quality = getattr(trees, 'publisher_quality', None)
+    return quality is not None and (edge.get('party'), _feed_name(edge), str(edge.get('version'))) in quality.diagnostic
 
 
 def edge_tree(edge: dict, parent_trees: dict[str, Path] | None) -> Path | None:
@@ -2255,7 +2263,8 @@ def _workload_risk_binding(entry: dict, meta: dict, party_doc: dict,
 
 def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
                         adopter_dir: Path, parent_trees: dict[str, Path] | None = None, *,
-                        previous_cages: list[dict] | None = None
+                        previous_cages: list[dict] | None = None,
+                        composition_as_of: str | None = None
                         ) -> tuple[list[dict], list[dict], list[dict]]:
     """Every `overlay.restate` entry against the merged member set. Returns
     (restatements, refusals, cages). Mutates `merged` in place: an accepted
@@ -2357,7 +2366,40 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
             })
             continue
 
+        quality = getattr(parent_trees, 'publisher_quality', None)
+        quality_result = None
+        if quality is not None and not scenario_rel and threat_edge is not None:
+            try:
+                if not isinstance(threat_pin, str) or threat_tree is None:
+                    raise publisher_reliability.Refused(
+                        'publisher-reliability: inherited threat scenario has no exact source context')
+                feed_path = feed_file(threat_edge['party'], 'threat-register', threat_pin, threat_tree)
+                quality.bind_live(threat_edge, feed_path, _converter('threat-register', threat_tree))
+                payload = load_feed_payload(feed_path, 'threat-register', threat_pin)
+                quality_result = quality.adjust(threat_edge, scenario, {
+                    'financial_as_of': composition_as_of,
+                    'native_currency': _feed_currency('threat-register', payload)})
+                scenario = quality_result.scenario
+            except publisher_reliability.Refused as error:
+                refusals.append({'kind': 'missing-instrument', 'subject': rule,
+                                 'detail': str(error), 'needs_composition': True})
+                continue
         decision = _cage_engine().select(scenario, adopter_party, band, mode="warn")
+        if quality_result is not None and quality_result.effect is not None:
+            base_decision = _cage_engine().select(
+                quality_result.effect['base']['scenario'], adopter_party, band, mode='warn')
+            try:
+                publisher_reliability.finish(quality_result,
+                    base_uncaged=base_decision['uncaged_residual'],
+                    effective_uncaged=decision['uncaged_residual'],
+                    base_price=base_decision['uncaged_residual'],
+                    effective_price=decision['uncaged_residual'],
+                    base_tier=base_decision['tier'], effective_tier=decision['tier'],
+                    order=_cage_engine().ORDER)
+            except publisher_reliability.Refused as error:
+                refusals.append({'kind': 'missing-instrument', 'subject': rule,
+                                 'detail': str(error), 'needs_composition': True})
+                continue
         tier = decision["tier"]
         prior = next((c for c in previous_cages
                       if c.get("party") == adopter_party and c.get("rule") == rule), None)
@@ -3392,9 +3434,9 @@ def _composition_as_of_source(edges: list[dict], parent_trees: dict[str, Path],
         return override, "the caller's --as-of"
     dated: list[tuple[str, str]] = [
         (str(e["since"])[:10], f"the since {e['party']}/{_parent_key(e)} was signed with")
-        for e in edges if e.get("since")]
+        for e in edges if e.get("since") and not _diagnostic(e, parent_trees)]
     for edge in edges:
-        if edge["kind"] not in FEED_KINDS:
+        if edge["kind"] not in FEED_KINDS or _diagnostic(edge, parent_trees):
             continue
         tree = edge_tree(edge, parent_trees)
         name = _feed_name(edge)
@@ -3554,7 +3596,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
                   prev_prices: list[dict] | None = None,
                   observation: dict | None = None,
                   implemented: set[ControlKey] | None = None,
-                  inventory: dict | None = None) -> dict:
+                  inventory: dict | None = None,
+                  publisher_quality=None) -> dict:
     """One prices[] entry for one feed edge, in the one schema every price in
     this estate shares: perspective, currency, source, kind, amount and a
     per-customer restatement (ticket 25). Priced at the OLD version (the last
@@ -3579,6 +3622,11 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         raise Refused(f"missing instrument: feed {name!r} declared by {adopter_party} has no "
                        f"converter this composition can price through")
     path = feed_file("", name, new_version, tree)
+    if publisher_quality is not None:
+        try:
+            publisher_quality.bind_live(edge, path, _converter(name, tree))
+        except publisher_reliability.Refused as error:
+            raise Refused(str(error)) from error
     payload, as_of = load_feed_payload(path, name, new_version), _feed_as_of(path)
 
     # The currency the PUBLISHER prices in. No declaration is a missing
@@ -3601,6 +3649,22 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         # for; the eol converter ramps to the COMPOSITION's date (ticket 84).
         old_sc = _feed_scenario(name, old_version, adopter_party, tree, composition_as_of, inventory)
         new_sc = _feed_scenario(name, new_version, adopter_party, tree, composition_as_of, inventory)
+
+    quality_result = None
+    base_sc = copy.deepcopy(new_sc)
+    if publisher_quality is not None:
+        try:
+            context = {'financial_as_of': composition_as_of or as_of, 'native_currency': native}
+            if context['financial_as_of'] is None:
+                raise publisher_reliability.Refused('publisher-reliability: no financial pricing date')
+            quality_result = publisher_quality.adjust(edge, new_sc, context)
+            new_sc = quality_result.scenario
+            # Both version sides use CURRENT adopter inputs. An exact policy
+            # for the current version does not apply to a different old version.
+            if old_version == new_version:
+                old_sc = copy.deepcopy(new_sc)
+        except publisher_reliability.Refused as error:
+            raise Refused(str(error)) from error
 
     # Either side of a CVE version comparison can have no scanned intersection.
     # That converter result is a named absence, not a scenario for fair.state().
@@ -3636,6 +3700,11 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
 
     new = cage.select(new_sc, adopter_party, band_native, mode="warn", floor=floor)
     new_price, fx = _converted(new["uncaged_residual"], native, reporting_currency, as_of, parent_trees)
+    base_selection = (cage.select(base_sc, adopter_party, band_native, mode="warn", floor=floor)
+                      if quality_result is not None and quality_result.effect is not None else None)
+    base_price = (None if base_selection is None else _converted(
+        base_selection['uncaged_residual'], native, reporting_currency, as_of, parent_trees)[0])
+    base_tier = None if base_selection is None else base_selection['tier']
 
     # The holes are computed BEFORE the entry, because the entry's amount IS
     # their total and its per-customer restatement divides that same amount.
@@ -3657,6 +3726,10 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         old_price *= share
         old_tier = cage.select_tier(old["uncaged_residual"] * share, band_native, floor)
         new_tier = cage.select_tier(new["uncaged_residual"] * share, band_native, floor)
+        if base_selection is not None:
+            assert base_price is not None
+            base_price *= share
+            base_tier = cage.select_tier(base_selection['uncaged_residual'] * share, band_native, floor)
 
     # Every figure on this entry is an ANNUALISED loss, and the frequency that annualised it is
     # editorial: ico's converter carries `DEFAULT_WARN_LEF = (1, 2, 4)` because the penalty schema
@@ -3683,6 +3756,16 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
         entry.update({key: new_sc[key] for key in ("priced_cve", "absences", "absence_count", "inventory_cve_count", "intersection_count")})
     entry["holes"] = holes
     entry["total"] = total
+    if quality_result is not None and quality_result.effect is not None:
+        assert base_selection is not None and base_price is not None and base_tier is not None
+        try:
+            entry['publisher_reliability_effect'] = publisher_reliability.finish(
+                quality_result, base_uncaged=base_selection['uncaged_residual'],
+                effective_uncaged=new['uncaged_residual'], base_price=base_price,
+                effective_price=amount, base_tier=base_tier, effective_tier=new_tier,
+                order=cage.ORDER)
+        except publisher_reliability.Refused as error:
+            raise Refused(str(error)) from error
     # Ticket 84: ticket 69's rule reaches every feed line, not the premium alone.
     # The pin's signature state is read off the publisher's checkout the same
     # way, and an untagged feed pin is a hole of the exposure this line prices
@@ -5204,7 +5287,7 @@ def compute_switching(edges: list[dict], adopter_party: str, tolerance: float,
     sized = isinstance((perspective_doc.get("size") or {}).get("turnover"), dict)
     entries: list[dict] = []
     for edge in edges:
-        if edge["kind"] not in FEED_KINDS:
+        if edge["kind"] not in FEED_KINDS or _diagnostic(edge, parent_trees):
             continue
         name = _feed_name(edge)
         since = edge.get("since")
@@ -5330,7 +5413,7 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
     # the eol converter takes it as --as-of and the supersede ramp runs to it.
     comp_as_of = _composition_as_of(edges, parent_trees, as_of)
     for edge in edges:
-        if edge["kind"] not in FEED_KINDS:
+        if edge["kind"] not in FEED_KINDS or _diagnostic(edge, parent_trees):
             continue
         prev_version = _previous_parent_version(prev_header, edge)
         observation = (observations or {}).get(_observation_key(edge))
@@ -5351,7 +5434,8 @@ def compute_prices(edges: list[dict], adopter_party: str, tolerance: float | Non
             perspective_doc=perspective_doc, reporting_currency=reporting,
             band_currency=band_currency, floor=floor, parent_trees=parent_trees,
             composition_as_of=comp_as_of, prev_prices=prev_prices, observation=observation,
-            implemented=implemented, inventory=_cve_inventory(adopter_dir) if _feed_name(edge) == "cve" else None)
+            implemented=implemented, inventory=_cve_inventory(adopter_dir) if _feed_name(edge) == "cve" else None,
+            publisher_quality=getattr(parent_trees, 'publisher_quality', None))
         prices.append(entry)
         # Ticket 84: is this pin behind a newer major its publisher has signed?
         # A quote (above) is a cost, not an exposure, and is not surcharged.
@@ -5418,6 +5502,28 @@ def _refused(errors: list[str]) -> dict:
 
 def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
             as_of: str | None = None, replay_observations: bool = False) -> tuple[dict, dict[str, str]]:
+    """Compose once and deterministically close any private source stores."""
+    sources = ParentTrees(parent_trees)
+    try:
+        result = _compose(adopter_dir, sources, as_of=as_of,
+                          replay_observations=replay_observations)
+    except BaseException:
+        if sources.publisher_quality is not None:
+            try:
+                sources.publisher_quality.close()
+            except OSError:
+                pass  # preserve the original composition exception
+        raise
+    if sources.publisher_quality is not None:
+        try:
+            sources.publisher_quality.close()
+        except OSError:
+            return _refused(['publisher-reliability: private source cleanup failed']), {}
+    return result
+
+
+def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
+             as_of: str | None = None, replay_observations: bool = False) -> tuple[dict, dict[str, str]]:
     """The one entry point. Takes the adopter repo state (a directory) and
     the pinned parent trees (party name -> that party's directory). Returns
     the evidence document as a dict and the rendered composed artefact as a
@@ -5454,7 +5560,6 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     observations: dict[tuple[str, str, str], dict] = {}
     parents: list[dict] = []
     missing: list[str] = []
-    parent_trees = ParentTrees(parent_trees)
     if any(e.get("party") == adopter_party for e in edges):
         # A SELF-PIN (ticket 38): the adopter pins its own bespoke controls
         # catalogue as a parent. The tree is the tree under composition --
@@ -5531,6 +5636,25 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
                 missing.append(str(error))
     if missing:
         return _refused(missing), {}
+
+    # Monetary report edges are diagnostic only AFTER exact source admission.
+    # Their publication and subscription dates cannot age unrelated money.
+    try:
+        if (party_doc.get('appetite') or {}).get('publisher_reliability'):
+            parent_trees.publisher_quality = publisher_reliability._Admission(
+                adopter_dir, {**parent_trees.monetary_sources, **parent_trees}, edges,
+                replay=replay_observations)
+            for edge in edges:
+                if _diagnostic(edge, parent_trees):
+                    tree = edge_tree(edge, parent_trees)
+                    diagnostic_name = _feed_name(edge)
+                    if tree is None or diagnostic_name is None:
+                        raise publisher_reliability.Refused(
+                            'publisher-reliability: declared diagnostic source is unavailable')
+                    parent_trees.publisher_quality.bind_live(
+                        edge, feed_file(edge['party'], diagnostic_name, edge['version'], tree))
+    except (publisher_reliability.Refused, OSError, ValueError, KeyError, TypeError) as error:
+        return _refused(['publisher-reliability: ' + str(error)]), {}
 
     try:
         # Verification replays the artefact on disk. A fresh composition compares
@@ -5726,7 +5850,8 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
     })
 
     restatements, restate_refusals, cages = apply_restatements(party_doc, merged, parents, adopter_dir,
-                                                                parent_trees, previous_cages=comparison_before["cages"])
+        parent_trees, previous_cages=comparison_before["cages"],
+        composition_as_of=_composition_as_of(edges, parent_trees, as_of))
     refusals += restate_refusals
     refusals += undelivered_priority_class_refusals(merged, guards)
 
@@ -5932,6 +6057,10 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
 
     members_evidence: list[dict] = []
     rendered: dict[str, str] = {}
+    quality = parent_trees.publisher_quality
+    if quality is not None:
+        rendered[publisher_reliability.PORTABLE] = json.dumps(
+            quality.closure, sort_keys=True, separators=(',', ':')) + '\n'
 
     # Eco-system ticket 45: the adopter's own copy of every payload it was
     # priced from and the converter that priced it, rendered into the composed
@@ -6188,7 +6317,17 @@ def verify(adopter_dir: Path, parent_trees: dict[str, Path]) -> tuple[bool, list
 
 def _default_parent_trees(party_doc: dict, estate_clone: Path) -> dict[str, Path]:
     names = {edge["party"] for edge in (party_doc.get("inherits", []) or [])}
-    return {name: estate_clone / name for name in names}
+    trees = {name: estate_clone / name for name in names}
+    if not (party_doc.get('appetite') or {}).get('publisher_reliability'):
+        return trees
+    sources = ParentTrees(trees)
+    # A resolver/context source need not be an exposure subscription. Discover
+    # its canonical checkout for exact SourceRef admission without making it a
+    # pricing parent or exposing an unpinned FX converter to ordinary pricing.
+    if estate_clone.is_dir():
+        sources.monetary_sources = {p.name: p for p in estate_clone.iterdir()
+                                    if p.is_dir() and (p / '.git').is_dir()}
+    return sources
 
 
 def cmd_compose(adopter_dir: Path, estate_clone: Path, out_dir: Path | None,

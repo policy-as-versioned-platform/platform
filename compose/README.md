@@ -27,6 +27,10 @@ source-bound assessment and rendered conditional premium view. It preserves
 booked contract costs and distinguishes unobserved technical evidence from a
 proved breach or a complete pass matrix.
 
+The [publisher monetary-quality contract](publisher-reliability.md) documents
+the optional source-authenticated report, publisher-owned widening and its
+separate current-context price comparison.
+
 ## What this ticket's `compose()` does
 
 1. Loads the adopter's `party.yaml` and runs `party/party_artefact.py`'s existing `check()`. A

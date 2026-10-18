@@ -384,8 +384,98 @@ def _appetite_errors(doc: dict, schema: dict) -> list[str]:
                    "it is not a grade on the evidence ladder")
             errors.append(
                 f"appetite.pricing_threshold {value!r} is not one of {admitted}: {why}")
+    if 'publisher_reliability' in appetite:
+        rule = schema['properties']['appetite']['properties']['publisher_reliability']
+        policies = appetite['publisher_reliability']
+        policy_errors = _policy_shape_errors(policies, rule, schema, 'appetite.publisher_reliability')
+        if not policy_errors:
+            inherited = doc.get('inherits')
+            edges = inherited if isinstance(inherited, list) else []
+            seen_targets = set()
+            for index, policy in enumerate(policies):
+                bar = policy['bar']
+                bar_rule = schema['definitions']['publisher_reliability_policy']['properties']['bar']
+                integral, dot, fraction = bar.removeprefix('-').partition('.')
+                digits = (integral + fraction).lstrip('0')
+                if ((bar != '0' and not bar.startswith('-')) or bar == '-0'
+                        or (dot and fraction.endswith('0'))
+                        or len(digits) > bar_rule['x-significant-decimal-digits']
+                        or len(fraction) > bar_rule['x-max-decimal-scale']):
+                    policy_errors.append(f'appetite.publisher_reliability[{index}].bar '
+                                         'must be a canonical bounded nonpositive decimal')
+                target = policy['target_edge']
+                publisher = target['party']
+                if (policy['profile']['party'] != publisher
+                        or policy['widening']['party'] != publisher
+                        or policy['report']['party'] == publisher):
+                    policy_errors.append(f'appetite.publisher_reliability[{index}] '
+                                         'has inconsistent publisher ownership')
+                target_key = tuple(target[key] for key in ('party', 'name', 'version'))
+                if target_key in seen_targets:
+                    policy_errors.append(f'appetite.publisher_reliability[{index}] '
+                                         'has duplicate target_edge')
+                seen_targets.add(target_key)
+                matches = [edge for edge in edges if isinstance(edge, dict)
+                           and edge.get('kind') == 'feed'
+                           and all(edge.get(key) == target[key] for key in ('party', 'name', 'version'))]
+                if len(matches) != 1:
+                    policy_errors.append(f'appetite.publisher_reliability[{index}].target_edge '
+                                         'must name one declared feed edge')
+                reports = [edge for edge in edges if isinstance(edge, dict)
+                           and edge.get('kind') == 'feed'
+                           and edge.get('name') == 'publisher-reliability'
+                           and edge.get('party') == policy['report']['party']]
+                if len(reports) != 1:
+                    policy_errors.append(f'appetite.publisher_reliability[{index}].report '
+                                         'must name one declared publisher-reliability feed')
+        errors += policy_errors
     errors += [f"appetite has unknown field {f!r}"
-               for f in sorted(appetite.keys() - {"tolerance", "pricing_threshold"})]
+               for f in sorted(appetite.keys() - set(schema['properties']['appetite']['properties']))]
+    return errors
+
+
+def _policy_shape_errors(value: object, rule: dict, schema: dict, where: str) -> list[str]:
+    """Read the closed publisher-policy shape from the party schema itself.
+
+    This uses only the fixed object/array/string/integer vocabulary of that
+    declaration. It performs no source admission or financial assessment.
+    """
+    if '$ref' in rule:
+        rule = schema['definitions'][rule['$ref'].removeprefix('#/definitions/')]
+    expected = rule.get('type')
+    matches = {
+        'object': isinstance(value, dict), 'array': isinstance(value, list),
+        'string': isinstance(value, str), 'integer': type(value) is int,
+    }
+    if expected is not None and not matches.get(expected, False):
+        return [f'{where} must be {expected}']
+    errors = []
+    if 'const' in rule and value != rule['const']:
+        errors.append(f"{where} must equal {rule['const']!r}")
+    if isinstance(value, dict):
+        properties = rule.get('properties', {})
+        errors += [f'{where} missing {key!r}'
+                   for key in sorted(set(rule.get('required', [])) - value.keys())]
+        if rule.get('additionalProperties') is False:
+            errors += [f'{where} has unknown field {key!r}'
+                       for key in sorted(value.keys() - properties.keys(), key=str)]
+        for key in properties.keys() & value.keys():
+            errors += _policy_shape_errors(value[key], properties[key], schema, f'{where}.{key}')
+    elif isinstance(value, list):
+        if len(value) > rule.get('maxItems', 10000):
+            return [f'{where} exceeds its declared item limit']
+        for index, item in enumerate(value):
+            errors += _policy_shape_errors(item, rule['items'], schema, f'{where}[{index}]')
+    elif isinstance(value, str):
+        if len(value) < rule.get('minLength', 0):
+            errors.append(f'{where} must be nonempty')
+        if len(value) > rule.get('maxLength', len(value)):
+            errors.append(f'{where} exceeds its declared string limit')
+        if 'pattern' in rule and re.fullmatch(rule['pattern'], value) is None:
+            errors.append(f'{where} has an invalid format')
+    elif type(value) is int:
+        if value < rule.get('minimum', value) or value > rule.get('maximum', value):
+            errors.append(f'{where} is outside its declared range')
     return errors
 
 
@@ -527,12 +617,47 @@ def publish_capability(doc: dict, party_dir: Path) -> tuple[dict, list[str]]:
 # --------------------------------------------------------------------------
 
 
+class _PartyLoader(yaml.SafeLoader):
+    """Reject duplicate declared keys before interpreting an owner's policy."""
+
+
+def _unique_party_mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        # YAML merge keys retain their existing, explicit merge semantics.
+        if key_node.tag == 'tag:yaml.org,2002:merge':
+            continue
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in seen
+            seen.add(key)
+        except TypeError as error:
+            raise Refused('party YAML mapping keys must be scalar') from error
+        if duplicate:
+            raise Refused(f'duplicate party YAML key: {key!r}')
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_PartyLoader.add_constructor('tag:yaml.org,2002:map', _unique_party_mapping)
+
+
+def load_document(party_yaml: Path):
+    """Read one unambiguous party document; authentication belongs to its tag."""
+    try:
+        return yaml.load(party_yaml.read_text(), Loader=_PartyLoader)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise Refused('party YAML cannot be read: ' + str(error)) from error
+
+
 def check(party_yaml: Path, adopter_dir: Path | None = None,
           configmap_rel: str = DEFAULT_NIST_CONFIGMAP) -> dict:
     """Runs every check in this module against one party artefact. Returns
     {"errors": [...], "notes": [...]} -- empty errors means it passes."""
     adopter_dir = adopter_dir or party_yaml.parent
-    doc = yaml.safe_load(party_yaml.read_text())
+    try:
+        doc = load_document(party_yaml)
+    except Refused as error:
+        return {"errors": [str(error)], "notes": [], "facts": {}}
 
     schema_errors = validate_schema(doc)
     if schema_errors:

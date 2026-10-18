@@ -7,6 +7,133 @@
   "required": ["party", "roles", "inherits", "overlay"],
   "additionalProperties": false,
   "definitions": {
+    "publisher_reliability_source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "party",
+        "tag",
+        "commit",
+        "path",
+        "git_blob"
+      ],
+      "properties": {
+        "party": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "git_blob": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "publisher_reliability_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "target_edge",
+        "report",
+        "profile",
+        "criterion",
+        "unit",
+        "minimum_cases",
+        "aggregation",
+        "bar",
+        "on_below",
+        "widening"
+      ],
+      "properties": {
+        "schema": {
+          "const": "publisher-reliability/adopter-policy-v1"
+        },
+        "target_edge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "party",
+            "name",
+            "version"
+          ],
+          "properties": {
+            "party": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "report": {
+          "$ref": "#/definitions/publisher_reliability_source_ref"
+        },
+        "profile": {
+          "$ref": "#/definitions/publisher_reliability_source_ref"
+        },
+        "criterion": {
+          "const": "money-empirical-crps/v1"
+        },
+        "unit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "currency",
+            "basis"
+          ],
+          "properties": {
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "basis": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "minimum_cases": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "aggregation": {
+          "const": "equal-case-mean"
+        },
+        "bar": {
+          "type": "string",
+          "maxLength": 260,
+          "x-significant-decimal-digits": 128,
+          "x-max-decimal-scale": 128,
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+          "description": "Canonical exact decimal, no exponent wire encoding; bounded digits/exponent on input before normalization, no bool/float/nonfinite."
+        },
+        "on_below": {
+          "const": "publisher-widen-to/v1"
+        },
+        "widening": {
+          "$ref": "#/definitions/publisher_reliability_source_ref"
+        }
+      }
+    },
     "money": {
       "type": "object",
       "required": ["amount", "currency"],
@@ -121,6 +248,11 @@
       "description": "The party's own risk appetite, as signed facts rather than platform-held fixtures (ticket 25). `tolerance` is the band the tier selection reads. `pricing_threshold` (eco-system ticket 141, ADR-0032) is the weakest evidence grade this party prices on: it sits here because it is the risk-bearer's signed choice about its own money, like its tolerance.",
       "properties": {
         "tolerance": { "$ref": "#/definitions/money" },
+        "publisher_reliability": {
+          "type": "array", "maxItems": 10000,
+          "items": { "$ref": "#/definitions/publisher_reliability_policy" },
+          "description": "Optional per-target monetary forecast-quality policy. Its explicit proper-score bar and case minimum are independent of evidence-grade pricing_threshold. Absent means no publisher-quality adjustment; no numerical default is supplied."
+        },
         "pricing_threshold": {
           "type": "integer",
           "enum": [2, 3],
