@@ -395,7 +395,8 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                         control = condition.get("id")
                         key = (f"{source}/{control}" if isinstance(source, str) and isinstance(control, str)
                                else "unreadable condition")
-                        a(f"  {key}: {condition['state']}. {condition.get('basis') or ''}")
+                        a(f"  {key}: {condition['state']}."
+                          + (f" {condition['basis']}" if condition.get("basis") else ""))
             if p.get("publisher_observation_scope"):
                 a(f"- **{p.get('source')}/{p.get('name')}** — {p['publisher_observation_scope']}")
             if p.get("kind") == "supersede":
