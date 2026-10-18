@@ -438,7 +438,7 @@ class ScheduledQuoteAssessment(unittest.TestCase):
             'consequence': 'uplift', 'uplift': {'amount': 25000, 'currency': 'GBP'}}])
         view, _ = fixture.view();self.assertEqual(view['state'], 'unobserved')
         fixture.doCleanups()
-        for amount, currency in [(True, 'GBP'), (-1, 'GBP'), (float('inf'), 'GBP'),
+        for amount, currency in [(10 ** 500, 'GBP'), (True, 'GBP'), (-1, 'GBP'), (float('inf'), 'GBP'),
                                  (float('nan'), 'GBP'), (1, 'gbp'), (1, 'USD')]:
             with self.subTest(amount=amount, currency=currency):
                 fixture = self.variant(conditions=[{'source': 'fixture-nist', 'id': 'aa-2',

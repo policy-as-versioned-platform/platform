@@ -537,6 +537,8 @@ def assess(entry: dict, adopter: Path, *, exposure: dict | None, parents: list[d
                          're-quote and adoption. No legal payability or transfer credit; the booked premium is unchanged.'}
     except _Unobserved as exc:
         return _unknown(entry, str(exc), quote_basis=basis, as_of=examined_at)
+    except OverflowError as exc:
+        raise InvalidAssessment('quoted uplift or modeled conditional cost cannot be represented as finite money') from exc
     except (clock.InvalidRetirement, OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, yaml.YAMLError) as exc:
         if isinstance(exc, InvalidAssessment):
             raise
