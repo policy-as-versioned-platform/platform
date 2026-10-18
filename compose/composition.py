@@ -5516,6 +5516,11 @@ def compose(adopter_dir: Path, parent_trees: dict[str, Path], *,
         raise
     if sources.publisher_quality is not None:
         try:
+            if (Path(adopter_dir) / 'party.yaml').read_bytes() != sources.publisher_quality.party_raw:
+                result = (_refused(['publisher-reliability: adopter declaration changed during this composition']), {})
+        except OSError:
+            result = (_refused(['publisher-reliability: adopter declaration unavailable after composition']), {})
+        try:
             sources.publisher_quality.close()
         except OSError:
             return _refused(['publisher-reliability: private source cleanup failed']), {}
@@ -5540,14 +5545,18 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
     if not party_yaml.exists():
         return _refused([f"{party_yaml} does not exist"]), {}
 
-    check_result = party_artefact.check(party_yaml, adopter_dir)
+    try:
+        party_raw = party_yaml.read_bytes()
+        party_doc = party_artefact.parse_document(party_raw)
+    except (OSError, party_artefact.Refused) as error:
+        return _refused([str(error)]), {}
+    check_result = party_artefact.check_document(party_doc, adopter_dir)
     if check_result["errors"]:
         # A party artefact that does not check out cannot be composed from --
         # there is nothing safe to read a resolved parent from (mirrors
         # party_artefact.check()'s own "can't be checked any further").
         return _refused(check_result["errors"]), {}
 
-    party_doc = yaml.safe_load(party_yaml.read_text())
     adopter_party = party_doc["party"]
     edges = party_doc.get("inherits", []) or []
     try:
@@ -5643,7 +5652,7 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
         if (party_doc.get('appetite') or {}).get('publisher_reliability'):
             parent_trees.publisher_quality = publisher_reliability._Admission(
                 adopter_dir, {**parent_trees.monetary_sources, **parent_trees}, edges,
-                replay=replay_observations)
+                replay=replay_observations, party_raw=party_raw)
             for edge in edges:
                 if _diagnostic(edge, parent_trees):
                     tree = edge_tree(edge, parent_trees)

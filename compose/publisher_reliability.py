@@ -42,7 +42,7 @@ class AdjustedScenario:
     effect: dict | None
 
 
-def _party(adopter):
+def _party(adopter, captured: bytes | None = None):
     schema_path = Path(__file__).resolve().parent.parent / 'party/party_artefact.py'
     spec = importlib.util.spec_from_file_location('_publisher_quality_party', schema_path)
     if spec is None or spec.loader is None:
@@ -51,8 +51,8 @@ def _party(adopter):
     spec.loader.exec_module(validator)
     path = Path(adopter) / 'party.yaml'
     try:
-        before = path.read_bytes()
-        document = validator.load_document(path)
+        before = path.read_bytes() if captured is None else captured
+        document = validator.parse_document(before)
         after = path.read_bytes()
     except (validator.Refused, OSError) as error:
         raise Refused('publisher-reliability: ' + str(error)) from error
@@ -291,9 +291,10 @@ def _verify_tag(repo: Path, party: str, tag: str, commit: str):
 
 
 class _Admission:
-    def __init__(self, adopter: Path, roots: dict[str, Path], edges: list[dict], *, replay=False):
+    def __init__(self, adopter: Path, roots: dict[str, Path], edges: list[dict], *,
+                 replay=False, party_raw: bytes | None = None):
         self.adopter = Path(adopter)
-        validator, self.declaration, self.party_raw = _party(self.adopter)
+        validator, self.declaration, self.party_raw = _party(self.adopter, party_raw)
         self.policies = (self.declaration.get('appetite') or {}).get('publisher_reliability', [])
         self.diagnostic: set[tuple[str, str, str]] = set()
         self.records: dict[tuple[str, str, str], dict] = {}
@@ -738,8 +739,9 @@ def _non_narrowing(base, target, affected):
 def assess_and_adjust(*, adopter_dir: Path, source_roots: dict[str, Path], edge: dict,
                       base_scenario: dict, pricing_context: dict) -> AdjustedScenario:
     """Public seam: independently admit sources, then ask the publisher to widen."""
-    _, declaration, _ = _party(Path(adopter_dir))
-    admission = _Admission(Path(adopter_dir), source_roots, declaration.get('inherits', []))
+    _, declaration, raw = _party(Path(adopter_dir))
+    admission = _Admission(Path(adopter_dir), source_roots, declaration.get('inherits', []),
+                           party_raw=raw)
     try:
         if not admission.policies:
             return AdjustedScenario(copy.deepcopy(base_scenario), None)

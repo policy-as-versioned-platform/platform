@@ -641,11 +641,19 @@ def _unique_party_mapping(loader, node, deep=False):
 _PartyLoader.add_constructor('tag:yaml.org,2002:map', _unique_party_mapping)
 
 
+def parse_document(raw: bytes | str):
+    """Interpret exactly the captured bytes with the shared unique-key loader."""
+    try:
+        return yaml.load(raw, Loader=_PartyLoader)
+    except (UnicodeError, yaml.YAMLError) as error:
+        raise Refused('party YAML cannot be read: ' + str(error)) from error
+
+
 def load_document(party_yaml: Path):
     """Read one unambiguous party document; authentication belongs to its tag."""
     try:
-        return yaml.load(party_yaml.read_text(), Loader=_PartyLoader)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        return parse_document(party_yaml.read_bytes())
+    except OSError as error:
         raise Refused('party YAML cannot be read: ' + str(error)) from error
 
 
@@ -659,6 +667,12 @@ def check(party_yaml: Path, adopter_dir: Path | None = None,
     except Refused as error:
         return {"errors": [str(error)], "notes": [], "facts": {}}
 
+    return check_document(doc, adopter_dir, configmap_rel)
+
+
+def check_document(doc, adopter_dir: Path,
+                   configmap_rel: str = DEFAULT_NIST_CONFIGMAP) -> dict:
+    """Run the complete party check against one already captured document."""
     schema_errors = validate_schema(doc)
     if schema_errors:
         # A structurally invalid document can't be checked any further --
