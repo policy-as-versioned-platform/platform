@@ -60,12 +60,16 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -397,6 +401,166 @@ def _money(price: dict, field: str) -> str:
     return f"{value:,.2f} {price.get('currency') or '???'}"
 
 
+def _move_evidence(p: dict, adopter_dir: Path, ns_path: Path) -> dict:
+    """Explain this declaration move at ONE frozen price snapshot, never enact it."""
+    sys.path.insert(0, str(HERE.parent / "graded"))
+    import cage  # noqa: E402  the same retained-risk instrument composition uses
+
+    context = p["_move_context"]
+    text = ns_path.read_text()
+    declared = declared_tier(text)
+    span = governed_namespace_span(text)
+    namespace = None
+    try:
+        doc = yaml.safe_load("".join(text.splitlines(keepends=True)[span[0]:span[1]])) if span else None
+        metadata = doc.get("metadata") if isinstance(doc, dict) else None
+        value = metadata.get("name") if isinstance(metadata, dict) else None
+        if isinstance(value, str) and value.strip():
+            namespace = value
+    except yaml.YAMLError:
+        pass
+    before = declared if declared in wargamer.LADDER else wargamer.FAIL_CLOSED
+    after = p["change"]["to"]
+    rel = str(ns_path.relative_to(adopter_dir))
+    head = _git("rev-parse", "HEAD", cwd=adopter_dir, capture=True, check=False)
+    blob = _git("rev-parse", f"HEAD:{rel}", cwd=adopter_dir, capture=True, check=False)
+    actual = _git("hash-object", rel, cwd=adopter_dir, capture=True, check=False)
+    committed = head.returncode == blob.returncode == actual.returncode == 0 and \
+        blob.stdout.strip() == actual.stdout.strip()
+    lines, excluded = [], []
+    for index, price in enumerate(context["prices"]):
+        if not wargamer.folds_into_namespace(price) or price.get("kind") not in ("feed", "twin"):
+            excluded.append({"index": index, "source": price.get("source"),
+                             "kind": price.get("kind"), "reason": "not a Namespace exposure line"})
+            continue
+        amount = price.get("amount")
+        reason = None if namespace is not None else "governed Namespace name is unobserved or unreadable"
+        finite = False
+        if not isinstance(amount, bool) and isinstance(amount, (int, float)):
+            try:
+                finite = math.isfinite(amount)
+            except OverflowError:
+                pass
+        if not finite or amount < 0 or price.get("absence_only"):
+            reason = "current uncaged amount is unavailable or unreadable"
+        if not isinstance(price.get("perspective"), str) or not price["perspective"].strip():
+            reason = "price perspective is unobserved or unreadable"
+        if not isinstance(price.get("currency"), str) or not re.fullmatch(r"[A-Z]{3}", price["currency"]):
+            reason = "price currency is unobserved or unreadable"
+        unit_context = {field: None for field in ("lef_basis", "lef_from", "tail", "lef", "horizon")}
+        unreadable_context = []
+        for field in ("lef_basis", "lef_from", "tail"):
+            if price.get(field) is not None and not isinstance(price[field], str):
+                reason = f"declared {field} is unreadable; expected text"
+                unreadable_context.append(field)
+            elif price.get(field):
+                unit_context[field] = price[field]
+        for field in ("lef", "horizon"):
+            value = price.get(field)
+            if value is None:
+                continue                  # optional context is absent, never invented
+            values = value if field == "lef" else [value]
+            shape = isinstance(value, list) and len(value) == 3 if field == "lef" else True
+            try:
+                valid = shape and all(type(v) in (int, float) and math.isfinite(v) and v >= 0
+                                      and (field != "horizon" or v > 0) for v in values)
+            except OverflowError:
+                valid = False
+            if not valid:
+                reason = f"declared {field} is unreadable; expected " + (
+                    "a nonnegative three-number frequency array" if field == "lef" else
+                    "a positive number of years")
+                unreadable_context.append(field)
+            else:
+                unit_context[field] = value
+        old = cage.caged_residual(amount, before) if reason is None else None
+        new = cage.caged_residual(amount, after) if reason is None else None
+        lines.append({"index": index, "source": price.get("source"), "kind": price.get("kind"),
+                      "name": price.get("name"), "subject": wargamer.subject_of(price),
+                      "perspective": price.get("perspective"), "currency": price.get("currency"),
+                      "uncaged_amount": amount if reason is None else None,
+                      "before_residual": old, "after_residual": new,
+                      "residual_delta": new - old if old is not None and new is not None else None,
+                      "rests_on_grade": price.get("rests_on_grade")
+                          if type(price.get("rests_on_grade")) is int else None,
+                      "could_not_look": reason,
+                      "unit_context": {"values": unit_context, "unreadable": unreadable_context},
+                      "input_sha256": hashlib.sha256(json.dumps(price, sort_keys=True).encode()).hexdigest(),
+                      "provenance": {key: price.get(key) for key in (
+                          "old_version", "new_version", "feed_version", "version", "pin_signature",
+                          "as_of", "fx_as_of", "lef", "lef_basis", "lef_from", "horizon", "tail",
+                          "policy_version", "curve_hash", "residual_basis", "rests_on_grade")}})
+    instrument = Path(cage.__file__)
+    source = _git("rev-parse", "HEAD", cwd=HERE.parent, capture=True, check=False)
+    reasons = list(dict.fromkeys(line["could_not_look"] for line in lines if line["could_not_look"]))
+    readable = len(lines) - sum(line["could_not_look"] is not None for line in lines)
+    return {"schema": 1, "kind": "counterfactual-namespace-tier-move",
+            "state": "available" if lines and not reasons else "partial" if readable else "unavailable",
+            "could_not_look": "; ".join(reasons) if reasons else
+                "no Namespace exposure lines to compare" if not lines else None,
+            "before": {"declared": declared, "effective": before}, "after": after,
+            "declaration": {"manifest": rel, "namespace": namespace,
+                            "sha256": hashlib.sha256(ns_path.read_bytes()).hexdigest(),
+                            "commit": head.stdout.strip() if committed else None,
+                            "blob": blob.stdout.strip() if committed else None,
+                            "state": "committed" if committed else "uncommitted or unavailable"},
+            "snapshot": context["snapshot"],
+            "instrument": {"id": f"platform-cage-tiers@{cage.TABLE_VERSION}",
+                           "source": "graded/cage.py", "sha256": hashlib.sha256(instrument.read_bytes()).hexdigest(),
+                           "checkout": source.stdout.strip() if source.returncode == 0 else None,
+                           "basis": "platform self-declared calibration; no measured grade assigned"},
+            "lines": lines, "excluded": excluded,
+            "limit": "Counterfactual retained comparison at fixed prices, not an enacted move, measured effectiveness or cash saving. No sum or operating costs."}
+
+
+def _move_paragraph(p: dict) -> str:
+    move = p.get("namespace_tier_move")
+    if move is None:
+        return ""
+    before = move["before"]
+    text = [f"**Proposed Namespace move (counterfactual, not enacted):** "
+            f"`{move['declaration']['manifest']}` (Namespace "
+            f"`{move['declaration']['namespace'] or 'unobserved'}`) — `{before['declared']}` "
+            f"(effective `{before['effective']}`) → `{move['after']}`.\n"]
+    if move["state"] != "available":
+        text.append(f"Comparison {move['state']}: {move['could_not_look']}.\n")
+    for line in move["lines"]:
+        def money(field):
+            return "unobserved" if line[field] is None else f"{line[field]:,.2f} {line['currency']}"
+        grade = line["rests_on_grade"]
+        text.append(f"- {line['source']}/{line.get('name') or line['kind']} "
+                    f"(prices[{line['index']}], perspective `{line['perspective']}`): retained "
+                    f"{money('before_residual')} → {money('after_residual')}; "
+                    f"delta {money('residual_delta')}; evidence grade "
+                    f"{grade if type(grade) is int else 'unobserved'}; "
+                    f"input as-of `{line['provenance']['as_of'] or 'unobserved'}`; "
+                    f"FX as-of `{line['provenance']['fx_as_of'] or 'unobserved'}`."
+                    + (f" Could not look: {line['could_not_look']}." if line['could_not_look'] else ""))
+        context = line["unit_context"]
+        def supplied(field):
+            if field in context["unreadable"]:
+                return "unreadable"
+            value = context["values"][field]
+            if value is None:
+                return "unobserved"
+            return value.replace("\n", " ") if isinstance(value, str) else json.dumps(value)
+        horizon_unit = " years" if context["values"]["horizon"] is not None else ""
+        text.append(f"  Supplied context: LEF `{supplied('lef')}`; "
+                    f"horizon `{supplied('horizon')}`{horizon_unit}; "
+                    f"frequency source `{supplied('lef_from')}`; tail `{supplied('tail')}`. "
+                    f"Frequency/annualisation basis: {supplied('lef_basis')}.")
+    snapshot = move["snapshot"]
+    text.append(f"\nFixed pricing snapshot: `sha256:{snapshot['sha256']}`; adopter checkout at load "
+                f"`{snapshot['adopter_commit_at_load'] or 'unobserved'}`; caller as-of "
+                f"`{snapshot['caller_as_of'] or 'unobserved'}`. Declaration base: "
+                f"`{move['declaration']['commit'] or 'uncommitted/unobserved'}`. "
+                "A later declaration base does not re-price the frozen snapshot.")
+    instrument = move["instrument"]
+    text.append(f"Calibration: `{instrument['id']}`; source `sha256:{instrument['sha256']}`. "
+                f"{instrument['basis']}. {move['limit']}")
+    return "\n".join(text) + "\n\n"
+
+
 def _party_paragraph(p: dict) -> str:
     """The party-level selection, spelled out for the reviewer (ticket 78):
     which lines priced what, which was strictest, whether the floor clamped,
@@ -472,6 +636,7 @@ def _pr_body(p: dict) -> str:
                      f"declaration moves to the party's tier (below).")
     return (
         f"{p.get('ledger_marker', '')}\n\n"
+        f"{_move_paragraph(p)}"
         f"Proposed by the war-gamer's cage-tier drift (ADR-0015, ADR-0022). "
         f"**What moved:** `{c['label']}` on `{p.get('manifest', 'the governed Namespace')}` "
         f"-- the governed Namespace declaration, not a pod label -- "
@@ -516,6 +681,9 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
                             f"-- nothing to land")
         return result
     if dry_run:
+        p["namespace_tier_move"] = _move_evidence(p, adopter_dir, ns_path)
+        result["namespace_tier_move"] = p["namespace_tier_move"]
+        result["body"] = _pr_body(p)
         result["landed"] = "dry-run"
         result["diff"] = new_text
         return result
@@ -550,6 +718,13 @@ def _land(p: dict, adopter_dir: Path, ns_path: Path, base: str, dry_run: bool,
                       why=f"origin/{base} declares {declared_tier(on_base)!r}; "
                           f"{p['change']['to']!r} does not tighten it")
         return result
+    # Only the declaration was refreshed. Prices and their original source/as-of
+    # stay frozen; this is not a new composition of the fetched base.
+    p["change"]["from"] = declared_tier(on_base)
+    p["party_selection"] = dict(p["party_selection"], current=declared_tier(on_base))
+    p["namespace_tier_move"] = _move_evidence(p, adopter_dir, ns_path)
+    result["namespace_tier_move"] = p["namespace_tier_move"]
+    result["body"] = _pr_body(p)
     rel = ns_path.relative_to(adopter_dir)
     ns_path.write_text(new_text)
     _git("add", str(rel), cwd=adopter_dir)
@@ -704,6 +879,12 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
     the `GITHUB_REPOSITORY` Actions gives every run for free; pass it
     explicitly for a local/offline run (selfcheck does).
 
+    Namespace proposal results include their PR body and per-line retained
+    residual comparison: the declaration before -> proposed after, at one
+    frozen evidence snapshot and the pinned compiler's cage calibration. A
+    fetched base refreshes the declaration, never the captured prices. This
+    is counterfactual proposal evidence, not an enacted or measured move.
+
     Bounds ONLY `wargame_cage_tier()`'s own rows -- deliberately never the
     general `wargamer.wargame()`/`proposer_bounds.dispositions()`, which
     default to the war-gamer's OWN demo enforcement/scenario fixture
@@ -721,8 +902,17 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
         print(f"note: {evidence_path} not found -- nothing composed yet, nothing to propose",
               file=sys.stderr)
         return []
-    evidence = json.loads(evidence_path.read_text())
+    evidence_bytes = evidence_path.read_bytes()
+    evidence = json.loads(evidence_bytes)
     prices = evidence.get("prices", [])
+    captured = _git("rev-parse", "HEAD", cwd=adopter_dir, capture=True, check=False)
+    move_context = {"prices": prices, "snapshot": {
+        "sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+        "prices_sha256": hashlib.sha256(json.dumps(prices, sort_keys=True,
+                                                  separators=(",", ":")).encode()).hexdigest(),
+        "adopter_commit_at_load": captured.stdout.strip() if captured.returncode == 0 else None,
+        "caller_as_of": as_of, "parents": evidence.get("parents"),
+        "vendored": evidence.get("vendored")}}
     repo = repo or os.environ.get("GITHUB_REPOSITORY")
 
     # The declaration is found, never known: the manifest carrying
@@ -808,6 +998,8 @@ def run(adopter_dir: Path, evidence_path: Path, org: str,
                                                      shape["policy_version"])
         price = p.get("price") or {}
         p["org"] = org
+        if d["kind"] == "cage-tier":
+            p["_move_context"] = move_context
         # The marker (the dedupe key's shape) stays the fingerprint and only the
         # fingerprint. These two are the human-readable half of the body, so they
         # fall back to the priced entry's own fields when no twin line published.
