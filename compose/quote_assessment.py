@@ -54,6 +54,17 @@ def _yaml(data: bytes) -> object:
     return yaml.load(data, Loader=clock._UniqueLoader)
 
 
+def _github_repository(value: object) -> str | None:
+    """One exact GitHub identity, independent of its supported Git transport."""
+    if not isinstance(value, str):
+        return None
+    for prefix in ('https://github.com/', 'git@github.com:', 'ssh://git@github.com/'):
+        if value.startswith(prefix):
+            repository = value[len(prefix):].removesuffix('.git')
+            return repository if clock.REPOSITORY.fullmatch(repository) else None
+    return None
+
+
 def _file(root: Path, relative: str) -> bytes:
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(p in ('.', '..') for p in parts):
@@ -68,9 +79,9 @@ def _file(root: Path, relative: str) -> bytes:
     return path.read_bytes()
 
 
-def _unknown(entry: dict, basis: str, *, quote_basis: dict | None = None) -> dict:
+def _unknown(entry: dict, basis: str, *, quote_basis: dict | None = None, as_of: str | None = None) -> dict:
     return {
-        'schema': 1, 'profile': PROFILE, 'state': 'unobserved', 'retention': 'not-assessed',
+        'schema': 1, 'profile': PROFILE, 'as_of': as_of, 'state': 'unobserved', 'retention': 'not-assessed',
         'contract_premium': {'amount': entry['amount'], 'currency': entry['currency']},
         'effective_premium': None,
         'conditions': [{'source': c.get('source'), 'id': c.get('id'), 'state': 'unobserved',
@@ -251,12 +262,10 @@ def _bound_blob(parent: dict, tree: Path, relative: str, pins: list[dict]) -> by
     """A measured source pin, its signed carrier and the consumed blob must agree."""
     if not isinstance(parent.get('sha'), str) or not clock.SHA.fullmatch(parent['sha']):
         raise _Unobserved('the exact condition publisher parent commit is unavailable')
-    remote = clock._git(tree, 'remote', 'get-url', 'origin').decode().strip().removesuffix('.git').replace(
-        'git@github.com:', 'https://github.com/')
-    repository = remote.removeprefix('https://github.com/')
-    if remote != 'https://github.com/' + repository or not clock.REPOSITORY.fullmatch(repository):
+    repository = _github_repository(clock._git(tree, 'remote', 'get-url', 'origin').decode().strip())
+    if repository is None:
         raise _Unobserved('a condition publisher has no canonical GitHub origin')
-    candidates = [p for p in pins if (p.get('spec', {}).get('url') or '').removesuffix('.git') == remote]
+    candidates = [p for p in pins if _github_repository(p.get('spec', {}).get('url')) == repository]
     if len(candidates) != 1:
         raise _Unobserved('the measured source has no unambiguous condition publisher pin')
     pin = candidates[0].get('spec', {}).get('ref')
@@ -332,12 +341,14 @@ def _fx_inputs(parents: list[dict], trees: dict[str, Path], pins: list[dict]) ->
         if not versions:
             raise InvalidAssessment('the pinned FX publisher has no dated feed')
         files = ['converters/fx.py', *(str(path.relative_to(tree)) for path in versions)]
+        repository = _github_repository(clock._git(tree, 'remote', 'get-url', 'origin').decode().strip())
+        if repository is None:
+            raise InvalidAssessment('the FX publisher has no canonical GitHub origin')
+        matching = [p for p in fx_pins if _github_repository(p.get('spec', {}).get('url')) == repository]
+        if len(matching) != 1:
+            raise InvalidAssessment('the scheduled source has no exact signed FX pin')
+        carrier = matching[0]['spec']['ref']['commit']
         for path in files:
-            matching = [p for p in fx_pins if p.get('spec', {}).get('url', '').removesuffix('.git') ==
-                        clock._git(tree, 'remote', 'get-url', 'origin').decode().strip().removesuffix('.git')]
-            if len(matching) != 1:
-                raise InvalidAssessment('the scheduled source has no exact signed FX pin')
-            carrier = matching[0]['spec']['ref']['commit']
             raw = _bound_blob({'sha': carrier}, tree, path, fx_pins)
             bound.append({'party': party, 'carrier': carrier, 'path': path,
                           'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest()})
@@ -416,6 +427,7 @@ def assess(entry: dict, adopter: Path, *, exposure: dict | None, parents: list[d
         return _unknown(entry, 'No authenticated observation selector was supplied; '
                         'technical conditions and the effective conditional cost are unobserved.')
     basis = None
+    examined_at = None
     try:
         descriptor = clock._object(_yaml(_file(adopter, SELECTOR)), {
             'schema', 'profile', 'party', 'repository', 'examined_at', 'quote', 'baseline'}, 'condition observation selector')
@@ -424,8 +436,8 @@ def assess(entry: dict, adopter: Path, *, exposure: dict | None, parents: list[d
         if not isinstance(exposure, dict) or descriptor['party'] != exposure.get('perspective'):
             raise InvalidAssessment('observation selector names another insured party')
         repository = clock._text(descriptor['repository'], 'assessment repository', clock.REPOSITORY)
-        remote = clock._git(adopter, 'remote', 'get-url', 'origin').decode().strip().removesuffix('.git').replace('git@github.com:', 'https://github.com/')
-        if remote != 'https://github.com/' + repository:
+        remote = _github_repository(clock._git(adopter, 'remote', 'get-url', 'origin').decode().strip())
+        if remote != repository:
             raise InvalidAssessment('assessment repository differs from the adopter origin')
         selected = clock._object(descriptor['quote'], {'source', 'name', 'version', 'parent_sha', 'payload_sha256'}, 'quote binding')
         parent = next((p for p in parents if p.get('party') == entry['source'] and p.get('name') == entry['name']), None)
@@ -434,9 +446,10 @@ def assess(entry: dict, adopter: Path, *, exposure: dict | None, parents: list[d
                   'payload_sha256': 'sha256:' + hashlib.sha256(quote_path.read_bytes()).hexdigest()}
         if selected != actual:
             raise InvalidAssessment('observation selector is bound to another exact quote')
+        examined = _instant(descriptor['examined_at'])
+        examined_at = descriptor['examined_at']
         receipt = clock.read_scheduled_original(adopter, descriptor['baseline'], repository,
                                                 clock._official, clock._signature)
-        examined = _instant(descriptor['examined_at'])
         run = receipt['run']
         created, started, finished = (_instant(run.get(key)) for key in
                                      ('created_at', 'run_started_at', 'updated_at'))
@@ -523,7 +536,7 @@ def assess(entry: dict, adopter: Path, *, exposure: dict | None, parents: list[d
                          'Modeled conditional/TCoR premium component only; actual billing changes only through signed '
                          're-quote and adoption. No legal payability or transfer credit; the booked premium is unchanged.'}
     except _Unobserved as exc:
-        return _unknown(entry, str(exc), quote_basis=basis)
+        return _unknown(entry, str(exc), quote_basis=basis, as_of=examined_at)
     except (clock.InvalidRetirement, OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, yaml.YAMLError) as exc:
         if isinstance(exc, InvalidAssessment):
             raise

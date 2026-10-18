@@ -377,7 +377,8 @@ def render(files: Mapping[str, str], evidence: Mapping[str, Any]) -> str:
                 cost = (_money(effective["amount"], effective["currency"])
                         if isinstance(effective, dict) else "unobserved")
                 a(f"- **Modeled conditional cost — {p.get('source')}/{p.get('name')}**: "
-                  f"{cost}; state: {view.get('state')}; retention: {view.get('retention')}. "
+                  f"{cost}; as of {view.get('as_of') or 'unobserved'}; "
+                  f"state: {view.get('state')}; retention: {view.get('retention')}. "
                   f"{view.get('basis')}")
             # Ticket 37: pre-contract signed handbooks retain their old bytes.
             # Under schema1, a missing historical assessment is named, never guessed.

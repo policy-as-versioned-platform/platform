@@ -299,6 +299,7 @@ class ScheduledQuoteAssessment(unittest.TestCase):
         self.assertEqual(view['effective_premium'], {'amount': 138403.3, 'currency': 'GBP'})
         self.assertEqual(premium['amount'], 113403.3, 'booked contract is unchanged until re-quote')
         self.assertIn('138,403.30', rendered['composed/HANDBOOK.md'])
+        self.assertIn(view['as_of'], rendered['composed/HANDBOOK.md'])
         self.assertIn('re-quote and adoption', rendered['composed/HANDBOOK.md'])
         self.assertIn(('synthetic-certificate-boundary', self.original), self.calls)
 
@@ -369,7 +370,8 @@ class ScheduledQuoteAssessment(unittest.TestCase):
         for instant in ('2026-10-18T09:09:59Z', '2026-10-20T09:10:01Z', '2027-08-29T10:00:00Z'):
             with self.subTest(instant=instant):
                 self.descriptor['examined_at'] = instant;self.write_selector()
-                view, _ = self.view();self.assertEqual(view['state'], 'unobserved')
+                view, rendered = self.view();self.assertEqual(view['state'], 'unobserved')
+                self.assertIn(instant, rendered[handbook.HANDBOOK_PATH])
         self.descriptor['examined_at'] = '2026-10-20T09:10:00Z';self.write_selector()
         view, _ = self.view();self.assertEqual(view['state'], 'breached', '48h is inclusive')
         self.official_data['updated_at'] = '2026-10-18T09:09:59Z'
@@ -504,6 +506,11 @@ def convert(amount, frm, to, as_of, root):
         self.assertEqual(view['effective_premium'], {'amount': 125903.3, 'currency': 'GBP'})
         self.assertEqual(len(view['input']['fx']), 2)
         self.assertIn('125,903.30', rendered[handbook.HANDBOOK_PATH])
+        publisher_tree = fixture.f.trees['fixture-publisher']
+        fixture.git(publisher_tree, 'remote', 'set-url', 'origin', 'git@github.com:fixture/fixture-publisher.git')
+        ssh_view, _ = fixture.view()
+        self.assertEqual(ssh_view, view, 'canonical SSH and HTTPS transport select the same signed FX source')
+        fixture.git(publisher_tree, 'remote', 'set-url', 'origin', 'https://github.com/fixture/fixture-publisher')
         raw = fixture.f.trees['fixture-publisher'] / 'fx/v1/feed.json'
         raw.write_text(raw.read_text().replace('0.5', '0.25'))
         view, _ = fixture.view();self.assertEqual(view['state'], 'unobserved')
@@ -527,6 +534,15 @@ def convert(amount, frm, to, as_of, root):
         self.result()['observations'].pop(1)
         self.reobserve()
         view, _ = self.view();self.assertEqual(view['state'], 'unobserved')
+
+    def test_supported_git_transports_preserve_adopter_and_condition_publisher_identity(self):
+        expected, _ = self.view()
+        for repository, tree in [('driftwood', self.adopter), ('fixture-platform', self.platform),
+                                 ('fixture-nist', self.f.trees['fixture-nist']), ('insurer', self.f.trees['insurer'])]:
+            self.git(tree, 'remote', 'set-url', 'origin', 'ssh://git@github.com/fixture/' + repository + '.git')
+        actual, _ = self.view();self.assertEqual(actual, expected)
+        self.git(self.adopter, 'remote', 'set-url', 'origin', 'https://example.invalid/fixture/driftwood')
+        self.assert_refused('adopter origin')
 
     def test_history_absence_empty_conditions_and_unsupported_replay_marker(self):
         fixture = self.variant(conditions=[])
