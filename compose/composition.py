@@ -5694,12 +5694,17 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
         identity_inputs = (adopter_dir, parents, list(observations.values()),
                            _composition_as_of(edges, parent_trees, as_of),
                            _namespace_facts(adopter_dir))
-        identity_party_raw = (party_raw if parent_trees.publisher_quality is not None else None)
+        if parent_trees.publisher_quality is None:
+            current_identity = comparison_history.identity(*identity_inputs)
+            legacy_identity = lambda: comparison_history.v330_identity(*identity_inputs)
+        else:
+            current_identity = comparison_history.identity(*identity_inputs, party_raw=party_raw)
+            legacy_identity = lambda: comparison_history.v330_identity(*identity_inputs, party_raw=party_raw)
         comparison = comparison_history.resolve(
-            comparison_history.identity(*identity_inputs, party_raw=identity_party_raw),
+            current_identity,
             recorded_header, recorded_prices, recorded_cages,
             replay=replay_observations,
-            legacy=lambda: comparison_history.v330_identity(*identity_inputs, party_raw=identity_party_raw))
+            legacy=legacy_identity)
     except comparison_history.InvalidHistory as error:
         return _refused([str(error)]), {}
     comparison_before = comparison["before"]
