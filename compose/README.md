@@ -22,6 +22,11 @@ Namespace manifest is the declaration; the composed artefact carries no namespac
 This lives in `platform`, not in an adopter's own repo, for the same reason `party/` does: every
 adopter already pins `platform` and calls through that pin.
 
+The [modeled quote-condition contract](quote-conditions.md) documents the complete
+source-bound assessment and rendered conditional premium view. It preserves
+booked contract costs and distinguishes unobserved technical evidence from a
+proved breach or a complete pass matrix.
+
 ## What this ticket's `compose()` does
 
 1. Loads the adopter's `party.yaml` and runs `party/party_artefact.py`'s existing `check()`. A
