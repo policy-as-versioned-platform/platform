@@ -67,6 +67,9 @@ if fails:
 print("  -- all offline invariants hold --")
 PY
 
+echo "== offline: alternate assurance-band input =="
+python3 "$HERE/test_bands.py"
+
 echo "== offline: independence from the legacy operation selector =="
 python3 "$HERE/test_factors.py"
 

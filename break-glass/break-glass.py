@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -138,7 +139,14 @@ def decide(scenario, oidc, webauthn, device, bands):
 
 def load_bands(path=DEFAULT_BANDS):
     with open(path) as fh:
-        return json.load(fh)
+        bands = json.load(fh)
+    if not isinstance(bands, dict):
+        raise ValueError("expected an object with assurance thresholds")
+    for key in ("step_up_at", "attest_at", "no_cage_at"):
+        value = bands.get(key)
+        if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
+            raise ValueError(f"{key} must be a finite number")
+    return bands
 
 
 def selfcheck():
@@ -218,7 +226,12 @@ def main(argv=None):
     if args.cmd == "selfcheck":
         selfcheck()
         return 0
-    r = decide(fair.load(args.scenario), args.oidc, args.webauthn, args.device, load_bands(args.bands))
+    try:
+        bands = load_bands(args.bands)
+    except (OSError, ValueError) as error:
+        print(f"FAIL: invalid assurance bands: {error}", file=sys.stderr)
+        return 1
+    r = decide(fair.load(args.scenario), args.oidc, args.webauthn, args.device, bands)
     print(json.dumps(r, indent=2))
     return {ALLOW: 0, STEP_UP: 2, CAGE: 3, DENY: 1}[r["decision"]]
 
