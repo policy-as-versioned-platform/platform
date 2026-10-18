@@ -11,6 +11,7 @@ import base64
 from collections.abc import Callable, Mapping
 from datetime import date
 import hashlib
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ import subprocess
 import sys
 from typing import Any
 from urllib.parse import quote
+import urllib.error
+import urllib.request
 
 import yaml
 
@@ -80,10 +83,36 @@ def _show(root: Path, ref: str, path: str, *, absent: bool = False) -> bytes:
         raise
 
 
+class _NoOfficialRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request: urllib.request.Request, fp: Any, code: int,
+                         msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
 def _official(path: str) -> dict:
     try:
-        value = json.loads(_command(['gh', 'api', '--method', 'GET', path]))
-    except (ValueError, InvalidRetirement) as exc:
+        try:
+            data = _command(['gh', 'api', '--method', 'GET', path])
+        except InvalidRetirement as exc:
+            cause = exc.__cause__
+            if not isinstance(cause, subprocess.CalledProcessError) or cause.returncode != 4:
+                raise
+            # gh requires authentication even for public reads. The gate holds no
+            # credential; only this named auth refusal uses the public API directly.
+            request = urllib.request.Request('https://api.github.com/' + path, method='GET', headers={
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'policy-as-versioned-platform',
+                'X-GitHub-Api-Version': '2022-11-28',
+            })
+            with urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}), _NoOfficialRedirect()).open(request, timeout=60) as response:
+                if response.status != 200:
+                    raise ValueError('official public GET did not return HTTP 200')
+                data = response.read()
+        value = json.loads(data)
+    except (OSError, HTTPException, ValueError, InvalidRetirement) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            exc.close()
         raise InvalidRetirement(f'official GitHub GET unavailable for {path}') from exc
     if not isinstance(value, dict):
         raise InvalidRetirement(f'official GitHub GET returned no object for {path}')

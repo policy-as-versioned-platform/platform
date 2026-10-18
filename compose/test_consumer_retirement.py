@@ -1,13 +1,22 @@
 """An explicit retirement is verified at the real composition seam, never silently ignored."""
 import copy
 import base64
+from email.message import Message
 import hashlib
+from http.client import IncompleteRead
+from io import BytesIO
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+import urllib.error
+import urllib.request
+import urllib.response
 
 import yaml
 
@@ -15,6 +24,200 @@ import composition as ct
 import consumer_retirement as retirement
 
 import test_engine_pairing
+
+
+class RetirementOfficialReads(unittest.TestCase):
+    """Actual gh authentication refusal; HTTPS responses are explicit data fixtures."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='retirement-official-fixture-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        allowed = ('PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR')
+        environment = {key: os.environ[key] for key in allowed if key in os.environ}
+        environment.update(GH_CONFIG_DIR=str(self.root), GH_PROMPT_DISABLED='1')
+        isolated = patch.dict(os.environ, environment, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
+        self.requests = []
+        self.http_status = 200
+        self.http_body = b'{"full_name":"fixture/adopter","default_branch":"main"}'
+        self.expected_url = 'https://api.github.com/repos/fixture/adopter'
+
+    def fixture_gh(self, exit_code, body=b'', error=b'explicit synthetic gh fixture'):
+        tools = self.root / 'bin'
+        tools.mkdir(exist_ok=True)
+        command = tools / 'gh'
+        command.write_text('#!' + sys.executable + '\nimport sys\n'
+                           'sys.stdout.buffer.write(' + repr(body) + ')\n'
+                           'sys.stderr.buffer.write(' + repr(error) + ')\n'
+                           'sys.exit(' + str(exit_code) + ')\n')
+        command.chmod(0o755)
+        os.environ['PATH'] = str(tools) + os.pathsep + os.environ.get('PATH', '')
+
+    def fixture_https(self, opener, request, *args, **kwargs):
+        """External HTTP data adapter, never a real GitHub response or authority claim."""
+        self.assertEqual(request.full_url, self.expected_url)
+        self.assertEqual(request.get_method(), 'GET')
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertNotIn('authorization', headers)
+        self.assertNotIn('proxy-authorization', headers)
+        self.assertEqual(headers['accept'], 'application/vnd.github+json')
+        self.assertEqual(headers['x-github-api-version'], '2022-11-28')
+        self.assertTrue(headers['user-agent'])
+        self.assertEqual(kwargs.get('timeout'), 60)
+        self.requests.append(request)
+        response = Mock()
+        response.status = self.http_status
+        response.read.return_value = self.http_body
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        return response
+
+    def test_authentication_required_gh_can_read_a_public_object_without_gate_credentials(self):
+        if shutil.which('gh') is None:
+            self.skipTest('the actual gh authentication-preflight regression needs gh installed')
+        with patch.object(urllib.request.OpenerDirector, 'open', autospec=True,
+                          side_effect=self.fixture_https):
+            value = retirement._official('repos/fixture/adopter')
+        self.assertEqual(value, {'full_name': 'fixture/adopter', 'default_branch': 'main'})
+        self.assertEqual(len(self.requests), 1)
+
+    def test_configured_gh_success_never_uses_public_fallback(self):
+        self.fixture_gh(0, b'{"full_name":"fixture/adopter","default_branch":"main"}')
+        with patch.object(urllib.request.OpenerDirector, 'open',
+                          side_effect=AssertionError('successful gh must keep its existing transport')):
+            value = retirement._official('repos/fixture/adopter')
+        self.assertEqual(value, {'full_name': 'fixture/adopter', 'default_branch': 'main'})
+
+    def test_other_gh_failures_never_use_public_fallback(self):
+        for exit_code in (1, 2, 3):
+            with self.subTest(exit_code=exit_code):
+                self.fixture_gh(exit_code, error=b'explicit fixture API denial or transport error')
+                with patch.object(urllib.request.OpenerDirector, 'open',
+                                  side_effect=AssertionError('only auth-required exit 4 can fall back')):
+                    with self.assertRaises(retirement.InvalidRetirement):
+                        retirement._official('repos/fixture/adopter')
+
+    def test_invalid_gh_json_or_nonobject_never_uses_public_fallback(self):
+        for body in (b'not JSON', b'[]', b'null'):
+            with self.subTest(body=body):
+                self.fixture_gh(0, body)
+                with patch.object(urllib.request.OpenerDirector, 'open',
+                                  side_effect=AssertionError('bad gh data is not an auth refusal')):
+                    with self.assertRaises(retirement.InvalidRetirement):
+                        retirement._official('repos/fixture/adopter')
+
+    def test_missing_gh_remains_an_unavailable_instrument_without_fallback(self):
+        os.environ['PATH'] = str(self.root)
+        with patch.object(urllib.request.OpenerDirector, 'open',
+                          side_effect=AssertionError('missing gh is outside the exit-4 repair')):
+            with self.assertRaises(retirement.InvalidRetirement):
+                retirement._official('repos/fixture/adopter')
+
+    def test_native_public_get_never_sends_synthetic_environment_tokens(self):
+        self.fixture_gh(4)
+        os.environ.update(GH_TOKEN='synthetic-fixture-token-never-send',
+                          GITHUB_TOKEN='synthetic-other-fixture-token-never-send')
+        self.expected_url += '/contents/a.yaml?ref=release%2Fcurrent'
+        with patch.object(urllib.request.OpenerDirector, 'open', autospec=True,
+                          side_effect=self.fixture_https):
+            value = retirement._official('repos/fixture/adopter/contents/a.yaml?ref=release%2Fcurrent')
+        self.assertEqual(value['full_name'], 'fixture/adopter')
+        self.assertEqual(len(self.requests), 1)
+        self.assertNotIn('synthetic-', str(self.requests[0].header_items()))
+        self.assertNotIn('synthetic-', self.requests[0].full_url)
+
+    def test_invalid_native_json_and_nonobjects_are_refused(self):
+        self.fixture_gh(4)
+        for body in (b'not JSON', b'[]', b'null', b'false', b'1', b'"text"'):
+            with self.subTest(body=body):
+                self.http_body = body
+                with patch.object(urllib.request.OpenerDirector, 'open', autospec=True,
+                                  side_effect=self.fixture_https):
+                    with self.assertRaises(retirement.InvalidRetirement):
+                        retirement._official('repos/fixture/adopter')
+
+    def test_native_bad_http_and_redirect_responses_are_refused(self):
+        self.fixture_gh(4)
+        for status in (301, 302, 403, 404, 429, 500):
+            with self.subTest(status=status):
+                self.http_status = status
+                with patch.object(urllib.request.OpenerDirector, 'open', autospec=True,
+                                  side_effect=self.fixture_https):
+                    with self.assertRaises(retirement.InvalidRetirement):
+                        retirement._official('repos/fixture/adopter')
+
+    def test_native_http_exception_and_timeout_are_named_unavailable(self):
+        self.fixture_gh(4)
+        errors = (TimeoutError('explicit fixture timeout'),
+                  IncompleteRead(b'explicit partial fixture body'),
+                  urllib.error.URLError('explicit fixture transport error'),
+                  urllib.error.HTTPError(self.expected_url, 403, 'explicit fixture denial', {}, None))
+        for error in errors:
+            if isinstance(error, urllib.error.HTTPError):
+                self.addCleanup(error.close)
+            with self.subTest(error=type(error).__name__):
+                with patch.object(urllib.request.OpenerDirector, 'open', side_effect=error) as http:
+                    with self.assertRaisesRegex(retirement.InvalidRetirement,
+                                                'official GitHub GET unavailable for repos/fixture/adopter'):
+                        retirement._official('repos/fixture/adopter')
+                self.assertEqual(http.call_count, 1)
+
+    def test_native_redirect_never_requests_a_second_or_different_origin(self):
+        self.fixture_gh(4)
+        requests = []
+        def fixture_transport(handler, request):
+            requests.append(request)
+            self.assertEqual(request.full_url, self.expected_url)
+            headers = Message()
+            headers['Location'] = 'https://example.invalid/never-request-this-fixture'
+            response = urllib.response.addinfourl(BytesIO(b''), headers, request.full_url, 302)
+            response.msg = 'explicit fixture redirect'
+            self.addCleanup(response.close)
+            return response
+        with patch.object(urllib.request.HTTPSHandler, 'https_open', autospec=True,
+                          side_effect=fixture_transport):
+            with self.assertRaises(retirement.InvalidRetirement) as unavailable:
+                retirement._official('repos/fixture/adopter')
+        self.assertEqual(len(requests), 1)
+        self.assertTrue(unavailable.exception.__cause__.closed)
+
+    def test_native_https_handler_excludes_environment_proxy_authentication(self):
+        self.fixture_gh(4)
+        requests = []
+        def fixture_transport(handler, request):
+            headers = {key.lower(): value for key, value in request.header_items()}
+            self.assertNotIn('authorization', headers)
+            self.assertNotIn('proxy-authorization', headers)
+            self.assertEqual(request.full_url, self.expected_url)
+            self.assertEqual(request.host, 'api.github.com')
+            self.assertEqual(request.get_method(), 'GET')
+            requests.append(request)
+            response = urllib.response.addinfourl(BytesIO(self.http_body), Message(), request.full_url, 200)
+            response.msg = 'explicit synthetic HTTPS fixture'
+            self.addCleanup(response.close)
+            return response
+        for proxy_name in ('HTTPS_PROXY', 'https_proxy'):
+            with self.subTest(proxy_name=proxy_name):
+                environment = {proxy_name: 'http://synthetic-user:synthetic-proxy-secret@proxy.fixture.invalid:8443'}
+                with patch.dict(os.environ, environment), \
+                        patch.object(urllib.request.HTTPSHandler, 'https_open', autospec=True,
+                                     side_effect=fixture_transport):
+                    value = retirement._official('repos/fixture/adopter')
+                self.assertEqual(value, {'full_name': 'fixture/adopter', 'default_branch': 'main'})
+        self.assertEqual(len(requests), 2)
+
+    def test_native_object_still_requires_the_exact_repository_and_default_branch(self):
+        self.fixture_gh(4)
+        for body in (b'{}', b'{"full_name":"fixture/other","default_branch":"main"}',
+                     b'{"full_name":"fixture/adopter","default_branch":null}'):
+            with self.subTest(body=body):
+                self.http_body = body
+                with patch.object(urllib.request.OpenerDirector, 'open', autospec=True,
+                                  side_effect=self.fixture_https):
+                    with self.assertRaises(retirement.InvalidRetirement):
+                        retirement._default_branch(self.root, 'fixture/adopter', retirement._official)
 
 
 class RetirementComposition(unittest.TestCase):
