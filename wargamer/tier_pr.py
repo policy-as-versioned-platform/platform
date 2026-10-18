@@ -447,6 +447,32 @@ def _move_evidence(p: dict, adopter_dir: Path, ns_path: Path) -> dict:
             reason = "price perspective is unobserved or unreadable"
         if not isinstance(price.get("currency"), str) or not re.fullmatch(r"[A-Z]{3}", price["currency"]):
             reason = "price currency is unobserved or unreadable"
+        unit_context = {field: None for field in ("lef_basis", "lef_from", "tail", "lef", "horizon")}
+        unreadable_context = []
+        for field in ("lef_basis", "lef_from", "tail"):
+            if price.get(field) is not None and not isinstance(price[field], str):
+                reason = f"declared {field} is unreadable; expected text"
+                unreadable_context.append(field)
+            elif price.get(field):
+                unit_context[field] = price[field]
+        for field in ("lef", "horizon"):
+            value = price.get(field)
+            if value is None:
+                continue                  # optional context is absent, never invented
+            values = value if field == "lef" else [value]
+            shape = isinstance(value, list) and len(value) == 3 if field == "lef" else True
+            try:
+                valid = shape and all(type(v) in (int, float) and math.isfinite(v) and v >= 0
+                                      and (field != "horizon" or v > 0) for v in values)
+            except OverflowError:
+                valid = False
+            if not valid:
+                reason = f"declared {field} is unreadable; expected " + (
+                    "a nonnegative three-number frequency array" if field == "lef" else
+                    "a positive number of years")
+                unreadable_context.append(field)
+            else:
+                unit_context[field] = value
         old = cage.caged_residual(amount, before) if reason is None else None
         new = cage.caged_residual(amount, after) if reason is None else None
         lines.append({"index": index, "source": price.get("source"), "kind": price.get("kind"),
@@ -458,6 +484,7 @@ def _move_evidence(p: dict, adopter_dir: Path, ns_path: Path) -> dict:
                       "rests_on_grade": price.get("rests_on_grade")
                           if type(price.get("rests_on_grade")) is int else None,
                       "could_not_look": reason,
+                      "unit_context": {"values": unit_context, "unreadable": unreadable_context},
                       "input_sha256": hashlib.sha256(json.dumps(price, sort_keys=True).encode()).hexdigest(),
                       "provenance": {key: price.get(key) for key in (
                           "old_version", "new_version", "feed_version", "version", "pin_signature",
@@ -509,6 +536,19 @@ def _move_paragraph(p: dict) -> str:
                     f"input as-of `{line['provenance']['as_of'] or 'unobserved'}`; "
                     f"FX as-of `{line['provenance']['fx_as_of'] or 'unobserved'}`."
                     + (f" Could not look: {line['could_not_look']}." if line['could_not_look'] else ""))
+        context = line["unit_context"]
+        def supplied(field):
+            if field in context["unreadable"]:
+                return "unreadable"
+            value = context["values"][field]
+            if value is None:
+                return "unobserved"
+            return value.replace("\n", " ") if isinstance(value, str) else json.dumps(value)
+        horizon_unit = " years" if context["values"]["horizon"] is not None else ""
+        text.append(f"  Supplied context: LEF `{supplied('lef')}`; "
+                    f"horizon `{supplied('horizon')}`{horizon_unit}; "
+                    f"frequency source `{supplied('lef_from')}`; tail `{supplied('tail')}`. "
+                    f"Frequency/annualisation basis: {supplied('lef_basis')}.")
     snapshot = move["snapshot"]
     text.append(f"\nFixed pricing snapshot: `sha256:{snapshot['sha256']}`; adopter checkout at load "
                 f"`{snapshot['adopter_commit_at_load'] or 'unobserved'}`; caller as-of "

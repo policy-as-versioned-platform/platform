@@ -273,6 +273,61 @@ else:
         self.assertNotEqual(initial['sha256'], changed_layout['sha256'])
         self.assertNotEqual(initial['prices_sha256'], changed_order['prices_sha256'])
 
+    def test_unreadable_declared_frequency_basis_is_unknown_not_a_numeric_comparison(self):
+        self.price['lef_basis'] = {'unreadable': 'not text'}
+        self.evidence.write_text(json.dumps({'prices': [self.price]}))
+        plan, = self.propose()
+        move = plan['namespace_tier_move']
+        line, = move['lines']
+        self.assertEqual(move['state'], 'unavailable')
+        self.assertIsNone(line['before_residual'])
+        self.assertIsNone(line['after_residual'])
+        self.assertIsNone(line['residual_delta'])
+        self.assertIn('lef_basis', line['could_not_look'])
+
+    def test_declared_frequency_and_horizon_use_the_published_types(self):
+        for field, value in [('lef', {'unreadable': 'not a triple'}),
+                             ('lef', [1, True, 4]), ('lef', [1, 2]),
+                             ('horizon', ['not', 'a', 'horizon']), ('horizon', True), ('horizon', 0)]:
+            with self.subTest(field=field, value=value):
+                price = dict(self.price, **{field: value})
+                self.evidence.write_text(json.dumps({'prices': [price]}))
+                plan, = self.propose()
+                line, = plan['namespace_tier_move']['lines']
+                self.assertIsNone(line['before_residual'])
+                self.assertIsNone(line['after_residual'])
+                self.assertIsNone(line['residual_delta'])
+                self.assertIn(field, line['could_not_look'])
+                self.assertEqual(line['provenance'][field], value)
+
+    def test_supplied_frequency_horizon_and_basis_are_readable_without_reannualising(self):
+        self.price.update(lef=[2, 4, 9], horizon=1, lef_from='synthetic-register',
+                          lef_basis='synthetic editorial frequency, not counted incidents', tail='bounded-pert')
+        self.evidence.write_text(json.dumps({'prices': [self.price]}))
+        plan, = self.propose()
+        line, = plan['namespace_tier_move']['lines']
+        self.assertIn('LEF `[2, 4, 9]`', plan['body'])
+        self.assertIn('horizon `1` years', plan['body'])
+        self.assertIn('synthetic editorial frequency, not counted incidents', plan['body'])
+        self.assertIn('synthetic-register', plan['body'])
+        self.assertIn('bounded-pert', plan['body'])
+        self.assertAlmostEqual(line['before_residual'], 63000)
+        self.assertAlmostEqual(line['after_residual'], 7200)
+
+    def test_absent_optional_context_is_unobserved_without_changing_readable_money(self):
+        self.price.update(lef=None, lef_basis=None, lef_from=None, horizon=None, tail=None)
+        self.evidence.write_text(json.dumps({'prices': [self.price]}))
+        plan, = self.propose()
+        move = plan['namespace_tier_move']
+        line, = move['lines']
+        self.assertEqual(move['state'], 'available')
+        self.assertIsNone(line['could_not_look'])
+        self.assertIn('LEF `unobserved`', plan['body'])
+        self.assertIn('horizon `unobserved`', plan['body'])
+        self.assertIn('Frequency/annualisation basis: unobserved', plan['body'])
+        self.assertAlmostEqual(line['before_residual'], 63000)
+        self.assertAlmostEqual(line['after_residual'], 7200)
+
 
 if __name__ == '__main__':
     unittest.main()
