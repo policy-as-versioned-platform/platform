@@ -9,8 +9,9 @@
 #   3. (device-SVID gate) the request's device is one SPIRE tpm_devid attested on
 #      the acme.internal root — see ../device. Absent ⇒ refused, not stepped up.
 # On allow, Pomerium signs a JWT (X-Pomerium-Jwt-Assertion) the kube-apiserver
-# trusts as an OIDC token → per-session Kubernetes RBAC. The *graded* decision
-# (which op needs which factors) is ../access.py; this route encodes the top tier.
+# trusts as an OIDC token → per-session Kubernetes RBAC. This is shelved wiring,
+# not a priced external-authz integration. ../access.py is a retired migration
+# guard; ../break-glass/ is an offline fixture and is not called by this route.
 #
 # Versions are a calibration knob: pin to the appVersion you tour, re-run verify.
 apiVersion: source.toolkit.fluxcd.io/v1

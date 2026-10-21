@@ -1,5 +1,8 @@
 # Windows Hello for Business on the vTPM Windows 11 EUD — narrated honestly
 
+**Scope, 2026-10-21:** the actor identity/access plane is shelved; no live
+attestation is established by this runbook.
+
 **Ticket 20.** Demonstrates the Windows-side half of "device (EUD), same graded
 posture" (spec: Enforcement gradient & three-actor identity). WHfB is the
 *local* Windows sign-in gate (TPM-bound PIN/biometric) on the vTPM'd VM;
@@ -29,23 +32,22 @@ different actor (Windows local sign-in vs. a WebAuthn browser credential).
 4. **Settings > Accounts > Sign-in options > Windows Hello** — enrol a PIN.
    `tpm.msc` / `certutil -tpminfo` confirms the WHfB key is TPM-resident.
 
-## The gate this feeds: access on the device SVID, not WHfB alone
+## Device identity and the offline decision fixture
 
-WHfB proves *who's signed in on this box*; it is **not** what the estate's
-access gate (`../access/access.py`) checks. The gate checks the **device
-SVID** — earned separately, by the VM's SPIRE agent attesting via `tpm_devid`
-against the *same* vTPM WHfB just used (`tpm-devid-enroll.sh` in this
-directory renders the `ClusterStaticEntry`, same pattern as ticket 18's
-`operator-macbook-device`). A VM that has WHfB enrolled but has never
-completed `tpm_devid` attestation has **no** device SVID and is refused any
-tier-3 op by `access.py` — WHfB alone does not buy device trust in this
-estate; it's local-sign-in hygiene on the same hardware root.
+WHfB local sign-in and an estate device SVID are separate signals. The actor
+plane remains shelved, including the SPIRE/Pomerium integration. The retired
+`../access/access.py` entrypoint does not authenticate either signal or grant
+access. The included `../break-glass/` fixture takes an explicit device input;
+it does not read a live SVID or Windows sign-in.
 
 ```bash
-# same decision engine as the Mac beat, now with a Windows EUD's device SVID
-../access/access.py decide break-glass --oidc --webauthn --device   # ALLOW  (device SVID present)
-../access/access.py decide break-glass --oidc --webauthn            # DENY   (WHfB enrolled ≠ device SVID)
+# Included financial fixture, not an observed Windows identity or access check.
+python3 ../break-glass/break-glass.py decide ../break-glass/scenarios/ludlow-patient-data.json --oidc --webauthn --device fresh
+python3 ../break-glass/break-glass.py decide ../break-glass/scenarios/ludlow-patient-data.json --oidc --webauthn --device none
 ```
+
+The first fixture returns ALLOW and the second DENY under its unchanged global
+bands. Neither establishes a live device, per-party calibration or integration.
 
 ## The honest caveat (say this on stage)
 

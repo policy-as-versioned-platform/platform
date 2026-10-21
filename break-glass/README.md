@@ -5,8 +5,10 @@ not an observed live access-control integration. The actor identity/access plane
 is shelved for this build (hub ticket90). The existing global assurance bands
 are not a per-party mapping derived from `party.yaml`. Shared factor names and
 decision constants now live in `../access/factors.py`; this engine no longer
-imports the legacy static operation selector. That selector remains available
-for its shelved callers, and ticket27 remains open.
+imports the legacy static operation selector. The legacy selector is now retired: `access.py` only reports migration
+guidance and exits3. Shelved caller scripts use this offline fixture instead;
+no live actor probe or authentication integration is activated. Authentic
+per-party bands remain outstanding, so ticket27 remains open.
 
 **Ticket 19** (blocked by 06, 18). A risky operation — break-glass, or a `ludlow`
 patient-data read — demands **current device posture** + **higher identity
@@ -14,10 +16,9 @@ assurance**, *proportional to the operation's £*. A stale or unattested device 
 **caged** (read-only/scoped session) or **denied** — the harder the £, the less a
 degraded device gets away with.
 
-This is the human/device projection of the one policy, sharpened. Ticket 18's
-`../access/access.py` gates by a static op→tier table and treats the device as
-binary present/absent; it flagged both as its upgrade path. This ticket builds
-that path:
+This is the included human/device decision fixture. The retired ticket18
+selector used a static operation table and binary device input. This fixture
+replaces those two choices:
 
 1. **The bar is the £, not a table.** The op's FAIR scenario runs through
    `../fair/fair.py`; its `carried` £ (TVaR + risk load) picks the assurance band.

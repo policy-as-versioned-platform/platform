@@ -1,4 +1,8 @@
-# The Mac Secure Enclave = the live genuine hardware root
+# The Mac Secure Enclave and the shelved actor design
+
+The actor access plane remains shelved. The historical venue steps below
+are a design runbook, not proof of observed attestation or access. The static
+`access.py` selector is retired; it returns guidance and exit3 only.
 
 The demo presents on an Apple-Silicon Mac. It has **no TPM** — the Secure
 Enclave is not IEEE-802.1AR / DevID-compatible, so it cannot mint a `tpm_devid`
@@ -43,13 +47,14 @@ laptop. That is the point the demo carries.
 3. On each UTM vTPM EUD, run the SPIRE agent with the `tpm_devid` node attestor;
    read the attested TPM fingerprint from the server log and paste it into
    `device-svid.yaml` (`selectors[0]`), then re-apply.
-4. Verify the gate with `access.py`: an attested device + passkey reaches
-   break-glass; drop either factor and watch it refuse / step up.
+4. Consult `../../break-glass/README.md` for the separate priced offline
+   fixture. Its explicit factor inputs do not verify an attested device or
+   establish that Pomerium invokes it.
 
 ## Why this can't be fully verified in a headless CI run
 
 Steps 2–3 need a human at a real Secure Enclave (Touch ID gesture) and a live
 (v)TPM doing a proof-of-residency challenge — neither is automatable unattended.
-The manifests, the attestor config, and the *decision logic* (`access.py`) are
-all verified offline; the live hardware attestation is the one hardware-gated
+The manifests and attestor config have offline structural checks. The priced
+break-glass fixture has separate offline tests; the live hardware attestation is the one hardware-gated
 step. `verify-access.sh` runs everything that does not need the enclave/TPM.

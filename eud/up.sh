@@ -31,6 +31,6 @@ echo "  1. boot each VM with the command build-vm.sh printed (or import into UTM
 echo "  2. install the OS; enrol WHfB (Windows) / confirm the vTPM (Linux, tpm2_getekcertificate)"
 echo "  3. run the SPIRE agent on the guest with the tpm_devid attestor; read the fingerprint off the server log"
 echo "  4. tpm-devid-enroll.sh <eud> <fingerprint> | kubectl apply -f -   # replaces the placeholder entry"
-echo "  5. access.py decide break-glass --oidc --webauthn --device       # now ALLOW"
+echo "  5. the static access selector is retired; break-glass/README.md describes an offline fixture, not an attestation check"
 
 say "done. verify with estate/platform/eud/verify-eud.sh"

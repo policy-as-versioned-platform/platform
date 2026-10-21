@@ -59,8 +59,8 @@ echo "    estate/platform/identity/spire/helmrelease.yaml (spec.values), then:"
 echo "    flux --context $CTX reconcile helmrelease -n spire-system spire"
 echo "    (needs a real/virtual TPM on the EUD — see device/secure-enclave.md)"
 
-say "decision engine selfcheck (the graded human/device gate)"
-python3 "$HERE/access.py" selfcheck
+say "priced offline fixture selfcheck (not a live access decision)"
+python3 "$HERE/../break-glass/break-glass.py" selfcheck
 
 if [ "$DEGRADED" -ne 0 ]; then
   echo "ACCESS PLANE DEGRADED — a HelmRelease above is not Ready. Re-run up.sh once (slow\n  chart pull), and if it stays not-Ready read the message: it is a real fault, not a timeout." >&2
