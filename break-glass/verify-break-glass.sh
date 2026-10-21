@@ -9,6 +9,10 @@
 # Exits non-zero if any invariant the talk relies on is broken.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$HERE/../lib.sh"
+command -v python3 >/dev/null 2>&1 || skip "python3 required"
+python3 -c 'import yaml' >/dev/null 2>&1 || skip "PyYAML party reader required"
+selfcheck_absent "$HERE/verify-break-glass.sh" python3
 
 echo "== offline: decision-engine asserts =="
 python3 "$HERE/break-glass.py" selfcheck
@@ -72,5 +76,8 @@ python3 "$HERE/test_bands.py"
 
 echo "== offline: independence from the legacy operation selector =="
 python3 "$HERE/test_factors.py"
+
+echo "== offline: explicit party assurance policies and shared input validation =="
+python3 "$HERE/test_party_bands.py"
 
 echo "verify-break-glass: done (offline; rides on the access plane — see ../access/verify-access.sh for the live IAP checks)"

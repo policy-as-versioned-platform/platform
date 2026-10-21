@@ -29,7 +29,8 @@ DENY/STEP_UP/ALLOW vocabulary), without the static operation selector. Adds only
 the £→band map, the CAGE rung, and posture currency. No new risk engine, no second
 factor model.
 
-Deps: none. Run `break-glass.py selfcheck` for the runnable asserts.
+The legacy fixture uses only stdlib. The optional party mode uses the existing
+PyYAML party reader. Run `break-glass.py selfcheck` for the runnable asserts.
 
 Usage:
   break-glass.py decide scenarios/ludlow-patient-data.json --oidc --webauthn --device fresh   # ALLOW
@@ -37,21 +38,26 @@ Usage:
   break-glass.py decide scenarios/driftwood-bulk-export.json --oidc --webauthn --device stale   # CAGE (read-only)
   break-glass.py decide scenarios/tuppence-write.json --oidc --device fresh                      # STEP_UP (prompt passkey)
   break-glass.py selfcheck
+  break-glass.py decide SCENARIO --party-yaml ADOPTER/party.yaml --oidc
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import sys
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Reuse the estate's two load-bearing engines one tree over.
 sys.path.insert(0, os.path.join(HERE, "..", "fair"))
 sys.path.insert(0, os.path.join(HERE, "..", "access"))
+sys.path.insert(0, os.path.join(HERE, "..", "party"))
 import fair    # noqa: E402  — the £ maths
 import factors as assurance_factors  # noqa: E402 — shared vocabulary, no operation selector
+import assurance_bands  # noqa: E402 — stdlib declaration validation shared with the party reader
 
 DEFAULT_BANDS = os.path.join(HERE, "assurance-bands.json")
 
@@ -137,16 +143,62 @@ def decide(scenario, oidc, webauthn, device, bands):
     return out(STEP_UP, f"£{gbp:,.0f}: fresh attested device, prompt for the passkey to complete step-up")
 
 
+def _unique_json_object(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError(f"duplicate JSON key: {key!r}")
+        document[key] = value
+    return document
+
+
 def load_bands(path=DEFAULT_BANDS):
     with open(path) as fh:
-        bands = json.load(fh)
-    if not isinstance(bands, dict):
-        raise ValueError("expected an object with assurance thresholds")
-    for key in ("step_up_at", "attest_at", "no_cage_at"):
-        value = bands.get(key)
-        if type(value) not in (int, float) or (type(value) is float and not math.isfinite(value)):
-            raise ValueError(f"{key} must be a finite number")
+        bands = json.load(fh, object_pairs_hook=_unique_json_object)
+    problems = assurance_bands.errors(bands, legacy=True)
+    if problems:
+        raise ValueError("; ".join(problems))
     return bands
+
+
+def load_party_bands(path, scenario):
+    """Read one declared policy, binding interpretation and provenance to one capture.
+
+    The source hash is provenance, not signature verification. Party YAML and
+    appetite readers are imported only here, leaving the legacy fixture stdlib-only.
+    """
+    try:
+        import party_artefact
+    except ModuleNotFoundError as error:
+        if error.name != "yaml":
+            raise
+        raise ValueError("missing instrument: PyYAML party reader") from error
+    sys.path.insert(0, os.path.join(HERE, "..", "risk"))
+    import enforce
+
+    raw = Path(path).read_bytes()
+    try:
+        document = party_artefact.parse_document(raw)
+    except party_artefact.Refused as error:
+        raise ValueError(str(error)) from error
+    problems = party_artefact.validate_schema(document)
+    if problems:
+        raise ValueError("; ".join(problems))
+    party = document["party"]
+    if not isinstance(scenario, dict) or scenario.get("org") != party:
+        raise ValueError("scenario.org must exactly match the declared party")
+    try:
+        appetite = enforce.appetite_from_document(party, document, str(path))
+    except (enforce.MissingInstrument, OverflowError) as error:
+        raise ValueError("missing instrument: " + str(error)) from error
+    if (appetite["currency"] != "GBP" or not math.isfinite(appetite["amount"])
+            or appetite["amount"] < 0):
+        raise ValueError("appetite.tolerance must be a finite nonnegative GBP amount")
+    bands = document["appetite"].get("assurance_bands")
+    if bands is None:
+        raise ValueError(f"missing instrument: {party} declares no appetite.assurance_bands")
+    provenance = {"party": party, "source_sha256": hashlib.sha256(raw).hexdigest(), **bands}
+    return bands, provenance
 
 
 def selfcheck():
@@ -219,7 +271,9 @@ def main(argv=None):
     de.add_argument("--oidc", action="store_true", help="human is OIDC-authenticated")
     de.add_argument("--webauthn", action="store_true", help="phishing-resistant WebAuthn presented")
     de.add_argument("--device", choices=DEVICE_STATES, default=NONE, help="device posture currency")
-    de.add_argument("--bands", default=DEFAULT_BANDS)
+    policy = de.add_mutually_exclusive_group()
+    policy.add_argument("--bands")
+    policy.add_argument("--party-yaml", help="use this party's explicit assurance bands")
     sub.add_parser("selfcheck", help="run the asserts")
     args = p.parse_args(argv)
 
@@ -227,11 +281,19 @@ def main(argv=None):
         selfcheck()
         return 0
     try:
-        bands = load_bands(args.bands)
+        if args.party_yaml is not None:
+            with open(args.scenario) as source:
+                scenario = json.load(source, object_pairs_hook=_unique_json_object)
+            bands, provenance = load_party_bands(args.party_yaml, scenario)
+        else:
+            scenario = fair.load(args.scenario)
+            bands, provenance = load_bands(args.bands if args.bands is not None else DEFAULT_BANDS), None
     except (OSError, ValueError) as error:
         print(f"FAIL: invalid assurance bands: {error}", file=sys.stderr)
         return 1
-    r = decide(fair.load(args.scenario), args.oidc, args.webauthn, args.device, bands)
+    r = decide(scenario, args.oidc, args.webauthn, args.device, bands)
+    if provenance is not None:
+        r["assurance_policy"] = provenance
     print(json.dumps(r, indent=2))
     return {ALLOW: 0, STEP_UP: 2, CAGE: 3, DENY: 1}[r["decision"]]
 

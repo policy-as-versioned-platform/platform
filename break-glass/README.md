@@ -10,6 +10,12 @@ guidance and exits3. Shelved caller scripts use this offline fixture instead;
 no live actor probe or authentication integration is activated. Authentic
 per-party bands remain outstanding, so ticket27 remains open.
 
+**Optional party declaration,2026-10-21 (ticket27).** The offline CLI can now
+read explicit `appetite.assurance_bands` from a party artefact with
+`decide SCENARIO --party-yaml ADOPTER/party.yaml`. It does not derive three
+cutoffs from the existing tolerance. This supplies the missing reader, not
+actual bands for the three adopters or any live actor assurance.
+
 **Ticket 19** (blocked by 06, 18). A risky operation — break-glass, or a `ludlow`
 patient-data read — demands **current device posture** + **higher identity
 assurance**, *proportional to the operation's £*. A stale or unattested device is
@@ -93,14 +99,32 @@ estate/platform/break-glass/verify-break-glass.sh   # offline asserts (no cluste
 
 ## Existing fixture inputs and limits
 
-- **`assurance-bands.json`** — existing global `step_up_at` / `attest_at` /
-  `no_cage_at` fixture thresholds in £/yr. No per-party assurance mapping or
-  derivation from `party.yaml`'s appetite is implemented. The current values
-  stay unchanged; selecting a new mapping requires its own recorded financial
-  authority and review, not an inferred multiplier.
+- **`assurance-bands.json`** — unchanged global `step_up_at` / `attest_at` /
+  `no_cage_at` fixture thresholds in £/yr. The default and explicit `--bands`
+  modes remain stdlib-only; alternate tables must be finite, nonnegative and
+  ordered. There is no tolerance-to-cutoff formula or inferred multiplier.
+- **`--party-yaml`** — uses the existing strict party parser and schema, then
+  the captured same-party appetite interpretation. The optional closed
+  `appetite.assurance_bands` object requires `currency: GBP` and explicit
+  `step_up_at`, `attest_at`, `no_cage_at` numbers in GBP/year of carried loss.
+  They must satisfy `0 <= step_up_at <= attest_at <= no_cage_at`; comparisons
+  remain strictly `>`, so equality does not raise the assurance tier. The
+  party's tolerance must also be a finite, nonnegative GBP amount, and the
+  scenario's `org` must exactly equal the declared party. Missing policy is a
+  named missing instrument, never a fallback to global fixture values.
+  `--party-yaml` and `--bands` are mutually exclusive. Its `assurance_policy`
+  output binds the party, resolved thresholds and SHA256 of the one raw party
+  capture. That hash is provenance, **not signature verification**. Tag
+  authentication belongs to the caller; this offline CLI performs none.
 - **Scenario triples** — each op's `(min, mode, max)` loss magnitude is an
   estimate; a reassessment (as in `../risk/` ticket 06) can push an op across a
   band and change its required assurance, in a reviewable PR justified by the £.
 - **Posture currency source** — `fresh`/`stale`/`none` is an explicit CLI input
   here. Reading it from a live device SVID belongs to the shelved actor lane;
   the offline verifier does not observe device attestation or renewal.
+
+The registered verifier runs the new synthetic public CLI cases as well as
+the old fixture checks. It names Python/PyYAML absence with exit3/SKIP; a CLI
+input that cannot be interpreted refuses before emitting a priced decision.
+No real adopter bands, financial amounts, empirical observations or actor
+integration are supplied by these tests.

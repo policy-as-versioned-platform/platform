@@ -79,6 +79,19 @@ those sources or establish a monetary observation; the composition consumer does
 the source checks and comparison before any adjustment. The evidence-grade
 `pricing_threshold` above retains its existing meaning and allowed values.
 
+`appetite.assurance_bands` optionally declares an offline human-assurance
+policy: exactly `currency: GBP`, `step_up_at`, `attest_at` and `no_cage_at`.
+The three cutoffs are finite nonboolean numbers satisfying
+`0 <= step_up_at <= attest_at <= no_cage_at`, in GBP/year of an operation's
+carried loss. With this field present the party's tolerance must also be
+finite, nonnegative and GBP. No cutoff is inferred from tolerance, no
+financial default is supplied, and absence preserves existing party behavior.
+The break-glass `decide --party-yaml` reader requires the scenario's exact
+party and uses these declared cutoffs; it never falls back to the global
+fixture for a missing declaration. Its raw capture hash is provenance only,
+not signature verification or live identity assurance. Actual adopter
+declarations require their own financial authority and reviewed publication.
+
 `pricing` and `threat` were separate parent kinds until ticket 21. Both are now `feed` with a free
 `name`, so a new publisher ships a new feed with no platform change (ADR-0019 point 3).
 
