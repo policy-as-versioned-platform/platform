@@ -2240,7 +2240,8 @@ def _previous_prices(adopter_dir: Path) -> list[dict]:
 
 
 def _workload_risk_binding(entry: dict, meta: dict, party_doc: dict,
-                           adopter_dir: Path, parent_trees: dict[str, Path] | None) -> dict:
+                           adopter_dir: Path, parent_trees: dict[str, Path] | None,
+                           *, expected_version: str | None = None) -> dict:
     """A signed Pod identity joins only this declared inability and its publisher's control.
 
     The existing select() call supplies all money. This binding neither assigns an
@@ -2248,7 +2249,7 @@ def _workload_risk_binding(entry: dict, meta: dict, party_doc: dict,
     """
     subject = entry['subject']
     namespace, pod = subject.split('/')
-    declared = False
+    declared = []
     for path in sorted(adopter_dir.rglob('*.yaml')):
         if any(part in ('.git', 'composed', '.work') for part in path.relative_to(adopter_dir).parts):
             continue
@@ -2258,12 +2259,25 @@ def _workload_risk_binding(entry: dict, meta: dict, party_doc: dict,
                 if not isinstance(document, dict) or document.get('kind') != 'Pod':
                     continue
                 metadata = document.get('metadata') or {}
+                if expected_version is not None and not isinstance(metadata, dict):
+                    raise Refused(f"workload subject {subject!r} has unreadable Pod metadata")
                 if metadata.get('name') == pod and str(metadata.get('namespace') or 'default') == namespace:
-                    declared = True
+                    if expected_version is not None and any(
+                            adopter_dir.joinpath(*path.relative_to(adopter_dir).parts[:index]).is_symlink()
+                            for index in range(1, len(path.relative_to(adopter_dir).parts) + 1)):
+                        raise Refused(f"workload subject {subject!r} must name an ordinary source Pod")
+                    declared.append(metadata)
         except (OSError, yaml.YAMLError) as exc:
             raise Refused(f"workload subject {subject!r} has an unreadable Pod declaration: {exc}") from exc
     if not declared:
         raise Refused(f"workload subject {subject!r} names no declared Pod")
+    if expected_version is not None:
+        if len(declared) != 1:
+            raise Refused(f"workload subject {subject!r} needs one unambiguous Pod declaration")
+        labels = declared[0].get('labels')
+        if (not isinstance(labels, dict)
+                or labels.get('policy-as-versioned.dev/policy-version') != expected_version):
+            raise Refused(f"workload subject {subject!r} does not claim policy version {expected_version}")
     owner = meta['source_party']
     if owner == party_doc['party']:
         path = adopter_dir / ADOPTER_CLAIMS_FILE
@@ -2434,6 +2448,88 @@ def apply_restatements(party_doc: dict, merged: dict, parents: list[dict],
             cage_entry['oscal_risk'] = _cage_engine().oscal_risk(decision, **binding)
         cages.append(cage_entry)
     return restatements, refusals, cages
+
+
+def _workload_scenario(adopter_dir: Path, relative: str, mode: str) -> dict:
+    """Read an explicit adopter-owned state without fallback or permissive numeric coercion."""
+    path = Path(relative)
+    if (path.is_absolute() or any(part in ('.', '..', '.git', '.work', 'composed')
+                                  for part in path.parts)):
+        raise Refused('workload scenario must name an ordinary adopter source file')
+    current = adopter_dir
+    for part in path.parts:
+        current /= part
+        if current.is_symlink():
+            raise Refused('workload scenario must not traverse a symlink')
+    if not current.resolve().is_relative_to(adopter_dir.resolve()) or not current.is_file():
+        raise Refused('workload scenario is absent from the adopter source')
+    scenario = _load_scenario(relative, adopter_dir)
+    if not isinstance(scenario, dict) or mode not in scenario:
+        raise Refused('workload scenario has no explicitly declared state ' + mode)
+    if scenario.get('currency', 'GBP') != 'GBP':
+        raise Refused('workload scenario must use GBP; this selector supplies no FX conversion')
+    state = scenario[mode]
+    if not isinstance(state, dict) or set(state) != {'lef', 'lm'}:
+        raise Refused('workload scenario state must contain lef and lm')
+
+    def triple(value):
+        if (not isinstance(value, list) or len(value) != 3
+                or any(type(number) not in (int, float) or not math.isfinite(number)
+                       or number < 0 for number in value)
+                or not value[0] <= value[1] <= value[2]):
+            raise Refused('workload scenario needs finite nonnegative ordered FAIR triples')
+
+    triple(state['lef'])
+    magnitude = state['lm']
+    sources = magnitude if (isinstance(magnitude, list) and magnitude
+                            and isinstance(magnitude[0], (list, dict))) else [magnitude]
+    for source in sources:
+        if isinstance(source, dict):
+            _cage_engine().fair.severity.check(source)
+            if any(type(value) not in (int, float) or not math.isfinite(value)
+                   for key, value in source.items() if key != 'model'):
+                raise Refused('workload scenario severity parameters must be finite numbers')
+        else:
+            triple(source)
+    return scenario
+
+
+def workload_cages(party_doc: dict, merged: dict, adopter_dir: Path,
+                   parent_trees: dict[str, Path], existing: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Price explicit workload decisions without restating any policy or enacting a tier."""
+    cages: list[dict] = []
+    refusals: list[dict] = []
+    for entry in party_doc['overlay'].get('workload_cages', []):
+        rule = f"{entry['family']}/{entry['name']}@{entry['version']}"
+        try:
+            meta = merged.get((entry['version'], entry['family'], entry['name']))
+            if (meta is None or meta['source_party'] != entry['publisher']
+                    or meta['kind'] not in ('ValidatingPolicy', 'MutatingPolicy', 'GeneratingPolicy')):
+                raise Refused('workload decision names no exact resolved publisher/policy')
+            binding = _workload_risk_binding(entry, meta, party_doc, adopter_dir, parent_trees,
+                                            expected_version=entry['version'])
+            if any((cage.get('binding') or {}).get('subject') == binding['subject']
+                   and (cage.get('binding') or {}).get('policy') == binding['policy']
+                   for cage in existing + cages):
+                raise Refused('duplicate workload binding would duplicate one risk')
+            scenario = _workload_scenario(adopter_dir, entry['scenario'], entry['mode'])
+            appetite = _appetite(party_doc['party'], adopter_dir, parent_trees)
+            band = appetite['amount']
+            if (appetite['currency'] != 'GBP' or type(band) not in (int, float)
+                    or not math.isfinite(band) or band < 0):
+                raise Refused('workload decision needs a finite nonnegative GBP appetite.tolerance')
+            decision = _cage_engine().select(scenario, party_doc['party'], band,
+                mode=entry['mode'], floor=party_doc['overlay'].get('floor'))
+            cages.append({'party': party_doc['party'], 'rule': rule, 'band': band,
+                'residual': decision['tcor']['residual'], 'tier': decision['tier'],
+                'action': decision['action'], 'priced_from': entry['scenario'],
+                'mode': entry['mode'], 'why': entry['why'],
+                'decision': decision, 'binding': binding,
+                'oscal_risk': _cage_engine().oscal_risk(decision, **binding)})
+        except (Refused, OSError, ValueError, TypeError, KeyError, OverflowError) as error:
+            refusals.append({'kind': 'missing-instrument', 'subject': rule,
+                'detail': 'workload scenario/decision: ' + str(error), 'needs_composition': True})
+    return cages, refusals
 
 
 # --------------------------------------------------------------------------
@@ -5887,6 +5983,10 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
         parent_trees, previous_cages=comparison_before["cages"],
         composition_as_of=_composition_as_of(edges, parent_trees, as_of))
     refusals += restate_refusals
+    explicit_cages, explicit_refusals = workload_cages(party_doc, merged, adopter_dir,
+                                                     parent_trees, cages)
+    cages += explicit_cages
+    refusals += explicit_refusals
     refusals += undelivered_priority_class_refusals(merged, guards)
 
     # -----------------------------------------------------------------
