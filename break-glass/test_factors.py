@@ -41,9 +41,10 @@ class IndependentFactors(unittest.TestCase):
     def test_verifier_runs_without_the_legacy_operation_selector(self) -> None:
         with tempfile.TemporaryDirectory(prefix="break-glass-factors-") as directory:
             copied = Path(directory)
-            for name in ("access", "break-glass", "fair"):
+            for name in ("access", "break-glass", "fair", "party", "risk"):
                 shutil.copytree(ROOT / name, copied / name,
                                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copy2(ROOT / "lib.sh", copied / "lib.sh")
             (copied / "access/access.py").unlink()
             environment = os.environ.copy()
             environment[CHILD_PROBE] = "1"

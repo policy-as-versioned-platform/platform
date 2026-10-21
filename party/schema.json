@@ -246,8 +246,26 @@
       "required": ["tolerance"],
       "additionalProperties": false,
       "description": "The party's own risk appetite, as signed facts rather than platform-held fixtures (ticket 25). `tolerance` is the band the tier selection reads. `pricing_threshold` (eco-system ticket 141, ADR-0032) is the weakest evidence grade this party prices on: it sits here because it is the risk-bearer's signed choice about its own money, like its tolerance.",
+      "allOf": [{
+        "if": { "required": ["assurance_bands"] },
+        "then": { "properties": { "tolerance": { "properties": {
+          "currency": { "$ref": "#/properties/appetite/properties/assurance_bands/properties/currency" }
+        } } } }
+      }],
       "properties": {
         "tolerance": { "$ref": "#/definitions/money" },
+        "assurance_bands": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["currency", "step_up_at", "attest_at", "no_cage_at"],
+          "description": "Optional explicit offline human-assurance policy in GBP/year of the operation's carried loss. These cutoffs are declared, never inferred from tolerance. The shared reader additionally requires step_up_at <= attest_at <= no_cage_at. No live actor or signature verification is implied.",
+          "properties": {
+            "currency": { "type": "string", "const": "GBP" },
+            "step_up_at": { "type": "number", "minimum": 0 },
+            "attest_at": { "type": "number", "minimum": 0 },
+            "no_cage_at": { "type": "number", "minimum": 0 }
+          }
+        },
         "publisher_reliability": {
           "type": "array", "maxItems": 10000,
           "items": { "$ref": "#/definitions/publisher_reliability_policy" },

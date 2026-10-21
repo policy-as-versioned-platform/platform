@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 import tempfile
@@ -66,6 +67,8 @@ from datetime import date
 from pathlib import Path
 
 import yaml
+
+import assurance_bands
 
 HERE = Path(__file__).resolve().parent
 SCHEMA_PATH = HERE / "schema.json"
@@ -382,6 +385,17 @@ def _appetite_errors(doc: dict, schema: dict) -> list[str]:
         return ["'appetite' must be a mapping"]
     errors = ["appetite missing 'tolerance'"] if "tolerance" not in appetite else \
         _money_errors("appetite.tolerance", appetite["tolerance"])
+    if "assurance_bands" in appetite:
+        rule = schema["properties"]["appetite"]["properties"]["assurance_bands"]
+        errors += assurance_bands.errors(appetite["assurance_bands"], rule)
+        tolerance = appetite.get("tolerance")
+        if isinstance(tolerance, dict):
+            currency = rule["properties"]["currency"]["const"]
+            if tolerance.get("currency") != currency:
+                errors.append(f"appetite.tolerance must use {currency} with assurance bands")
+            amount = tolerance.get("amount")
+            if type(amount) is float and not math.isfinite(amount):
+                errors.append("appetite.tolerance must be finite with assurance bands")
     if "pricing_threshold" in appetite:
         admitted = _pricing_threshold_enum(schema)
         value = appetite["pricing_threshold"]
