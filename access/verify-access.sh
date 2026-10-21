@@ -13,8 +13,8 @@ CLUSTER="${CLUSTER:-driftwood}"; CTX="${CTX:-kind-$CLUSTER}"
 . "$HERE/../lib.sh"   # substrate_ok / live_tail_skip / pass_line: three outcomes per live tail
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-echo "== offline: decision-engine asserts =="
-python3 "$HERE/access.py" selfcheck
+echo "== offline: priced fixture asserts (no live access claim) =="
+python3 "$HERE/../break-glass/break-glass.py" selfcheck
 
 echo "== offline: structural invariants =="
 python3 - "$HERE" <<'PY'

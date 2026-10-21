@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +14,29 @@ CHILD_PROBE = "_PAVC_BREAK_GLASS_FACTORS_WRAPPER_CHILD"
 
 
 class IndependentFactors(unittest.TestCase):
+    @unittest.skipIf(os.environ.get(CHILD_PROBE) == "1", "nested independence fixture deletes the retired entrypoint")
+    def test_legacy_read_cannot_grant_access(self) -> None:
+        result = subprocess.run([sys.executable, "-B", str(ROOT / "access/access.py"),
+                                 "decide", "read", "--oidc"],
+                                cwd=ROOT, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("retired", result.stderr)
+        self.assertIn("break-glass", result.stderr)
+
+    @unittest.skipIf(os.environ.get(CHILD_PROBE) == "1", "nested independence fixture deletes the retired entrypoint")
+    def test_other_legacy_invocations_report_retirement(self) -> None:
+        for arguments in ([], ["--help"], ["selfcheck"],
+                          ["decide", "write", "--oidc", "--device"],
+                          ["decide", "break-glass", "--oidc", "--webauthn", "--device"]):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run([sys.executable, "-B", str(ROOT / "access/access.py"), *arguments],
+                                        cwd=ROOT, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("retired", result.stderr)
+                self.assertIn("remains shelved", result.stderr)
+
     @unittest.skipIf(os.environ.get(CHILD_PROBE) == "1", "only the nested wrapper probe avoids recursion")
     def test_verifier_runs_without_the_legacy_operation_selector(self) -> None:
         with tempfile.TemporaryDirectory(prefix="break-glass-factors-") as directory:

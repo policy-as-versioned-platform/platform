@@ -59,17 +59,21 @@ if fails:
 print("  -- tpm-devid templates hold --")
 PY
 
-echo "== offline: WHfB alone does not buy device trust (access.py reused, not re-implemented) =="
-"$HERE/../access/access.py" selfcheck
-python3 - "$HERE" <<'PY'
-import sys, importlib.util
-spec = importlib.util.spec_from_file_location("access", __import__("os").path.join(__import__("sys").argv[1], "..", "access", "access.py"))
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-d, why = mod.decide("break-glass", oidc=True, webauthn=True, device_svid=False)
-assert d == "DENY", (d, why)
-print("  ok   a Windows EUD with WHfB but no device SVID is refused break-glass:", why)
-PY
+echo "== offline: priced fixture requires a device input at its top band (no live WHfB claim) =="
+python3 - "$HERE" <<'PYFIXTURE'
+import json
+from pathlib import Path
+import subprocess
+import sys
+fixture = Path(sys.argv[1]).parent / "break-glass"
+result = subprocess.run([sys.executable, str(fixture / "break-glass.py"), "decide",
+                         str(fixture / "scenarios/ludlow-patient-data.json"),
+                         "--oidc", "--webauthn", "--device", "none"],
+                        text=True, capture_output=True, timeout=30)
+assert result.returncode == 1, result.stdout + result.stderr
+assert json.loads(result.stdout)["decision"] == "DENY", result.stdout
+print("  ok   included offline patient-data fixture with device=none returns DENY; no live device observed")
+PYFIXTURE
 
 echo "== offline: build-vm.sh is idempotent-safe (dry structure check, no boot) =="
 grep -q 'qemu-img create' "$HERE/build-vm.sh" && echo "  ok   build-vm.sh creates disks via qemu-img (no boot/install attempted)"
@@ -90,4 +94,4 @@ else
       || echo "  (not applied yet — venue step: tpm-devid-enroll.sh $eud <fingerprint> | kubectl apply -f -)"
   done
 fi
-pass_line "EUD vTPM specs and tpm-devid entries sit on the one estate root; WHfB alone is refused"
+pass_line "EUD vTPM specs and tpm-devid entries sit on the one estate root; offline priced fixture requires its declared device input"

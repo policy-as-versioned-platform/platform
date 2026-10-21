@@ -1,4 +1,8 @@
-# platform/access — the human + device access plane
+# platform/access — shelved human and device wiring
+
+**Scope, 2026-10-21 (ticket27).** The actor access plane is shelved for this
+build. The static operation selector is retired. The files below describe
+wiring and offline fixture checks, not observed live access control.
 
 **Ticket 18.** Operational access (kubectl / dashboards / break-glass) for the
 **human** and **device** actor classes, on the **same attestation root** as
@@ -20,7 +24,8 @@ you satisfy?" sets what you may do, and the £ of the operation sets the bar.
 | Device attestor | `device/spire-tpm-devid-values.yaml` | `tpm_devid` node-attestor overlay for ticket 14's SPIRE server (endorsement + DevID CA verify) |
 | Device SVID | `device/device-svid.yaml` | `ClusterStaticEntry` → `spiffe://acme.internal/device/operator-macbook` on the workload root |
 | Hardware root | `device/secure-enclave.md` | why the Mac Secure-Enclave key is the live root; UTM vTPM EUDs for `tpm_devid` |
-| The gate | `access.py` | graded ALLOW / STEP_UP / DENY by op risk × factors — the decision logic, with asserts |
+| Retired entrypoint | `access.py` | migration guidance and exit3 only; no access decisions |
+| Shared factor vocabulary | `factors.py` | factor names and decision constants used by the offline break-glass fixture |
 
 ## The wiring (one root, three actor classes)
 
@@ -40,29 +45,18 @@ flowchart LR
 
 The human logs in through **the same OIDC root** the rest of the estate trusts;
 the device earns a SPIFFE ID from **the same SPIRE CA** that signs workload
-SVIDs. Provenance for every actor is now literal — commit (gitsign→Rekor),
-workload (SVID path), human (OIDC subject), device (device SVID) — one root.
+SVIDs. This describes the intended shared-root architecture. Live actor attestation
+and access integration remain shelved; the offline fixture does not observe them.
 
-## The gate is graded, not admit/deny
+## Static operation selector retired
 
-`access.py` is the load-bearing logic for the talk's human/device beat. The op's
-risk sets the required factors, cumulatively:
-
-| Op tier | Example | Requires |
-|---|---|---|
-| 1 | `read`, `list` | authenticated human (OIDC) |
-| 2 | `write`, `exec` | + phishing-resistant WebAuthn |
-| 3 | `break-glass`, `cluster-admin` | + attested device (valid device SVID) |
-
-```bash
-access.py decide break-glass --oidc --webauthn --device   # ALLOW
-access.py decide break-glass --oidc --webauthn             # DENY  (unattested laptop)
-access.py decide write       --oidc --device              # STEP_UP (prompt for passkey)
-access.py selfcheck                                        # the asserts
-```
-
-A stolen credential (no passkey) gets *stepped up*, not in; an unmanaged laptop
-(no device SVID) is *refused* for anything privileged — it cannot be stepped up.
+`access.py` no longer selects factors from an operation name or grants access.
+Every invocation exits3 with migration guidance. The shared factor vocabulary
+remains in `factors.py`; the priced offline examples live in
+[break-glass](../break-glass/README.md). Their explicit scenario and bands
+inputs do not authenticate a device, call Pomerium, or configure a live route.
+The original global bands remain fixture values. Authentic organisation-owned
+bands are still required; no appetite-to-assurance multiplier is inferred.
 
 ## Run it
 
@@ -77,7 +71,7 @@ estate/platform/access/verify-access.sh # offline asserts (+ live if up)
 `timeout`-bounded. The `tpm_devid` attestor is a values **overlay** merged into
 ticket 14's SPIRE release (kept out of that file to avoid collision) — up.sh
 prints the merge + reconcile step. `verify-access.sh` asserts the structural
-invariants and the decision logic offline; the live WebAuthn enrolment and TPM
+invariants and the priced fixture offline; the live WebAuthn enrolment and TPM
 attestation need a human at the Secure Enclave / a (v)TPM (see
 `device/secure-enclave.md`) — the one hardware-gated step.
 
@@ -90,8 +84,8 @@ attestation need a human at the Secure Enclave / a (v)TPM (see
   version that is not on the repo leaves the HelmRelease un-reconciled forever
   and no proxy pod is ever created. Note the chart reads the IdP at
   `authenticate.idp`, not `config.idp`; a copy under `config:` is inert.
-- **OP_TIER table** (`access.py`) — which op needs which factors. Static now;
-  wire to `fair.py`'s £-crossover if the bar should move live with the risk £.
+- **Assurance bands** — the offline example accepts explicit `--bands` inputs;
+  authentic per-organisation calibration remains separate outstanding work.
 - **DevID trust anchors** — `devid-ca.pem` / `endorsement-ca.pem` are the
   manufacturer roots for a real fleet, the swtpm-emulated EK roots for the UTM
   vTPM demo. Same mechanism; swap the PEMs.

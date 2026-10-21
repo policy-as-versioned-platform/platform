@@ -1,4 +1,9 @@
-# platform/eud — the Windows/Linux vTPM End-User Devices
+# platform/eud — shelved Windows/Linux vTPM End-User Device design
+
+**Scope, 2026-10-21 (ticket27).** The actor identity/access lane remains
+shelved. `access.py` is a retired migration guard, not a decision engine.
+The included break-glass checks use explicit offline fixture inputs and do
+not observe VM attestation or grant live access.
 
 **Ticket 20.** Blocked by / builds on ticket 18 (`../access`): that ticket
 wired the `tpm_devid` node attestor and the device-SVID gate onto ticket 14's
@@ -41,7 +46,7 @@ flowchart LR
     WHFB[Windows Hello for Business<br/>local sign-in, TPM-bound key]
   end
   SWTPM -->|tpm_devid attest<br/>proof-of-residency| SPIRE[(SPIRE server<br/>acme.internal — ticket 14)]
-  SPIRE -->|device SVID<br/>spiffe://…/device/…| GATE[access.py<br/>the graded gate — ticket 18]
+  SPIRE -->|device SVID<br/>spiffe://…/device/…| GATE[Shelved access integration<br/>priced offline fixture: break-glass]
   WHFB -.local sign-in only,.->|not consumed by the gate| GATE
 ```
 
@@ -73,9 +78,9 @@ shape as ticket 18's `up.sh`/`secure-enclave.md`.
 - **Windows Hello for Business demonstrated; access gated on the device
   SVID.** `windows-hello-for-business.md` — WHfB is enrolled on the VM's
   vTPM (genuine TPM-key-non-exportability), but the estate's access gate
-  (`../access/access.py`, reused not re-implemented) checks the **device
-  SVID**, not WHfB. `verify-eud.sh` asserts a WHfB-enrolled EUD with no device
-  SVID is still refused break-glass.
+  remains a shelved integration. `verify-eud.sh` runs the priced break-glass
+  CLI with an explicit absent-device fixture input; it establishes no
+  Windows enrolment, live SVID or access-control result.
 - **Runbook narrates the emulated-EK caveat honestly.** Stated in this
   README, in both VM specs, and in `windows-hello-for-business.md`'s "honest
   caveat" section — every place a viewer might read only one file.

@@ -6,8 +6,8 @@ demands *current device posture* + higher identity assurance, PROPORTIONAL to th
 operation's £. A stale or unattested device is caged (read-only/scoped session) or
 denied — the harder the £, the less a degraded device gets away with.
 
-This is ticket 18's `access.py` gate (../access/access.py) with the two things that
-ticket flagged as its upgrade path, now built:
+This offline fixture replaces ticket 18's retired static operation selector.
+It has two differences from that historical selector:
 
   1. The bar is set by the op's **£**, not a static op→tier table. We run the op's
      FAIR scenario through ../fair/fair.py, read `carried` (TVaR + risk load), and
@@ -56,7 +56,7 @@ import factors as assurance_factors  # noqa: E402 — shared vocabulary, no oper
 DEFAULT_BANDS = os.path.join(HERE, "assurance-bands.json")
 
 DENY, ALLOW, STEP_UP = assurance_factors.DENY, assurance_factors.ALLOW, assurance_factors.STEP_UP
-CAGE = "CAGE"  # a retained but read-only/scoped session — the graded rung access.py lacks
+CAGE = "CAGE"  # a retained but read-only/scoped session in this offline fixture
 
 # Device posture currency (research 16): a device SVID's freshness, not its mere
 # existence. The currency controller drops the entry when posture goes stale.
@@ -71,7 +71,7 @@ def carried_gbp(scenario):
 
 
 def required_tier(gbp, bands):
-    """£ → assurance tier (1..3), the proportional bar. Cumulative like access.py:
+    """£ → assurance tier (1..3), the proportional bar. Factors are cumulative:
     tier 1 = OIDC floor; 2 = + phishing-resistant WebAuthn; 3 = + attested device."""
     if gbp > bands["attest_at"]:
         return 3
