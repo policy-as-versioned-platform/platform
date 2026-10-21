@@ -78,6 +78,27 @@ the risk with its pinned Cage engine and checks the live Pod's identity, policy 
 tier. A failed observation without a valid bound decision stays red. Institutional and
 twin-agent prices never supply a Pod's decision.
 
+An optional `overlay.workload_cages` collection supplies the same evidence for an
+explicit workload decision independently of restatements, including a resolved
+`MutatingPolicy`. Each closed entry declares `publisher`, `family`, `name`,
+`version`, `subject` (`namespace/Pod`), `scenario`, `mode` and `why`. The exact
+publisher/member/version must resolve, and one ordinary source Pod must claim that
+version. The implementation publisher still supplies the single control mapping.
+The scenario is an ordinary relative JSON file in the adopter's own source:
+absolute paths, traversal, generated files, missing files and symlinks refuse.
+`mode` names an explicit scenario state; there is no inferred `warn` state or
+institutional threat fallback. The selected state has `lef` and `lm` in the
+existing FAIR format, with finite nonnegative ordered triples (or the engine's
+validated magnitude severity model). Frequency is events/year and magnitude is
+GBP; an explicitly different scenario currency or non-GBP appetite refuses, as
+this route supplies no FX conversion. The adopter's signed appetite and existing
+tighten-only floor select the decision. One `cages[]` entry carries that actual
+decision, binding and risk; it adds no second `prices[]` line and changes no
+policy, action or enacted tier. Duplicate subject/check bindings across both
+producers refuse. Live identity/version/tier and re-derived-risk checks remain
+required by the lane. No operational declaration or scenario is supplied here;
+existing missing joins and the deliberate probe remain visible.
+
 ## What ticket 14 adds
 
 - **Baseline resolution** — the party artefact's `baseline` name resolves against the `controls`

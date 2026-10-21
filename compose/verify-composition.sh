@@ -49,6 +49,9 @@ python3 -m unittest discover -s "$HERE" -p test_publisher_reliability_consumer.p
 say "0g. consumer retirement keeps its exact authority checks with credential-free public reads"
 python3 -m unittest discover -s "$HERE" -p test_consumer_retirement.py || fail "consumer retirement"
 
+say "0h. explicit workload decisions compose and replay without changing policy enforcement"
+python3 -m unittest discover -s "$HERE" -p test_workload_declarations.py || fail "workload decisions"
+
 say "1. composition.py's own asserts (compose, render faithfulness, verify, the CLI, priced deltas, the priced removal, the regulator's withdrawal)"
 python3 "$HERE/composition.py" --selfcheck || fail "composition.py --selfcheck"
 

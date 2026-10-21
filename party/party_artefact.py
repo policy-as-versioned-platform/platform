@@ -168,6 +168,14 @@ def _is_date(value: object) -> bool:
     return len(value) == 10
 
 
+def _subject_errors(subject: object, rule: dict, where: str) -> list[str]:
+    if (not isinstance(subject, str) or len(subject) > rule['maxLength']
+            or re.fullmatch(rule['pattern'], subject) is None
+            or len(subject.split('/')[-1]) > 253):
+        return [f"{where} must name one namespace/Pod with valid DNS names"]
+    return []
+
+
 def validate_schema(doc: object, schema: dict | None = None) -> list[str]:
     """Structural validation against schema.json's shape. Returns every
     error found; an empty list means the document is structurally valid.
@@ -266,20 +274,25 @@ def validate_schema(doc: object, schema: dict | None = None) -> list[str]:
             if not isinstance(entry, dict):
                 errors.append(f"overlay.restate[{i}] must be a mapping")
             elif 'subject' in entry:
-                subject = entry['subject']
-                if (not isinstance(subject, str) or len(subject) > subject_rule['maxLength']
-                        or re.fullmatch(subject_rule['pattern'], subject) is None
-                        or len(subject.split('/')[-1]) > 253):
-                    errors.append(f"overlay.restate[{i}].subject must name one namespace/Pod with valid DNS names")
+                errors += _subject_errors(entry['subject'], subject_rule, f'overlay.restate[{i}].subject')
         if "controls" in overlay and not isinstance(overlay["controls"], list):
             errors.append("overlay.controls must be a list")
+        if 'workload_cages' in overlay:
+            errors += _policy_shape_errors(overlay['workload_cages'],
+                schema['properties']['overlay']['properties']['workload_cages'],
+                schema, 'overlay.workload_cages')
+            if isinstance(overlay['workload_cages'], list):
+                for i, entry in enumerate(overlay['workload_cages']):
+                    if isinstance(entry, dict) and 'subject' in entry:
+                        errors += _subject_errors(entry['subject'], subject_rule,
+                                                  f'overlay.workload_cages[{i}].subject')
         floors = _floor_enum(schema)
         if "floor" in overlay and overlay["floor"] not in floors:
             errors.append(
                 f"overlay.floor {overlay['floor']!r} is not one of {floors} "
                 f"('infra' is deliberately absent: only a platform-role party declares "
                 f"infra, and it declares it on a Namespace manifest)")
-        for field in sorted(overlay.keys() - {"add", "restate", "controls", "floor"}):
+        for field in sorted(overlay.keys() - set(schema['properties']['overlay']['properties'])):
             errors.append(f"overlay has unknown field {field!r}")
 
     return errors
