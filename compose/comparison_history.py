@@ -147,6 +147,14 @@ def _in_lane(relative: Path, lanes: list[str]) -> bool:
     return any(parts[:len(lane)] == lane for lane in (PurePosixPath(x).parts for x in lanes))
 
 
+def is_source_path(relative: Path, lanes: list[str]) -> bool:
+    """Whether this ordinary file path contributes bytes to the current source identity."""
+    return (bool(relative.parts)
+            and not any(part.startswith('.') or part == '__pycache__' for part in relative.parts)
+            and relative.parts[0] != 'composed'
+            and not (_in_lane(relative, lanes) and relative.suffix not in COMPOSER_READS))
+
+
 def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of: str | None, namespace_facts: object,
              *, party_raw: bytes | None = None) -> str:
     # Source bytes, not checkout paths, Git HEAD, generated artefacts or Python
@@ -160,11 +168,7 @@ def identity(adopter: Path, parents: list[dict], observations: list[dict], as_of
     sources = {}
     for path in sorted(adopter.rglob('*')):
         relative = path.relative_to(adopter)
-        if any(part.startswith('.') or part == '__pycache__' for part in relative.parts):
-            continue
-        if relative.parts[0] == 'composed' or not path.is_file():
-            continue
-        if _in_lane(relative, lanes) and path.suffix not in COMPOSER_READS:
+        if not is_source_path(relative, lanes) or not path.is_file():
             continue
         if party_raw is None or relative != Path('party.yaml'):
             sources[str(relative)] = hashlib.sha256(path.read_bytes()).hexdigest()

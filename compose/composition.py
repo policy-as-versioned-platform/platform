@@ -2456,6 +2456,8 @@ def _workload_scenario(adopter_dir: Path, relative: str, mode: str) -> dict:
     if (path.is_absolute() or any(part in ('.', '..', '.git', '.work', 'composed')
                                   for part in path.parts)):
         raise Refused('workload scenario must name an ordinary adopter source file')
+    if not comparison_history.is_source_path(path, comparison_history.observation_lanes(adopter_dir)):
+        raise Refused('workload scenario must contribute source bytes to the comparison identity')
     current = adopter_dir
     for part in path.parts:
         current /= part
@@ -6612,8 +6614,8 @@ def _insurer_copy(dest: Path, *, git: bool) -> Path:
 
 def _insurer_clone(dest: Path) -> Path:
     """Ticket 69's untagged fixture, half one: a real `git clone` of the
-    insurer, so the publisher's OWN tags travel -- its real annotated v1.0.0
-    and nothing invented. A checkout like this one is the only kind that can
+    insurer, so the publisher's OWN tags travel and nothing is invented.
+    A checkout like this one is the only kind that can
     honestly say a pin is untagged."""
     subprocess.run(["git", "clone", "-q", str(DEFAULT_ESTATE_CLONE / "insurer"), str(dest)],
                    check=True, capture_output=True)
@@ -6696,14 +6698,14 @@ def _add_feed_pin(work: Path, party: str, name: str, version: str, since: str) -
     (work / "party.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
 
 
-def _quote_at_untagged_major(tree: Path, adopter: str, major: str) -> None:
+def _quote_at_untagged_major(tree: Path, adopter: str, major: str, source_version: str) -> None:
     """Ticket 69's untagged fixture, half two: the quote the insurer already
     publishes, copied to a MAJOR it has never tagged, so the pin below points
     at a real quote file no tag of the publisher's signs. No tag is created,
     deleted, renamed or edited here: the tag namespace stays exactly the
     publisher's own."""
-    src = tree / "quote" / adopter / "v1"
-    dest = tree / "quote" / adopter / major
+    src = feed_file('insurer', f'quote-{adopter}', source_version, tree).parent
+    dest = src.parent / major
     shutil.copytree(src, dest)
     doc = json.loads((dest / "feed.json").read_text())
     doc["version"] = f"{major.lstrip('v')}.0.0"
@@ -7288,8 +7290,12 @@ def selfcheck() -> None:
 
     # --- the insurer's signed quote lands as ONE contract cost line, under the
     # ADOPTER's perspective, and its amount is the quote's own signed premium ---
-    quote_path = feed_file("insurer", "quote-driftwood", "v1", DEFAULT_ESTATE_CLONE / "insurer")
-    if quote_path.exists():
+    quote_edge = next((edge for edge in driftwood_doc['inherits']
+                       if edge.get('party') == 'insurer' and edge.get('kind') == 'feed'
+                       and _feed_name(edge) == 'quote-driftwood'), None)
+    quote_path = (feed_file(quote_edge['party'], quote_edge['name'], quote_edge['version'],
+                           DEFAULT_ESTATE_CLONE / 'insurer') if quote_edge else None)
+    if quote_edge is not None and quote_path is not None and quote_path.exists():
         quoted = json.loads(quote_path.read_text())["payload"]
         premiums = [e for e in document["prices"] if e["kind"] == "premium"]
         assert len(premiums) == 1, premiums
@@ -7313,20 +7319,22 @@ def selfcheck() -> None:
                                                   "perspective": "insurer"},
                                       "a premium on another party's sheet")):
                 planted = Path(tmp) / key
-                (planted / "quote" / "driftwood" / "v1").mkdir(parents=True)
+                planted.mkdir()
                 (planted / "party.yaml").write_text(
                     (DEFAULT_ESTATE_CLONE / "insurer" / "party.yaml").read_text())
+                planted_quote = feed_file(quote_edge['party'], quote_edge['name'],
+                                          quote_edge['version'], planted)
+                planted_quote.parent.mkdir(parents=True)
                 doc = json.loads(quote_path.read_text())
                 doc["payload"][key] = value
-                (planted / "quote" / "driftwood" / "v1" / "feed.json").write_text(json.dumps(doc))
+                planted_quote.write_text(json.dumps(doc))
                 try:
-                    price_quote({"party": "insurer", "kind": "feed", "name": "quote-driftwood",
-                                 "version": "v1"}, "driftwood", planted,
+                    price_quote(quote_edge, "driftwood", planted,
                                 perspective_doc=driftwood_doc, reporting_currency="GBP",
                                 prev_version=None)
                     raise AssertionError(f"priced {why} instead of refusing")
-                except Refused:
-                    pass
+                except Refused as error:
+                    assert ('insures' if key == 'adopter' else 'perspective') in str(error), error
         print("OK prices[]: a quote insuring another party, or booking its premium on another "
               "party's sheet, refuses as a missing instrument and prices nothing")
 
@@ -7451,7 +7459,7 @@ def selfcheck() -> None:
     # ======================================================================
     # eco-system ticket 69: an untagged pin is a priced hole
     # ======================================================================
-    # The real insurer clone carries its signed v1.x.y tag, so the real
+    # The real insurer clone carries the signed tag selected by the actual quote pin, so the real
     # driftwood's premium entry reads `signed` and carries no hole. The
     # untagged case is a real CLONE of the insurer -- the publisher's own tags
     # travel -- carrying the quote it already publishes at a major it has
@@ -7464,10 +7472,13 @@ def selfcheck() -> None:
     # onto the version the insurer's real signed tag carries closes it. No
     # fixture here claims a signature: the only signed tag read is the
     # insurer's real one.
-    if quote_path.exists():
+    if quote_edge is not None and quote_path is not None and quote_path.exists():
         real_premium = next(e for e in document["prices"] if e["kind"] == "premium")
         sig = real_premium["pin_signature"]
-        assert sig["state"] == "signed" and re.match(r"^v1\.\d+\.\d+$", sig["tag"] or ""), sig
+        assert sig["state"] == "signed" and _pin_tag_pattern(
+            real_premium['name'], real_premium['new_version']).fullmatch(sig['tag'] or ''), sig
+        assert real_premium['new_version'] == quote_edge['version'], real_premium
+        assert real_premium['quote_version'] == json.loads(quote_path.read_text())['version'], real_premium
         assert real_premium["hole"] is None, real_premium["hole"]
         assert not [d for d in document["deltas"] if d["kind"].endswith("untagged-pin")], document["deltas"]
         print("OK pin signature: the real driftwood's quote pin resolves to the insurer's signed "
@@ -7501,16 +7512,22 @@ def selfcheck() -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             untagged = _insurer_clone(root / "insurer-untagged")
-            _quote_at_untagged_major(untagged, "driftwood", "v2")
+            tags = subprocess.check_output(['git', '-C', str(untagged), 'tag', '--list'], text=True).splitlines()
+            major = int(_major_dir(quote_edge['version'])[1:]) + 1
+            while ((quote_path.parent.parent / f'v{major}').exists()
+                   or any(_pin_tag_pattern(quote_edge['name'], f'v{major}').match(tag) for tag in tags)):
+                major += 1
+            untagged_version = f'v{major}'
+            _quote_at_untagged_major(untagged, "driftwood", untagged_version, quote_edge['version'])
             tagless = _insurer_copy(root / "insurer-tagless", git=True)
-            _quote_at_untagged_major(tagless, "driftwood", "v2")
+            _quote_at_untagged_major(tagless, "driftwood", untagged_version, quote_edge['version'])
             bare = _insurer_copy(root / "insurer-bare", git=False)
-            _quote_at_untagged_major(bare, "driftwood", "v2")
+            _quote_at_untagged_major(bare, "driftwood", untagged_version, quote_edge['version'])
             flattened = _insurer_clone(root / "insurer-flattened")
-            _flatten_tag(flattened, "v1.0.0")
+            _flatten_tag(flattened, sig['tag'])
             trees = {**parent_trees, "insurer": untagged}
             work = _adopter_copy("driftwood", root)
-            _bump_feed_pin(work, "insurer", "quote-driftwood", "v2")
+            _bump_feed_pin(work, "insurer", "quote-driftwood", untagged_version)
 
             def _premium(doc: dict) -> dict:
                 return next(e for e in doc["prices"] if e["kind"] == "premium")
@@ -7534,14 +7551,14 @@ def selfcheck() -> None:
             assert hole is not None and hole["kind"] == UNTAGGED_PIN_HOLE_KIND, hole
             assert hole["status"] == "new", hole
             assert hole["source"] == "insurer" and hole["name"] == "quote-driftwood", hole
-            assert hole["version"] == "v2", hole
+            assert hole["version"] == untagged_version, hole
             assert hole["perspective"] == "driftwood" and hole["currency"] == "GBP", hole
             assert hole["amount"] == p1["amount"] and hole["amount"] > 0, (hole, p1["amount"])
             assert hole["priced_by"], hole
             d1 = _pin_deltas(doc1)
             assert len(d1) == 1 and d1[0]["kind"] == "new-untagged-pin", doc1["deltas"]
             assert d1[0]["source"] == "insurer" and d1[0]["name"] == "quote-driftwood", d1
-            assert d1[0]["version"] == "v2", d1
+            assert d1[0]["version"] == untagged_version, d1
             assert d1[0]["perspective"] == "driftwood" and d1[0]["currency"] == "GBP", d1
             assert d1[0]["amount"] == p1["amount"] and d1[0]["priced_by"] == hole["priced_by"], d1
             assert "amount" in d1[0] and "detail" in d1[0], d1
@@ -7574,7 +7591,7 @@ def selfcheck() -> None:
                 assert p3["hole"]["status"] == "recorded", p3["hole"]
                 assert _pin_deltas(doc3) == [], doc3["deltas"]
                 fresh = _adopter_copy("driftwood", root / f"fresh-{expected.replace(' ', '-')}")
-                _bump_feed_pin(fresh, "insurer", "quote-driftwood", "v2")
+                _bump_feed_pin(fresh, "insurer", "quote-driftwood", untagged_version)
                 doc3b, _ = compose(fresh, {**parent_trees, "insurer": tree})
                 assert _premium(doc3b)["pin_signature"]["state"] == "unobserved", _premium(doc3b)
                 assert _premium(doc3b)["hole"] is None, _premium(doc3b)["hole"]
@@ -7600,7 +7617,7 @@ def selfcheck() -> None:
 
             # 4. closed: the pin moves back onto the version the insurer's real
             # signed tag carries, and the recorded hole closes itself
-            _bump_feed_pin(work, "insurer", "quote-driftwood", "v1")
+            _bump_feed_pin(work, "insurer", "quote-driftwood", quote_edge['version'])
             doc4, rendered4 = compose(work, parent_trees)
             assert doc4["outcome"] == "composed", doc4["refusals"]
             p4 = _premium(doc4)

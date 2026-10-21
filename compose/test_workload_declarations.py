@@ -85,6 +85,42 @@ class WorkloadDeclarations(unittest.TestCase):
         ok, mismatches = ct.verify(self.adopter, self.trees)
         self.assertFalse(ok, mismatches)
 
+    def test_excluded_scenario_bytes_cannot_escape_persisted_replay(self):
+        for relative in ('.github/workload.json', '__pycache__/workload.json',
+                         'observations/workload.json'):
+            with self.subTest(relative=relative):
+                self.explicit_workload(scenario=relative)
+                scenario = self.adopter/relative
+                scenario.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(self.adopter/'workload-scenarios/legacy-till.json', scenario)
+                if relative.startswith('observations/'):
+                    workflow = self.adopter/'.github/workflows/clock.yml'
+                    workflow.parent.mkdir(parents=True, exist_ok=True)
+                    workflow.write_text('''on:
+  schedule:
+    - cron: '0 0 * * *'
+env:
+  OBSERVATION_LANE: observations
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo synthetic-only
+''')
+                document, rendered = ct.compose(self.adopter, self.trees)
+                if document['outcome'] == 'composed':
+                    for name, content in rendered.items():
+                        path = self.adopter/name
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(content)
+                    self.assertEqual(ct.verify(self.adopter, self.trees), (True, []))
+                    state = json.loads(scenario.read_text())
+                    state['note'] = 'Changed provenance only; same monetary state'
+                    scenario.write_text(json.dumps(state))
+                    self.assertFalse(ct.verify(self.adopter, self.trees)[0],
+                        'accepted excluded scenario provenance escaped public replay')
+                self.assertEqual(document['outcome'], 'refused', document)
+
     def test_explicit_scenario_inputs_do_not_mint_invalid_prices(self):
         self.explicit_workload()
         path = self.adopter/'workload-scenarios/legacy-till.json'
