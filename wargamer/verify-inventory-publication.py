@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,65 @@ def git(repo, *args):
     return subprocess.run(['git', '-C', str(repo), '-c', 'commit.gpgsign=false',
                            '-c', 'tag.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
                            *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+class GitDiagnosticCLI(unittest.TestCase):
+    """Actual Git failure through the public CLI; no scanner, proposal or network."""
+
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory(prefix='inventory-git-diagnostic-'))
+        self.root = Path(directory)
+        self.adopter = self.root/'nonrepository'; self.adopter.mkdir()
+        self.candidate = self.root/'candidate.json'
+        self.candidate.write_text(json.dumps({'images': [{'image': 'fixture@sha256:'+'1'*64,
+            'vulnerabilities': [{'id': 'CVE-2099-0001'}]}]}))
+        self.output = self.root/'output'/'inventory.json'
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith('GIT_') and key not in
+                    ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN')}
+        self.env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1',
+                        GIT_TERMINAL_PROMPT='0', LC_ALL='C')
+        # An empty --repo does not disable the ledger's gh lookup. Keep only the
+        # real Git executable reachable, so this subprocess cannot read GitHub.
+        tools = self.root/'bin'; tools.mkdir()
+        executable = shutil.which('git')
+        self.assertIsNotNone(executable)
+        (tools/'git').symlink_to(executable)
+        self.env['PATH'] = str(tools)
+
+    def run_cli(self):
+        result = subprocess.run([sys.executable, '-B', str(Path(inventory.__file__)),
+            'propose', '--adopter-dir', str(self.adopter), '--candidate', str(self.candidate),
+            '--org', 'driftwood', '--repo', '', '--out', str(self.output)],
+            env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('checkout', result.stderr)
+        self.assertIn('exit status 128', result.stderr)
+        self.assertIn('fatal: not a git repository', result.stderr)
+        self.assertEqual(list(self.adopter.iterdir()), [])
+        self.assertFalse(self.output.parent.exists())
+        return result
+
+    def test_nonrepository_reason_survives_without_output_or_writes(self):
+        self.run_cli()
+
+    def test_real_git_diagnostic_and_command_redact_known_tokens(self):
+        tokens = {name: 'synthetic-secret-'+str(n) for n, name in enumerate(
+            ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'))}
+        self.env.update(tokens)
+        self.env['GIT_DIR'] = str(self.root/('+'.join(tokens.values())))
+        # Exercise both Git's captured diagnostic and the command's argument text.
+        self.adopter = self.root/tokens['GH_TOKEN']; self.adopter.mkdir()
+        direct = subprocess.run(['git', '-C', str(self.adopter), 'checkout', '-B',
+            'fixture', 'origin/main'], env=self.env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(direct.returncode, 128)
+        for token in tokens.values():
+            self.assertIn(token, direct.stderr)
+        result = self.run_cli()
+        self.assertIn('<REDACTED>', result.stderr)
+        for token in tokens.values():
+            self.assertNotIn(token, result.stderr)
 
 
 class Publication(unittest.TestCase):
