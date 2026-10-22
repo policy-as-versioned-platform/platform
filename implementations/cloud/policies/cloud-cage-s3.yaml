@@ -15,10 +15,6 @@ spec:
       expression: >-
         object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__' ||
         !(object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') in __SERVED_CLAIMS__)
-    - name: cloud-population
-      expression: >-
-        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' ||
-        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
     - name: spec-change
       expression: >-
         oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec ||
@@ -27,6 +23,12 @@ spec:
   variables:
     - name: claim
       expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('')
+    # Webhook matchConditions run in the API server without namespaceObject.
+    # Evaluate population here, where Kyverno supplies the actual namespace.
+    - name: population
+      expression: >-
+        variables.claim != '' ||
+        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
     - name: nsTier
       expression: >-
         namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
@@ -41,21 +43,25 @@ spec:
     - patchType: JSONPatch
       jsonPatch:
         expression: >-
-          (!has(object.metadata.labels)
-            ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
-          [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
-           JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}]
+          !variables.population ? [] : (
+            (!has(object.metadata.labels)
+              ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
+            [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
+             JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}]
+          )
     - patchType: JSONPatch
       jsonPatch:
         expression: >-
-          !has(object.spec.forProvider) ?
-            [JSONPatch{op: 'add', path: '/spec/forProvider', value: {'rule': [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}}] :
-          !has(object.spec.forProvider.rule) || size(object.spec.forProvider.rule) == 0 ?
-            [JSONPatch{op: 'add', path: '/spec/forProvider/rule', value: [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}] :
-          object.spec.forProvider.rule.filter(r,
-            !(r.?applyServerSideEncryptionByDefault.?sseAlgorithm.orValue('') in ['AES256', 'aws:kms']))
-            .map(r, JSONPatch{
-              op: 'add',
-              path: '/spec/forProvider/rule/' + string(object.spec.forProvider.rule.indexOf(r)) + '/applyServerSideEncryptionByDefault',
-              value: {'sseAlgorithm': variables.dial.sseAlgorithm}
-            })
+          !variables.population ? [] : (
+            !has(object.spec.forProvider) ?
+              [JSONPatch{op: 'add', path: '/spec/forProvider', value: {'rule': [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}}] :
+            !has(object.spec.forProvider.rule) || size(object.spec.forProvider.rule) == 0 ?
+              [JSONPatch{op: 'add', path: '/spec/forProvider/rule', value: [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}] :
+            object.spec.forProvider.rule.filter(r,
+              !(r.?applyServerSideEncryptionByDefault.?sseAlgorithm.orValue('') in ['AES256', 'aws:kms']))
+              .map(r, JSONPatch{
+                op: 'add',
+                path: '/spec/forProvider/rule/' + string(object.spec.forProvider.rule.indexOf(r)) + '/applyServerSideEncryptionByDefault',
+                value: {'sseAlgorithm': variables.dial.sseAlgorithm}
+              })
+          )
