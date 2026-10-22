@@ -28,6 +28,13 @@ DIGEST = re.compile(r'^.+@sha256:[0-9a-f]{64}$')
 class InstrumentFault(ValueError):
     pass
 
+def redact_tokens(text: str) -> str:
+    for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+        token = os.environ.get(name)
+        if token:
+            text = text.replace(token, '<REDACTED>')
+    return text
+
 def served_documents(adopter: Path, *, repository: Path | None = None,
                      strict_claims: bool = False) -> list[dict]:
     """Read the apps source's exact tag+commit and Kustomization path, never HEAD.
@@ -208,11 +215,7 @@ def propose(adopter: Path, candidate: dict, org: str, *, base: str = 'main', rep
                                   text=True, capture_output=True, check=True)
         except subprocess.CalledProcessError as exc:
             detail = (exc.stderr or '').strip() or 'no diagnostic on stderr'
-            for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
-                token = os.environ.get(name)
-                if token:
-                    detail = detail.replace(token, '<REDACTED>')
-            raise InstrumentFault(f'gh pr {args[0]} failed (exit {exc.returncode}): {detail}') from None
+            raise InstrumentFault(f'gh pr {args[0]} failed (exit {exc.returncode}): {redact_tokens(detail)}') from None
     git('checkout', '-B', p['branch'], 'origin/' + base)
     try:
         path = adopter / INVENTORY_PATH; path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,7 +280,10 @@ def main() -> int:
             print(text, end='')
         return 0
     except (InstrumentFault, OSError, ValueError, subprocess.SubprocessError) as exc:
-        print('missing instrument: inventory: ' + str(exc), file=sys.stderr); return 2
+        detail = str(exc)
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail += '\n' + ((exc.stderr or '').strip() or 'no diagnostic on stderr')
+        print('missing instrument: inventory: ' + redact_tokens(detail), file=sys.stderr); return 2
 
 if __name__ == '__main__':
     raise SystemExit(main())
