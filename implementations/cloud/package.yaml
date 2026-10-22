@@ -2,9 +2,9 @@ schema: 1
 party: platform
 kind: implementations
 name: cloud
-version: 1.0.0
+version: 1.0.1
 path: implementations/cloud
-tag: cloud/v1.0.0
+tag: cloud/v1.0.1
 publication: prepared
 engine_scope: every-cloud-body-and-fixture-v1
 tested_engines: ["1.18.2", "1.19.1"]

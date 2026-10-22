@@ -15,10 +15,6 @@ spec:
       expression: >-
         object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__' ||
         !(object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') in __SERVED_CLAIMS__)
-    - name: cloud-population
-      expression: >-
-        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' ||
-        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
     - name: spec-change
       expression: >-
         oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec ||
@@ -27,6 +23,12 @@ spec:
   variables:
     - name: claim
       expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('')
+    # Webhook matchConditions run in the API server without namespaceObject.
+    # Evaluate population here, where Kyverno supplies the actual namespace.
+    - name: population
+      expression: >-
+        variables.claim != '' ||
+        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
     - name: nsTier
       expression: >-
         namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
@@ -41,16 +43,18 @@ spec:
     - patchType: JSONPatch
       jsonPatch:
         expression: >-
-          (!has(object.metadata.labels)
-            ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
-          [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
-           JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}] +
-          (!has(object.spec.forProvider)
-            ? [JSONPatch{op: 'add', path: '/spec/forProvider', value: {}}] : []) +
-          [JSONPatch{op: 'add', path: '/spec/forProvider/publiclyAccessible', value: false},
-           JSONPatch{op: 'add', path: '/spec/forProvider/storageEncrypted', value: true},
-           JSONPatch{op: 'add', path: '/spec/forProvider/multiAz',
-             value: variables.dial.multiAz == 'true' || object.spec.?forProvider.?multiAz.orValue(false)},
-           JSONPatch{op: 'add', path: '/spec/forProvider/backupRetentionPeriod',
-             value: object.spec.?forProvider.?backupRetentionPeriod.orValue(0) > int(variables.dial.backupRetentionPeriod)
-               ? object.spec.forProvider.backupRetentionPeriod : int(variables.dial.backupRetentionPeriod)}]
+          !variables.population ? [] : (
+            (!has(object.metadata.labels)
+              ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
+            [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
+             JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}] +
+            (!has(object.spec.forProvider)
+              ? [JSONPatch{op: 'add', path: '/spec/forProvider', value: {}}] : []) +
+            [JSONPatch{op: 'add', path: '/spec/forProvider/publiclyAccessible', value: false},
+             JSONPatch{op: 'add', path: '/spec/forProvider/storageEncrypted', value: true},
+             JSONPatch{op: 'add', path: '/spec/forProvider/multiAz',
+               value: variables.dial.multiAz == 'true' || object.spec.?forProvider.?multiAz.orValue(false)},
+             JSONPatch{op: 'add', path: '/spec/forProvider/backupRetentionPeriod',
+               value: object.spec.?forProvider.?backupRetentionPeriod.orValue(0) > int(variables.dial.backupRetentionPeriod)
+                 ? object.spec.forProvider.backupRetentionPeriod : int(variables.dial.backupRetentionPeriod)}]
+          )
