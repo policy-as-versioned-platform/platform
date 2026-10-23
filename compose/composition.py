@@ -450,6 +450,8 @@ FEED_SCHEMA_PATH = PLATFORM_DIR / "feeds" / "schema.json"
 # carries it instead, so the unmodified converters keep working).
 FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "threat-register": ("feeds", "to_fair_scenario.py"),
+    # A distinct shadow model: vendored for exact forecast admission, never priced.
+    "recovery-expense": ("recovery-expense", "to_fair_scenario.py"),
     "penalty-schema": ("schema", "to_fair_scenario.py"),
     # Eco-system ticket 84: the two feeds the publisher already carries and this
     # table refused as "no converter". The same module as the register's; each
@@ -458,7 +460,8 @@ FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "cve": ("feeds", "to_fair_scenario.py"),
     "eol": ("feeds", "to_fair_scenario.py"),
 }
-FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version"}
+FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version",
+                    "recovery-expense": "feed_version"}
 
 # Eco-system ticket 25 (ADR-0020, ADR-0021): the one prices[] schema.
 # Every entry carries perspective, currency, source, kind, amount and a
@@ -1075,7 +1078,15 @@ class ParentTrees(dict[str, Path]):
         self.monetary_sources = dict(getattr(trees, 'monetary_sources', {}))
 
 
+def _shadow_recovery(edge: dict) -> bool:
+    # Intrinsic to this exact family, including before any report policy exists.
+    return (edge.get('party'), edge.get('kind'), _feed_name(edge)) == (
+        'feeds', 'feed', 'recovery-expense')
+
+
 def _diagnostic(edge: dict, trees: dict[str, Path]) -> bool:
+    if _shadow_recovery(edge):
+        return True
     quality = getattr(trees, 'publisher_quality', None)
     return quality is not None and (edge.get('party'), _feed_name(edge), str(edge.get('version'))) in quality.diagnostic
 
@@ -3731,6 +3742,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     party, kind, new_version = edge["party"], edge["kind"], edge["version"]
     old_version = prev_version if prev_version is not None else new_version
     name = _feed_name(edge)
+    if _shadow_recovery(edge):
+        raise Refused("recovery-expense is shadow-only; it cannot enter ordinary prices")
     tree = Path(tree) if tree is not None else PLATFORM_DIR
 
     if name not in FEED_CONVERTERS:
@@ -3918,6 +3931,8 @@ def _feed_scenario(name: str, version: str, party: str, tree_path: Path,
     names which, and what it did not price); `eol` is time-varying and takes the
     composition's own as-of -- the newest published_at among the pinned feeds,
     or the caller's `--as-of` -- so no clock is read here either."""
+    if name == "recovery-expense":
+        raise Refused("recovery-expense requires the separate forecast SDK; no institutional headline")
     if name == "cve":
         if inventory is None:
             raise Refused("missing instrument: cve subscription has no committed inventory/images.json (ADR-0035)")
@@ -5778,7 +5793,8 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
                         raise publisher_reliability.Refused(
                             'publisher-reliability: declared diagnostic source is unavailable')
                     parent_trees.publisher_quality.bind_live(
-                        edge, feed_file(edge['party'], diagnostic_name, edge['version'], tree))
+                        edge, feed_file(edge['party'], diagnostic_name, edge['version'], tree),
+                        _converter(diagnostic_name, tree) if _shadow_recovery(edge) else None)
     except (publisher_reliability.Refused, OSError, ValueError, KeyError, TypeError) as error:
         return _refused(['publisher-reliability: ' + str(error)]), {}
 
@@ -6577,7 +6593,7 @@ def _adopter_copy(name: str, dest: Path) -> Path:
     def source_git(*args):
         return subprocess.check_output(['git','-C',str(src),*args],stderr=subprocess.PIPE)
     head=source_git('rev-parse','HEAD^{commit}').decode().strip()
-    selected=[path for path in ('party.yaml','gitops','.github','inventory')
+    selected=[path for path in ('party.yaml','gitops','.github','inventory','scenarios')
               if source_git('ls-tree','--name-only',head,'--',path).strip()]
     archive=source_git('archive',head,*selected)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
@@ -7022,6 +7038,8 @@ def _historical_platform_copy(source: Path, dest: Path, adopter: Path) -> Path:
 
 
 def selfcheck() -> None:
+    from fixture_inventory import commit_fixture_state
+
     driftwood = DEFAULT_ESTATE_CLONE / "driftwood"
     parent_trees = _real_parent_trees()
     # The restatement cases below need a version that is actually DECLARED, and
@@ -7195,7 +7213,18 @@ def selfcheck() -> None:
         res4 = agent4["residuals"]
         assert res4["baseline"] == res4["restricted"] == res4["quarantine"] == agent4["amount"], res4
         assert res4["isolated"] == 0.0, res4
-        assert agent4["proposed_tier"] == "baseline" and agent4["policy_version"] == twin4["policy_version"], agent4
+        # This is the current declaration, including its owner-adopted floor.
+        # Reproduce the named selection package over the independently checked
+        # residual table rather than assuming the historical no-floor baseline.
+        def expected_agent_pick(entry, floor=party["overlay"].get("floor")):
+            candidates = {tier: {"amount": amount, "currency": entry["currency"]}
+                          for tier, amount in entry["residuals"].items() if amount is not None}
+            return _selection_policy(work, "driftwood").select(
+                candidates, party["appetite"]["tolerance"], floor)
+
+        expected_agent = expected_agent_pick(agent4)
+        assert agent4["proposed_tier"] == expected_agent["tier"] \
+            and agent4["policy_version"] == expected_agent["policy_version"] == twin4["policy_version"], agent4
         assert agent4["lef_from"] == "threat-register" and agent4["register_version"] == "v4", agent4
         assert agent4["tcor"]["cost_of_controls"] == 0.0 and agent4["cost"]["amount"] == 0.0, agent4["tcor"]
         assert agent4["rests_on_grade"] == (max(3, twin4["rests_on_grade"]) if isinstance(twin4.get("rests_on_grade"), int) else None), agent4
@@ -7213,7 +7242,8 @@ def selfcheck() -> None:
         assert "platform/agent-cage" not in " ".join(with_line["lines"]), with_line["lines"]
         assert not wargamer.wargame_cage_tier([agent4], "driftwood"), "no Namespace row for the agent line"
         hb4 = rendered4["composed/HANDBOOK.md"]
-        assert "| platform | agent-cage | twin-agent | driftwood | GBP |" in hb4 and "a rung for the twin agent, not the Namespace: `baseline`" in hb4, "the handbook renders the line"
+        assert "| platform | agent-cage | twin-agent | driftwood | GBP |" in hb4 \
+            and f"a rung for the twin agent, not the Namespace: `{agent4['proposed_tier']}`" in hb4, "the handbook renders the line"
         print("OK agent-cage: with the register pin moved to a major 4 carrying the row, driftwood's "
               "twin-agent cage prices at %.4f GBP a year (gap %.2f over %s day(s), frequency %s), "
               "restricted and quarantine carry baseline's residual, isolated 0; driftwood's own "
@@ -7227,8 +7257,8 @@ def selfcheck() -> None:
         # adopter's own policy picks the one candidate left, `isolated` (fail closed,
         # ADR-0022). Then with the recompose gate removed from its pull-request
         # workflow: the proposal path is could-not-look, so baseline and restricted
-        # have no residual and the pick falls to `quarantine`, the loosest rung whose
-        # open paths are all derived. ---
+        # have no residual. Without a floor the loosest priced candidate is
+        # quarantine; the current declared floor still clamps that candidate. ---
         sweep_path = work / SWEEP_WORKFLOW
         sweep_text = sweep_path.read_text()
         assert "contents: write" in sweep_text, sweep_path
@@ -7254,7 +7284,8 @@ def selfcheck() -> None:
             and "could not be derived" in agent_ng["reach_basis"]["misleading-proposal-merged-by-a-human"], agent_ng["reach_basis"]
         assert agent_ng["residuals"]["baseline"] is None and agent_ng["residuals"]["restricted"] is None \
             and agent_ng["residuals"]["quarantine"] == agent4["amount"] and agent_ng["residuals"]["isolated"] == 0.0, agent_ng["residuals"]
-        assert agent_ng["proposed_tier"] == "quarantine", agent_ng["proposed_tier"]
+        assert expected_agent_pick(agent_ng, floor=None)["tier"] == "quarantine"
+        assert agent_ng["proposed_tier"] == expected_agent_pick(agent_ng)["tier"], agent_ng
         # ...and a drift test that survives only as a COMMENT is no gate (review round 2,
         # finding 4): the served line and its ::error are commented out, the raw file still
         # holds the substrings, and the step no longer tests for drift, so the proposal path
@@ -7268,7 +7299,7 @@ def selfcheck() -> None:
         doc_cm, _ = compose(work, {**parent_trees, "feeds": feeds_work})
         agent_cm = next(p for p in doc_cm["prices"] if p["kind"] == AGENT_CAGE_KIND)
         assert agent_cm["reach"]["misleading-proposal-merged-by-a-human"] is None, agent_cm["reach"]
-        assert agent_cm["proposed_tier"] == "quarantine", agent_cm["proposed_tier"]
+        assert agent_cm["proposed_tier"] == expected_agent_pick(agent_cm)["tier"], agent_cm
         sl_path.write_text(sl_text)
         exit_zero = re.sub(r'(status --porcelain -- composed/[\s\S]*?)\bexit 1\b', r'\1exit 0',
                            sl_text, count=1)
@@ -7277,6 +7308,7 @@ def selfcheck() -> None:
         doc_ez, _ = compose(work, {**parent_trees, "feeds": feeds_work})
         agent_ez = next(p for p in doc_ez["prices"] if p["kind"] == AGENT_CAGE_KIND)
         assert agent_ez["reach"]["misleading-proposal-merged-by-a-human"] is None, agent_ez["reach"]
+        assert agent_ez["proposed_tier"] == expected_agent_pick(agent_ez)["tier"], agent_ez
         sl_path.write_text(sl_text)
         print("OK agent-cage: the reach is read off the served tree -- a sweep without contents: write "
               "leaves the token paths could-not-look and the pick falls closed to %r; a pull-request "
@@ -7801,7 +7833,13 @@ def selfcheck() -> None:
     # --- ticket 13: the two-publisher limit prints OPEN at one publisher ---
     limit = next(l for l in document["limits"] if l["name"] == "two-publisher-conflict")
     assert limit["count"] == 1 and limit["status"] == "open", limit
-    assert document["restatements"] == [] and document["cages"] == []
+    assert document["restatements"] == []
+    # Current declared workload cages are real inputs, not historical emptiness.
+    declared_cages = {(entry["subject"], f"{entry['family']}/{entry['name']}@{entry['version']}", entry["scenario"])
+                      for entry in driftwood_doc["overlay"].get("workload_cages", [])}
+    actual_cages = {(entry.get("binding", {}).get("subject"), entry["rule"], entry["priced_from"])
+                    for entry in document["cages"]}
+    assert actual_cages == declared_cages and len(document["cages"]) == len(declared_cages), document["cages"]
     print("OK limits[]: the two-publisher-conflict limit prints open at driftwood's one "
           "pinned implementations publisher")
 
@@ -8091,6 +8129,12 @@ def selfcheck() -> None:
                                 ("ludlow", "quarantine")):
         with tempfile.TemporaryDirectory() as td:
             work = _adopter_copy(org, Path(td))
+            # Historical comparison of the prototype's unclamped table, not a
+            # proposal to remove any current institution's owner-adopted floor.
+            historical_party = yaml.safe_load((work / "party.yaml").read_text())
+            historical_party["overlay"].pop("floor", None)
+            (work / "party.yaml").write_text(yaml.safe_dump(historical_party, sort_keys=False))
+            commit_fixture_state(work, "Synthetic historical restatement fixture without an owner floor")
             historical = _historical_platform_copy(
                 parent_trees["platform"], Path(td) / "platform-historical-deny", work)
             # Genuine cloud objects must not make this mutable policy fixture
@@ -9280,9 +9324,15 @@ def selfcheck() -> None:
     # actually straddles a boundary on either real price move above (the
     # prototype's own honest finding, reproduced: the wiring moves, the
     # real-band outcome does not). Only ico's own tree is fixtured -- the
-    # bump crosses driftwood's real GBP40,000 tolerance, not a fixture one ---
+    # bump crosses driftwood's real GBP40,000 tolerance, not a fixture one.
+    # This historical crossing is explicitly unclamped; the real current-floor
+    # cases above remain unchanged and exercise the owner-adopted isolation. ---
     with tempfile.TemporaryDirectory() as td:
         work = _adopter_copy("driftwood", Path(td))
+        crossing_party = yaml.safe_load((work / "party.yaml").read_text())
+        crossing_party["overlay"].pop("floor", None)
+        (work / "party.yaml").write_text(yaml.safe_dump(crossing_party, sort_keys=False))
+        commit_fixture_state(work, "Synthetic unclamped ICO crossing fixture; real appetite unchanged")
         fixture_ico = Path(td) / "fixture-ico"
         _write_fixture_ico(fixture_ico, parent_trees["ico"])
         crossing_parents = dict(parent_trees, ico=fixture_ico)
@@ -9301,8 +9351,9 @@ def selfcheck() -> None:
         assert price["changed"] is True, price
         assert price["proposed_as"] == "label", price  # quarantine is a real label value
         _assert_only_the_moved_feed_changed(rendered0, files1)
-        assert "`quarantine`" in files1["composed/HANDBOOK.md"] \
-            and "`quarantine`" not in rendered0["composed/HANDBOOK.md"], \
+        moved_row = _handbook_price_row(price)
+        assert moved_row in files1["composed/HANDBOOK.md"] \
+            and moved_row not in rendered0["composed/HANDBOOK.md"], \
             "the handbook did not report the tier the crossing bump proposes"
     print("OK prices[]: a fixture ico band (v1->v2) that crosses driftwood's real GBP40,000 "
           "tolerance prints a proposed tier through compose() (isolated -> quarantine, "

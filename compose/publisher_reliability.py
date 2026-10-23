@@ -30,6 +30,12 @@ _PARTY = re.compile(r'[a-z0-9][a-z0-9-]*')
 _SHA = re.compile(r'[0-9a-f]{40}')
 _TAG = re.compile(r'[A-Za-z0-9][A-Za-z0-9._/-]*')
 _RANK = {'none': 0, 'patch': 1, 'minor': 2, 'major': 3}
+_SERVED_CONVERTERS = {
+    ('ico', 'penalty-schema'): 'schema/to_fair_scenario.py',
+    ('feeds', 'threat-register'): 'threat-register/to_fair_scenario.py',
+    ('feeds', 'recovery-expense'): 'recovery-expense/to_fair_scenario.py',
+}
+
 
 
 class Refused(ValueError):
@@ -473,8 +479,9 @@ class _Admission:
         target = record['target']
         if Path(feed_path).read_bytes() != self._read(target, parse=False):
             raise Refused('publisher-reliability: priced feed differs from exact signed report target')
-        path = ('schema/to_fair_scenario.py' if edge['name'] == 'penalty-schema'
-                else 'threat-register/to_fair_scenario.py')
+        path = _SERVED_CONVERTERS.get((edge['party'], edge['name']))
+        if path is None:
+            raise Refused('publisher-reliability: no supported publisher converter for this feed')
         if converter_path is None or Path(converter_path).read_bytes() != self._read(
                 self._same_tree(target, path), parse=False):
             raise Refused('publisher-reliability: priced converter differs from exact target source')
@@ -639,10 +646,9 @@ class _Admission:
 
     def _widen(self, record, edge, base, context):
         policy, target = record['policy'], record['target']
-        if edge['name'] not in ('penalty-schema', 'threat-register'):
+        relative = _SERVED_CONVERTERS.get((edge['party'], edge['name']))
+        if relative is None:
             raise Refused('publisher-reliability: no publisher widening adapter for this feed')
-        relative = ('schema/to_fair_scenario.py' if edge['name'] == 'penalty-schema'
-                    else 'threat-register/to_fair_scenario.py')
         converter = self._read(self._same_tree(target, relative), parse=False)
         stage = Path(tempfile.mkdtemp(prefix='widen-', dir=self.root))
         script = stage / 'converter.py'

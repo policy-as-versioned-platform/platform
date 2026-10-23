@@ -1,0 +1,31 @@
+{
+  "schema": "recovery-expense/pilot-plan-v1",
+  "state": "prospective-owner-adopted-collection-plan-not-outcomes",
+  "population": [
+    "driftwood/2027",
+    "tuppence/2027",
+    "ludlow/2027"
+  ],
+  "unit": {
+    "currency": "GBP",
+    "basis": "nominal direct security-incident recovery expense per registered subject-year"
+  },
+  "horizon": {
+    "starts_at": "2027-01-01T00:00:00Z",
+    "ends_at": "2028-01-01T00:00:00Z",
+    "boundary": "[start,end)"
+  },
+  "initial_collection_process_days": 30,
+  "minimum_final_complete_cases": 3,
+  "criterion": "money-empirical-crps/v1",
+  "adopter_bar": "-1000",
+  "resolver_party": "platform",
+  "target_publisher": "feeds",
+  "scorer_party": "nist",
+  "minimum_is_statistical_power_claim": false,
+  "actual_incident_records": [],
+  "actual_forecast_registrations": [],
+  "actual_outcomes": [],
+  "accounting_policy": "Explicit institution-level cost centres/rates and the exact matching publisher profile are required inputs, with no defaults.",
+  "enrollment": "After matching reviewed publisher model and actual signed sources exist; genuine immutable forecasts must precede horizon start. Never backdate."
+}

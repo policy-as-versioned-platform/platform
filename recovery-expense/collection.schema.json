@@ -1,0 +1,621 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://policy-as-versioned.dev/schema/recovery-expense/collection-v1.json",
+  "title": "Prospective 2027 direct-recovery expense collection",
+  "description": "Source format only. collection.py additionally enforces chronology, raw hash-chain, exact arithmetic, source allocation, evidence hashes and independent finality. A schema-valid row is not a genuine world observation.",
+  "definitions": {
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "unit",
+        "cost_centres",
+        "labour_rates_gbp_per_hour",
+        "operator_control_disclosure"
+      ],
+      "properties": {
+        "schema": {
+          "const": "recovery-expense/accounting-policy-v1"
+        },
+        "unit": {
+          "const": {
+            "currency": "GBP",
+            "basis": "nominal direct security-incident recovery expense per registered subject-year"
+          }
+        },
+        "cost_centres": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "driftwood",
+            "tuppence",
+            "ludlow"
+          ],
+          "properties": {
+            "driftwood": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            },
+            "tuppence": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            },
+            "ludlow": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          }
+        },
+        "labour_rates_gbp_per_hour": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "driftwood",
+            "tuppence",
+            "ludlow"
+          ],
+          "properties": {
+            "driftwood": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            "tuppence": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            "ludlow": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            }
+          }
+        },
+        "operator_control_disclosure": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "sequence",
+        "previous_sha256",
+        "entry_id",
+        "incident_id",
+        "incurred_at",
+        "recorded_at",
+        "subject",
+        "cost_centre",
+        "category",
+        "source_id",
+        "source_amount",
+        "allocation_amount",
+        "hours",
+        "rate",
+        "evidence",
+        "duplicate_of"
+      ],
+      "properties": {
+        "schema": {
+          "const": "recovery-expense/entry-v1"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "previous_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          ]
+        },
+        "entry_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "incident_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "incurred_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "recorded_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "subject": {
+          "enum": [
+            "driftwood",
+            "tuppence",
+            "ludlow"
+          ]
+        },
+        "cost_centre": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": [
+            "incremental-response-labour",
+            "incremental-restoration-invoice",
+            "incident-register"
+          ]
+        },
+        "source_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allocation_amount": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hours": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,15})(\\.[0-9]{1,8})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256",
+            "uri",
+            "custodian",
+            "kind"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "uri": {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            "custodian": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "enum": [
+                "worklog",
+                "invoice",
+                "annual-reconciliation",
+                "independent-no-events-attestation",
+                "process-reconciliation",
+                "incident-register",
+                "independent-no-additional-expense-attestation"
+              ]
+            }
+          }
+        },
+        "duplicate_of": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "case_id",
+        "subject",
+        "perspective",
+        "horizon",
+        "unit",
+        "cost_centres",
+        "resolved_at",
+        "published_at",
+        "ledger_sha256",
+        "final",
+        "complete",
+        "unresolved",
+        "disputed",
+        "incident_ids",
+        "source_ids",
+        "reconciliation",
+        "no_events",
+        "no_expense"
+      ],
+      "properties": {
+        "schema": {
+          "const": "recovery-expense/closure-v1"
+        },
+        "case_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "enum": [
+            "driftwood",
+            "tuppence",
+            "ludlow"
+          ]
+        },
+        "perspective": {
+          "enum": [
+            "driftwood",
+            "tuppence",
+            "ludlow"
+          ]
+        },
+        "horizon": {
+          "const": {
+            "starts_at": "2027-01-01T00:00:00Z",
+            "ends_at": "2028-01-01T00:00:00Z",
+            "boundary": "[start,end)"
+          }
+        },
+        "unit": {
+          "const": {
+            "currency": "GBP",
+            "basis": "nominal direct security-incident recovery expense per registered subject-year"
+          }
+        },
+        "cost_centres": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "resolved_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "published_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "ledger_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "final": {
+          "type": "boolean"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "unresolved": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "disputed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "incident_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256",
+            "uri",
+            "custodian",
+            "kind"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "uri": {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            "custodian": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "enum": [
+                "worklog",
+                "invoice",
+                "annual-reconciliation",
+                "independent-no-events-attestation",
+                "process-reconciliation",
+                "incident-register",
+                "independent-no-additional-expense-attestation"
+              ]
+            }
+          }
+        },
+        "no_events": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256",
+                "uri",
+                "custodian",
+                "kind"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "uri": {
+                  "type": "string",
+                  "pattern": "^https://"
+                },
+                "custodian": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "enum": [
+                    "worklog",
+                    "invoice",
+                    "annual-reconciliation",
+                    "independent-no-events-attestation",
+                    "process-reconciliation",
+                    "incident-register",
+                    "independent-no-additional-expense-attestation"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "no_expense": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256",
+                "uri",
+                "custodian",
+                "kind"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "uri": {
+                  "type": "string",
+                  "pattern": "^https://"
+                },
+                "custodian": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "kind": {
+                  "enum": [
+                    "worklog",
+                    "invoice",
+                    "annual-reconciliation",
+                    "independent-no-events-attestation",
+                    "process-reconciliation",
+                    "incident-register",
+                    "independent-no-additional-expense-attestation"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "starts_at",
+        "ends_at",
+        "assessed_at",
+        "ledger_sha256",
+        "evidence",
+        "complete"
+      ],
+      "properties": {
+        "schema": {
+          "const": "recovery-expense/process-assessment-v1"
+        },
+        "starts_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "ends_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "assessed_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        },
+        "ledger_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256",
+            "uri",
+            "custodian",
+            "kind"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "uri": {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            "custodian": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "enum": [
+                "worklog",
+                "invoice",
+                "annual-reconciliation",
+                "independent-no-events-attestation",
+                "process-reconciliation",
+                "incident-register",
+                "independent-no-additional-expense-attestation"
+              ]
+            }
+          }
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/definitions/policy"
+    },
+    {
+      "$ref": "#/definitions/entry"
+    },
+    {
+      "$ref": "#/definitions/closure"
+    },
+    {
+      "$ref": "#/definitions/process"
+    }
+  ]
+}
