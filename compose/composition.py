@@ -6593,7 +6593,7 @@ def _adopter_copy(name: str, dest: Path) -> Path:
     def source_git(*args):
         return subprocess.check_output(['git','-C',str(src),*args],stderr=subprocess.PIPE)
     head=source_git('rev-parse','HEAD^{commit}').decode().strip()
-    selected=[path for path in ('party.yaml','gitops','.github','inventory')
+    selected=[path for path in ('party.yaml','gitops','.github','inventory','scenarios')
               if source_git('ls-tree','--name-only',head,'--',path).strip()]
     archive=source_git('archive',head,*selected)
     with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
