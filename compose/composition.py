@@ -450,6 +450,8 @@ FEED_SCHEMA_PATH = PLATFORM_DIR / "feeds" / "schema.json"
 # carries it instead, so the unmodified converters keep working).
 FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "threat-register": ("feeds", "to_fair_scenario.py"),
+    # A distinct shadow model: vendored for exact forecast admission, never priced.
+    "recovery-expense": ("recovery-expense", "to_fair_scenario.py"),
     "penalty-schema": ("schema", "to_fair_scenario.py"),
     # Eco-system ticket 84: the two feeds the publisher already carries and this
     # table refused as "no converter". The same module as the register's; each
@@ -458,7 +460,8 @@ FEED_CONVERTERS: dict[str, tuple[str, ...]] = {
     "cve": ("feeds", "to_fair_scenario.py"),
     "eol": ("feeds", "to_fair_scenario.py"),
 }
-FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version"}
+FEED_VERSION_KEY = {"threat-register": "feed_version", "penalty-schema": "schema_version",
+                    "recovery-expense": "feed_version"}
 
 # Eco-system ticket 25 (ADR-0020, ADR-0021): the one prices[] schema.
 # Every entry carries perspective, currency, source, kind, amount and a
@@ -1075,7 +1078,15 @@ class ParentTrees(dict[str, Path]):
         self.monetary_sources = dict(getattr(trees, 'monetary_sources', {}))
 
 
+def _shadow_recovery(edge: dict) -> bool:
+    # Intrinsic to this exact family, including before any report policy exists.
+    return (edge.get('party'), edge.get('kind'), _feed_name(edge)) == (
+        'feeds', 'feed', 'recovery-expense')
+
+
 def _diagnostic(edge: dict, trees: dict[str, Path]) -> bool:
+    if _shadow_recovery(edge):
+        return True
     quality = getattr(trees, 'publisher_quality', None)
     return quality is not None and (edge.get('party'), _feed_name(edge), str(edge.get('version'))) in quality.diagnostic
 
@@ -3731,6 +3742,8 @@ def price_parent(edge: dict, adopter_party: str, tolerance: float, tree: Path | 
     party, kind, new_version = edge["party"], edge["kind"], edge["version"]
     old_version = prev_version if prev_version is not None else new_version
     name = _feed_name(edge)
+    if _shadow_recovery(edge):
+        raise Refused("recovery-expense is shadow-only; it cannot enter ordinary prices")
     tree = Path(tree) if tree is not None else PLATFORM_DIR
 
     if name not in FEED_CONVERTERS:
@@ -3918,6 +3931,8 @@ def _feed_scenario(name: str, version: str, party: str, tree_path: Path,
     names which, and what it did not price); `eol` is time-varying and takes the
     composition's own as-of -- the newest published_at among the pinned feeds,
     or the caller's `--as-of` -- so no clock is read here either."""
+    if name == "recovery-expense":
+        raise Refused("recovery-expense requires the separate forecast SDK; no institutional headline")
     if name == "cve":
         if inventory is None:
             raise Refused("missing instrument: cve subscription has no committed inventory/images.json (ADR-0035)")
@@ -5778,7 +5793,8 @@ def _compose(adopter_dir: Path, parent_trees: ParentTrees, *,
                         raise publisher_reliability.Refused(
                             'publisher-reliability: declared diagnostic source is unavailable')
                     parent_trees.publisher_quality.bind_live(
-                        edge, feed_file(edge['party'], diagnostic_name, edge['version'], tree))
+                        edge, feed_file(edge['party'], diagnostic_name, edge['version'], tree),
+                        _converter(diagnostic_name, tree) if _shadow_recovery(edge) else None)
     except (publisher_reliability.Refused, OSError, ValueError, KeyError, TypeError) as error:
         return _refused(['publisher-reliability: ' + str(error)]), {}
 

@@ -1,0 +1,31 @@
+name: prospective recovery collection source
+on:
+  pull_request:
+    paths: ['recovery-expense/**', 'compose/**', '.github/workflows/recovery-expense.yml']
+  push:
+    paths: ['recovery-expense/**', 'compose/**', '.github/workflows/recovery-expense.yml']
+permissions:
+  contents: read
+jobs:
+  pure-collection-regressions:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_OPTIONAL_LOCKS: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: append-only collection and independent annual closure contracts
+        run: python3 -B -m unittest discover -s recovery-expense -p test_collection.py -v
+  pure-shadow-consumer-regressions:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      GIT_OPTIONAL_LOCKS: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: prepare isolated source-test dependencies
+        run: |
+          python3 -m venv .recovery-test-env
+          .recovery-test-env/bin/python -m pip install PyYAML==6.0.3 jsonschema==4.26.0
+      - name: shadow family has no institutional financial effect
+        run: .recovery-test-env/bin/python -B -m unittest discover -s compose -p test_shadow_recovery.py -v
