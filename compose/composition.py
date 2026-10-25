@@ -7073,7 +7073,8 @@ def selfcheck() -> None:
     feed_prices = [p for p in document["prices"] if p["kind"] == "feed"]
     declared=yaml.safe_load((driftwood/'party.yaml').read_text())
     feed_keys={(e['party'],_feed_name(e)) for e in declared['inherits']
-               if e['kind'] in FEED_KINDS and _feed_name(e) in FEED_CONVERTERS}
+               if e['kind'] in FEED_KINDS and _feed_name(e) in FEED_CONVERTERS
+               and not _diagnostic(e, parent_trees)}
     assert {(p['source'],p.get('name')) for p in feed_prices} == feed_keys
     assert len(feed_prices) == len(feed_keys), feed_prices
     for p in feed_prices:
@@ -9375,10 +9376,11 @@ def selfcheck() -> None:
     assert doc45["outcome"] == "composed", doc45["refusals"]
     drift_doc = yaml.safe_load((driftwood / "party.yaml").read_text())
     feed_edges = [e for e in drift_doc["inherits"] if e.get("kind") in FEED_KINDS]
+    switching_edges = [e for e in feed_edges if not _diagnostic(e, parent_trees)]
     switching = [e for e in doc45["prices"] if e["kind"] == "switching"]
-    assert len(switching) == len(feed_edges), (len(switching), len(feed_edges))
+    assert len(switching) == len(switching_edges), (len(switching), len(switching_edges))
     by_name = {e["name"]: e for e in switching}
-    assert set(by_name) == {_feed_name(e) for e in feed_edges}, sorted(by_name)
+    assert set(by_name) == {_feed_name(e) for e in switching_edges}, sorted(by_name)
     for entry in switching:
         assert entry["perspective"] == "driftwood", entry
         assert entry["currency"] == "GBP", entry
@@ -9435,7 +9437,7 @@ def selfcheck() -> None:
     quote = by_name["quote-driftwood"]
     assert math.isclose(quote["amount"], 0.0, abs_tol=1e-9), quote
     assert [(u["kind"], u["source"]) for u in quote["unpriceable"]] == [("premium", "insurer")], quote
-    print("OK prices[]: one `switching` entry per feed edge, each measured by re-composing with "
+    print("OK prices[]: one `switching` entry per non-diagnostic feed edge, measured by re-composing with "
           "that publisher's edges dropped -- ico's costs its whole regime line, the threat "
           "publisher's is not a number at all because driftwood's own twin borrows that feed's "
           "LEF and stops pricing without it, and the insurer's moves the exposure by nothing "
@@ -9552,6 +9554,11 @@ def selfcheck() -> None:
     # adopter signed. This is the leg the first cut got wrong by guessing a
     # `--selfcheck` flag neither real converter accepts ---
     for record in doc45["vendored"]:
+        if _shadow_recovery(record):
+            # The admission converter is vendored and digested, never ordinarily priced.
+            assert isinstance(record["converter"], str) and record["converter"], record
+            assert record["invocation"] is None and record["scenario_sha256"] is None, record
+            continue
         if record["converter"] is None:
             assert record["invocation"] is None and record["scenario_sha256"] is None, record
             continue
@@ -9573,10 +9580,11 @@ def selfcheck() -> None:
             assert replay.returncode == 0, (record["name"], replay.stderr[-400:])
             assert _digest(json.dumps(json.loads(replay.stdout), sort_keys=True)) \
                 == record["scenario_sha256"], record["name"]
-    print("OK composed/feeds/: each vendored copy records the exact command that priced it and "
-          "the digest of what that command returned -- and replaying it against the vendored "
-          "payload alone, in a bare directory, reproduces the digest for %s"
-          % ", ".join(r["name"] for r in doc45["vendored"] if r["converter"]))
+    print("OK composed/feeds/: each ordinarily priced converter records its exact command and "
+          "scenario digest; replaying against its vendored payload alone reproduces the digest "
+          "for %s. Shadow recovery retains its admission converter without a financial invocation"
+          % ", ".join(r["name"] for r in doc45["vendored"]
+                      if r["converter"] and not _shadow_recovery(r)))
 
     # --- review F2: nothing this composition signs carries the path of the
     # machine that composed it ---
@@ -10022,7 +10030,7 @@ def selfcheck() -> None:
         "tagless checkout, a lightweight tag and a flattened annotated tag read `unobserved` "
         "rather than booking a hole over a signature that is really there. "
         "ECO-SYSTEM TICKET 45 (the switching cost, computed in composition): every "
-        "substitutable parent -- a feed, because publishes[] is what discovers one -- carries a "
+        "ordinary financial feed parent -- discovered through publishes[] -- carries a "
         "`switching` entry under the adopter's own perspective and currency, measured by "
         "RE-COMPOSING with that publisher's edges dropped rather than by subtracting the line "
         "about to be lost, annualised and carried over the life the pin has actually stood "
