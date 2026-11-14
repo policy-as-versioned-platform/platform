@@ -1,0 +1,23 @@
+schema: 1
+authority: governed-namespace
+default: isolated
+orphan_or_missing_claim: isolated
+infra: role-declaration-not-a-rung
+# This table is read by render.py, not copied into a second Python table.
+tiers:
+  baseline:   {publiclyAccessible: false, storageEncrypted: true, multiAz: false, backupRetentionPeriod: 1, sseAlgorithm: AES256}
+  restricted: {publiclyAccessible: false, storageEncrypted: true, multiAz: true, backupRetentionPeriod: 7, sseAlgorithm: AES256}
+  quarantine: {publiclyAccessible: false, storageEncrypted: true, multiAz: true, backupRetentionPeriod: 35, sseAlgorithm: AES256}
+  isolated:   {publiclyAccessible: false, storageEncrypted: true, multiAz: true, backupRetentionPeriod: 35, sseAlgorithm: AES256}
+preserve:
+  - RDS multiAz true remains true at baseline
+  - RDS backup retention above the rung minimum remains unchanged
+  - S3 aws:kms and its key identifier remain unchanged
+  - S3 bucketKeyEnabled and every unrelated provider field remain unchanged
+not_projected:
+  - Pod CPU and memory ceilings, PriorityClasses and eviction order
+  - Pod WAF sidecars and NetworkPolicy ingress or egress
+limits:
+  - The isolated service settings equal quarantine; no AWS network isolation is claimed.
+  - This package governs encryption configuration CRs; absence of such a CR is not evidence that a Bucket is encrypted.
+  - No pause flag, ProviderConfig, credential or reconciliation prohibition implements a rung.

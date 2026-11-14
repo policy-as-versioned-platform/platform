@@ -156,7 +156,7 @@ def governed_namespace_report() -> dict:
     correctly. That is noise about a fact already recorded, and PolicyReports are what the
     priced hole is computed from, so repeating one event would be double-counting it."""
     return {
-        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "apiVersion": "policies.kyverno.io/v1",
         "kind": "ValidatingPolicy",
         "metadata": {"name": REPORT_NAME, "labels": {IDENTITY_LABEL: IDENTITY}},
         "spec": {

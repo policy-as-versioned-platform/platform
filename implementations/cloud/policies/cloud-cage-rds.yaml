@@ -1,0 +1,56 @@
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: cloud-cage-rds
+  labels: {policy-as-versioned.dev/policy: cloud}
+spec:
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rds.aws.m.upbound.io]
+        apiVersions: [v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [instances]
+  matchConditions:
+    - name: only-this-copy-or-bottom-rung
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__' ||
+        !(object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') in __SERVED_CLAIMS__)
+    - name: cloud-population
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' ||
+        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
+    - name: spec-change
+      expression: >-
+        oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec ||
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != oldObject.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') ||
+        object.metadata.?labels['posture.acme.io/tier'].orValue('') != oldObject.metadata.?labels['posture.acme.io/tier'].orValue('')
+  variables:
+    - name: claim
+      expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('')
+    - name: nsTier
+      expression: >-
+        namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
+          ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('') : ''
+    - name: tier
+      expression: >-
+        variables.claim == '__POLICY_VERSION__' && variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']
+          ? variables.nsTier : 'isolated'
+    - name: dial
+      expression: __DIAL_TABLE__
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          (!has(object.metadata.labels)
+            ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
+          [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
+           JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}] +
+          (!has(object.spec.forProvider)
+            ? [JSONPatch{op: 'add', path: '/spec/forProvider', value: {}}] : []) +
+          [JSONPatch{op: 'add', path: '/spec/forProvider/publiclyAccessible', value: false},
+           JSONPatch{op: 'add', path: '/spec/forProvider/storageEncrypted', value: true},
+           JSONPatch{op: 'add', path: '/spec/forProvider/multiAz',
+             value: variables.dial.multiAz == 'true' || object.spec.?forProvider.?multiAz.orValue(false)},
+           JSONPatch{op: 'add', path: '/spec/forProvider/backupRetentionPeriod',
+             value: object.spec.?forProvider.?backupRetentionPeriod.orValue(0) > int(variables.dial.backupRetentionPeriod)
+               ? object.spec.forProvider.backupRetentionPeriod : int(variables.dial.backupRetentionPeriod)}]

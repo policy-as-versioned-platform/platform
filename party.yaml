@@ -38,6 +38,12 @@ roles: [publisher, platform]
 # is a new version plus the old one listed here, never a deleted tag; a pin
 # to a revoked version is a priced hole, never a refusal (ADR-0019 point 6).
 publishes:
+  # Ticket 151: a separately published implementations member package. Its
+  # source path and cloud/v* tags do not alter any frozen Pod policy line.
+  - kind: implementations
+    name: cloud
+    path: implementations/cloud
+    revoked: []
   - kind: implementations
     name: policy
     path: distribution/policies

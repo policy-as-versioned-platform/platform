@@ -1,0 +1,16 @@
+# Provider-family CRD install does not run any provider or grant AWS access.
+# Kyverno's reports/background controllers still need to read these CRs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:cloud-cr-view
+  labels:
+    rbac.kyverno.io/aggregate-to-background-controller: 'true'
+    rbac.kyverno.io/aggregate-to-reports-controller: 'true'
+rules:
+  - apiGroups: [rds.aws.m.upbound.io]
+    resources: [instances]
+    verbs: [get, list, watch]
+  - apiGroups: [s3.aws.m.upbound.io]
+    resources: [bucketserversideencryptionconfigurations]
+    verbs: [get, list, watch]

@@ -143,7 +143,18 @@
         },
         "restate": {
           "type": "array",
-          "description": "An inherited ValidatingPolicy and the action this party wants for it. Stricter is accepted; weaker is a declared inability, caged and priced, never an override."
+          "description": "An inherited ValidatingPolicy and the action this party wants for it. Stricter is accepted; weaker is a declared inability, caged and priced, never an override. An optional subject explicitly binds that priced inability to one declared Pod for the OSCAL risk join; it creates no exemption and no additional price.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "maxLength": 317,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?/[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+                "description": "Exact namespace/Pod-name identity, with a namespace of at most 63 characters and Pod DNS name of at most 253. Composition verifies the declared Pod and derives its control from the implementation publisher's Check_Id mapping."
+              }
+            }
+          }
         },
         "controls": {
           "type": "array",

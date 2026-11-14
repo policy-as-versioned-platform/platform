@@ -1,0 +1,64 @@
+name: cloud-release
+# Prepared dispatch-only publication path, separate from frozen Pod lines.
+on:
+  workflow_dispatch:
+    inputs:
+      version: {description: 'Cloud package semver matching implementations/cloud/VERSION', required: true}
+      hub_record: {description: 'Full signed hub clock commit carrying a modern e2e4 PASS', required: true}
+      message: {description: 'What changed and why', required: true}
+permissions: {contents: write, id-token: write}
+env:
+  GITSIGN_VERSION: 0.17.1
+  GITSIGN_SHA256: 69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae
+  EXPECTED_IDENTITY_REGEXP: ^https://github\.com/policy-as-versioned-platform/platform/\.github/workflows/cloud-release\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\.x)$
+  EXPECTED_ISSUER: https://token.actions.githubusercontent.com
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: policy-as-versioned-flux/policy-as-versioned-flux
+          ref: ${{ inputs.hub_record }}
+          path: _hub
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install pinned verifier and declared engines
+        run: |
+          set -euo pipefail
+          curl -sSL -o "$RUNNER_TEMP/gitsign" "https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
+          echo "${GITSIGN_SHA256}  $RUNNER_TEMP/gitsign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/gitsign"
+          sudo mv "$RUNNER_TEMP/gitsign" /usr/local/bin/gitsign
+          pip install --quiet pyyaml
+          bash engine/install-kyverno-engines.sh linux_x86_64 "$RUNNER_TEMP/cloud-engines"
+      - name: Cloud preflight before signing
+        env:
+          HUB_RECORD: ${{ inputs.hub_record }}
+          VERSION: ${{ inputs.version }}
+          KYVERNO_ENGINE_DIR: ${{ runner.temp }}/cloud-engines
+        run: python3 implementations/cloud/release_check.py --hub _hub --record "$HUB_RECORD" --version "$VERSION"
+      - name: Sign and verify the one immutable cloud tag
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_MESSAGE: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+          git config user.name cloud-release
+          git config user.email cloud-release@users.noreply.github.com
+          git config gpg.format x509
+          git config gpg.x509.program gitsign
+          git tag -s "cloud/v${VERSION}" -m "$RELEASE_MESSAGE"
+          GITSIGN_REKOR_MODE=offline gitsign verify-tag "cloud/v${VERSION}" --certificate-identity-regexp="$EXPECTED_IDENTITY_REGEXP" --certificate-oidc-issuer="$EXPECTED_ISSUER"
+      - name: Publish verified tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          RELEASE_MESSAGE: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push origin "refs/tags/cloud/v${VERSION}"
+          printf '%s\n' "$RELEASE_MESSAGE" > "$RUNNER_TEMP/cloud-release-notes.md"
+          gh release create "cloud/v${VERSION}" --title "cloud/v${VERSION}" --notes-file "$RUNNER_TEMP/cloud-release-notes.md"

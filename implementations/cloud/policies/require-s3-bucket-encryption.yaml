@@ -1,0 +1,31 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-s3-bucket-encryption
+  labels: {policy-as-versioned.dev/policy: cloud}
+  annotations:
+    policies.kyverno.io/title: S3 encryption configuration observation
+    policies.kyverno.io/description: >-
+      Harvested collie intent (sc-28), under ADR-0022's later no-Deny doctrine.
+      Every rule must name AES256 or aws:kms; a nonempty garbage string is
+      not encryption evidence. The mutation supplies AES256 when absent.
+spec:
+  validationActions: [Audit]
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [s3.aws.m.upbound.io]
+        apiVersions: [v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [bucketserversideencryptionconfigurations]
+  matchConditions:
+    - name: only-this-policy-version
+      expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__'
+    - name: spec-change
+      expression: oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec
+  validations:
+    - expression: >-
+        has(object.spec.forProvider) && has(object.spec.forProvider.rule) &&
+        size(object.spec.forProvider.rule) > 0 &&
+        object.spec.forProvider.rule.all(r,
+          r.?applyServerSideEncryptionByDefault.?sseAlgorithm.orValue('') in ['AES256', 'aws:kms'])
+      message: Every encryption rule must use AES256 or aws:kms (sc-28).

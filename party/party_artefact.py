@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from datetime import date
@@ -260,6 +261,16 @@ def validate_schema(doc: object, schema: dict | None = None) -> list[str]:
                 errors.append(f"overlay missing {field!r}")
             elif not isinstance(overlay[field], list):
                 errors.append(f"overlay.{field} must be a list")
+        subject_rule = schema['properties']['overlay']['properties']['restate']['items']['properties']['subject']
+        for i, entry in enumerate(overlay.get('restate') if isinstance(overlay.get('restate'), list) else []):
+            if not isinstance(entry, dict):
+                errors.append(f"overlay.restate[{i}] must be a mapping")
+            elif 'subject' in entry:
+                subject = entry['subject']
+                if (not isinstance(subject, str) or len(subject) > subject_rule['maxLength']
+                        or re.fullmatch(subject_rule['pattern'], subject) is None
+                        or len(subject.split('/')[-1]) > 253):
+                    errors.append(f"overlay.restate[{i}].subject must name one namespace/Pod with valid DNS names")
         if "controls" in overlay and not isinstance(overlay["controls"], list):
             errors.append("overlay.controls must be a list")
         floors = _floor_enum(schema)

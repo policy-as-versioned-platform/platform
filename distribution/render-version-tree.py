@@ -6,9 +6,9 @@ One authoring copy of each claim-wide policy stays under `graded/policies/`
 and `posture/policies/`. This renderer emits the PER-VERSION copies that
 `distribution/policies/v<version>/` actually ships -- the same pattern
 `require-nonroot-1-0-0` already establishes by hand. A human must not be able
-to omit one, so a renderer writes all eight every time:
+to omit one, so a renderer writes all seven every time:
 
-    cage-tier, cage-netpol, stamp-posture, posture-trust-boundary,
+    cage-tier, cage-netpol, stamp-posture,
     cage-baseline, cage-restricted, cage-quarantine, cage-isolated
     (the four PriorityClasses -- `cage-isolated` is the bottom rung ticket 26
     added, ADR-0022)
@@ -71,14 +71,13 @@ OBJECTSELECTOR_BAN = (
     "# multi-version coexistence.\n"
 )
 
-# The four claim-wide admission policies rendered as-is (kind + self-scope),
-# and the three PriorityClasses (renamed only -- they have no matchConditions,
+# The three claim-wide admission policies rendered as-is (kind + self-scope),
+# and the four PriorityClasses (renamed only -- they have no matchConditions,
 # they are not admission policies).
 ADMISSION_SOURCES = [
     (GRADED / "cage-tier.yaml", "cage-tier.yaml"),
     (GRADED / "cage-netpol.yaml", "cage-netpol.yaml"),
     (POSTURE / "stamp-posture.yaml", "stamp-posture.yaml"),
-    (POSTURE / "posture-trust-boundary.yaml", "posture-trust-boundary.yaml"),
 ]
 PRIORITYCLASSES_SOURCE = GRADED / "priorityclasses.yaml"
 
@@ -184,14 +183,15 @@ def selfcheck() -> None:
     assert tree_a == tree_b, "render_tree is not deterministic"
     assert set(tree_a) == {
         "priorityclasses.yaml", "cage-tier.yaml", "cage-netpol.yaml",
-        "stamp-posture.yaml", "posture-trust-boundary.yaml",
+        "stamp-posture.yaml",
     }, sorted(tree_a)
 
-    # all eight mandatory members present (4 single-doc files + 4 PriorityClasses)
+    # Seven mandatory members (3 single-doc files + 4 PriorityClasses).
+    # Historical trees retain posture-trust-boundary; ticket 149 retires it here.
     doc_count = sum(len(_load_all_text(t)) for t in tree_a.values())
-    assert doc_count == 8, f"expected 8 mandatory members, rendered {doc_count}"
+    assert doc_count == 7, f"expected 7 mandatory members, rendered {doc_count}"
 
-    admission_files = ["cage-tier.yaml", "cage-netpol.yaml", "stamp-posture.yaml", "posture-trust-boundary.yaml"]
+    admission_files = ["cage-tier.yaml", "cage-netpol.yaml", "stamp-posture.yaml"]
     for fname in admission_files:
         obj = yaml.safe_load(tree_a[fname])
         assert obj["metadata"]["name"].endswith(f"-{sv}"), obj["metadata"]["name"]
@@ -252,7 +252,7 @@ def selfcheck() -> None:
         "authoring copy of cage-tier.yaml must stay unversioned (verify-graded.sh reads it)"
 
     print(
-        "selfcheck ok: 8 mandatory members rendered for a named version; "
+        "selfcheck ok: 7 mandatory members rendered for a named version; "
         "versioned names/labels/self-scope; cage-tier names its own "
         "PriorityClasses; live path == offline twin; re-rendering an identical "
         "tree is a no-op; re-rendering over a DIFFERING released file refused; "
@@ -278,7 +278,7 @@ def main(argv: list[str]) -> int:
         out = Path(args[2])
     target = out or (HERE / "policies" / f"v{version}")
     write_tree(version, target)
-    print(f"rendered 8 mandatory members for {version} into {target}")
+    print(f"rendered 7 mandatory members for {version} into {target}")
     return 0
 
 

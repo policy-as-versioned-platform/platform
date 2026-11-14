@@ -28,7 +28,7 @@ say "1. offline: stamp-posture stamps from the claim + clobbers a forged posture
 kyverno test "$HERE/tests/stamp-posture" >/dev/null \
   || fail "stamp-posture mutate matrix failed"
 
-say "2. offline: posture-trust-boundary DENIES a forged/mismatched posture"
+say "2. offline: historical posture-trust-boundary still grades its own frozen fixture"
 kyverno test "$HERE/tests/posture-trust-boundary" >/dev/null \
   || fail "trust-boundary reject matrix failed — forging is not refused"
 
@@ -130,8 +130,10 @@ PY
     [ -n "$v" ] || continue
     timeout 10 kubectl --context "$CTX" get mutatingpolicy "stamp-posture-$v" >/dev/null 2>&1 \
       || fail "stamp-posture-$v MutatingPolicy not installed live"
-    timeout 10 kubectl --context "$CTX" get validatingpolicy "posture-trust-boundary-$v" >/dev/null 2>&1 \
-      || fail "posture-trust-boundary-$v ValidatingPolicy not installed live"
+    if [ -f "$HERE/../distribution/policies/v${v//-/.}/posture-trust-boundary.yaml" ]; then
+      timeout 10 kubectl --context "$CTX" get validatingpolicy "posture-trust-boundary-$v" >/dev/null 2>&1 \
+        || fail "historical posture-trust-boundary-$v ValidatingPolicy not installed live"
+    fi
   done < <(python3 - "$HERE" <<'PY'
 import sys
 from pathlib import Path
@@ -148,23 +150,18 @@ PY
   timeout 10 kubectl --context "$CTX" get clusterspiffeid posture >/dev/null 2>&1 \
     || fail "posture ClusterSPIFFEID not installed live"
 
-  say "5. live: a hand-set posture with NO claim is DENIED at admission (server dry-run)"
-  FORGE=$(cat <<'EOF'
-apiVersion: v1
-kind: Pod
-metadata:
-  name: posture-forge-probe
-  namespace: default
-  labels: { "posture.acme.io/version": "2.0.0" }
-spec:
-  containers: [{ name: app, image: nginx }]
-EOF
-)
-  if echo "$FORGE" | timeout 20 kubectl --context "$CTX" apply --dry-run=server -f - >/dev/null 2>&1; then
-    fail "forged posture (no claim) was ADMITTED — trust boundary is open!"
-  else
-    echo "  ok   forged posture with no claim refused at admission"
-  fi
+  # Ticket 149 retires the authoring Deny; versioned historical copies scope to their
+  # own claim, so none establishes a boundary for a claimless pod. The stamping
+  # proof below measures the claiming population the mutation actually covers.
+  say "5. live scope: claimless posture labels are outside the stamping mutation; no refusal asserted"
+  CLAIM_VERSION="$(python3 - "$HERE" <<'PYVERSION'
+import sys, yaml
+from pathlib import Path
+r=Path(sys.argv[1]).parent
+versions=yaml.safe_load((r / "distribution/versions.yaml").read_text())["spec"]["inputs"][0]["versions"]
+print(next(e["version"] for e in reversed(versions) if e.get("commit")))
+PYVERSION
+)"
 
   say "6. live: a forger's posture is clobbered back to its real claim (server dry-run)"
   CLOBBER=$(cat <<'EOF'
@@ -178,9 +175,10 @@ spec:
   containers: [{ name: app, image: nginx }]
 EOF
 )
+  CLOBBER="${CLOBBER//1.0.0/$CLAIM_VERSION}"
   OUT=$(echo "$CLOBBER" | timeout 20 kubectl --context "$CTX" apply --dry-run=server -f - -o jsonpath='{.metadata.labels.posture\.acme\.io/version}' 2>/dev/null || true)
-  [ "$OUT" = "1.0.0" ] && echo "  ok   forged posture 9.9.9 clobbered to the real claim 1.0.0" \
+  [ "$OUT" = "$CLAIM_VERSION" ] && echo "  ok   forged posture 9.9.9 clobbered to the real claim $CLAIM_VERSION" \
     || echo "  (clobber dry-run returned '$OUT'; needs Kyverno mutating webhook live — see README)"
 fi
 
-pass_line "posture rides in the SVID path; the label is Kyverno-only; forging is refused"
+pass_line "posture rides in the SVID path and the stamping mutation derives a claiming pod's posture from its served claim; historical Deny fixtures retain their own grade"

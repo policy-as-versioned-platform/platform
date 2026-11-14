@@ -1,0 +1,26 @@
+# stamp-posture @7.0.0 compatibility candidate (ticket149).
+# Candidate fixture adapted from prior policy cases; the grader reads the exact committed
+# candidate body. This is a fixture definition, not evidence of a published tag.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: stamp-posture-7-0-0-engine
+policies:
+  - ../../../../distribution/policies/v7.0.0/stamp-posture.yaml
+resources:
+  - resources.yaml
+results:
+  # a 7.0.0 claim gets posture 7.0.0 stamped; a forger's hand-set posture is clobbered back.
+  - policy: stamp-posture-7-0-0
+    kind: Pod
+    resources: [pod-claims, pod-forger]
+    patchedResources: patched.yaml
+    result: pass
+  # another version's claim; no claim; and no claim with a hand-set posture. The served body
+  # stamps only its own claim, so none of the three is touched. The third row is a measured
+  # fact, not an endorsement: no served 7.0.0 body clobbers a posture on a pod that claims
+  # nothing (see posture-trust-boundary's fixture, which does not refuse it either).
+  - policy: stamp-posture-7-0-0
+    kind: Pod
+    resources: [pod-other-version, pod-unversioned, pod-unclaimed-forger]
+    result: skip

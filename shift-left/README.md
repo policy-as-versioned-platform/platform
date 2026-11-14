@@ -36,6 +36,31 @@ hands back the planted two-line window
 fixture to pass its own target and fail a neighbour. A fixture that fails its
 own target is a plain failure, not a caught flip.
 
+## The engine (eco-system ticket 148, hub ADR-0033 point 7)
+
+Each line in the window runs only on an engine that line supports. The engine is the adopter's
+own declaration, `gitops/engine/kyverno.yaml` at the top of the git repository the resource
+belongs to, or the file `--engine-declaration` names. [`../engine/declaration.py`](../engine/declaration.py)
+reads it, the same reader composition uses. A line supports the engines its element of the
+versions file lists in `tested_engines`, read by the engine grader's own rule.
+
+- A line in the window that does not list the declared engine prints `UNSUPPORTED PAIRING @ v<x>`
+  with the reason. It is not run, so it is neither a compile error nor a pass, and the verdict
+  line names it as not run and not passed.
+- The kyverno CLI on PATH must report the declared version before any line runs.
+- Exit 0: the target line ran and passed, and every other line that ran passed. Exit 1: a line
+  that ran would deny the workload. Exit 3, could not look: no declared engine, a declaration that
+  does not read, a CLI of another version, or a target line that does not support the declared
+  engine. An unsupported neighbour does not change the exit, because a refusal is not the answer
+  to an unsupported pairing (ADR-0033 rejected it); it is named.
+
+The fixtures here belong to no adopter, so the beats hand `ci-check.py`
+[`fixtures/engine/kyverno.yaml`](fixtures/engine/kyverno.yaml), a declaration of 1.18.2 with the
+engine table's figures. The planted flip window lists `tested_engines` on both lines, and says
+that 4.0.0's is planted. `verify-shift-left.sh` also plants an undeclared engine, a malformed
+declaration, an engine the target does not support, a neighbour that supports no engine, a CLI of
+another version and an adopter repository that declares its own engine.
+
 [`ci-workflow.example.yml`](ci-workflow.example.yml) shows the shape an
 institution repo's own `.github/workflows/` wires this into — each
 institution owns its own CI; this repo only owns the check it calls.

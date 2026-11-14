@@ -1,0 +1,19 @@
+schema: 1
+party: platform
+kind: implementations
+name: cloud
+version: 1.0.0
+path: implementations/cloud
+tag: cloud/v1.0.0
+publication: prepared
+engine_scope: every-cloud-body-and-fixture-v1
+tested_engines: ["1.18.2", "1.19.1"]
+provider_crds:
+  package_version: v2.6.0
+  groups: [rds.aws.m.upbound.io, s3.aws.m.upbound.io]
+proof_boundary: admission-only-no-provider-controller-or-credentials
+members:
+  - policies/require-rds-multi-az.yaml
+  - policies/require-s3-bucket-encryption.yaml
+  - policies/cloud-cage-rds.yaml
+  - policies/cloud-cage-s3.yaml

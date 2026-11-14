@@ -50,6 +50,12 @@ overlay:
 the four floor tiers and the two declarable pricing thresholds — `party_artefact.py` reads its
 enums from that file rather than re-declaring them.
 
+An `overlay.restate` entry may carry `subject: namespace/pod-name` to bind its own priced
+inability to a declared Pod (ticket 155). Both names must be Kubernetes DNS names. The existing
+`name`, `version`, `action`, scenario and inability declaration still determine that decision;
+the subject adds no price. Composition requires one published control mapping for that check
+and emits the Cage decision's OSCAL risk. Without a subject, no workload risk is invented.
+
 `appetite.pricing_threshold` (eco-system ticket 141, ADR-0032) is the weakest evidence grade on
 the twin's ladder this party prices on. Absent means the estate default, grade 2 (repeated
 historical co-movement); `3` declares that the party prices on published work not observed here,

@@ -1,0 +1,24 @@
+# Expected outcomes are service fields, not the CEL source text.
+cases:
+  - {name: rds-baseline, kind: Instance, tier: baseline, expected: {tier: baseline, multiAz: false, backupRetentionPeriod: 1}, audit: false}
+  - {name: rds-restricted, kind: Instance, tier: restricted, expected: {tier: restricted, multiAz: true, backupRetentionPeriod: 7}, audit: false}
+  - {name: rds-quarantine, kind: Instance, tier: quarantine, expected: {tier: quarantine, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-isolated, kind: Instance, tier: isolated, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-preserve-hardening, kind: Instance, tier: baseline, provider: {multiAz: true, backupRetentionPeriod: 35}, expected: {tier: baseline, multiAz: true, backupRetentionPeriod: 35}, audit: true}
+  - {name: rds-forged-workload-tier, kind: Instance, tier: isolated, workload_tier: baseline, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-missing-claim, kind: Instance, tier: baseline, claim: null, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: skip}
+  - {name: rds-orphan-claim, kind: Instance, tier: baseline, claim: 99.0.0, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: skip}
+  - {name: rds-missing-tier, kind: Instance, tier: null, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-unknown-tier, kind: Instance, tier: unknown, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-infra-role-not-rung, kind: Instance, tier: infra, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: rds-ungoverned-forged-tier, kind: Instance, tier: baseline, governed: false, expected: {tier: isolated, multiAz: true, backupRetentionPeriod: 35}, audit: false}
+  - {name: s3-missing-rule, kind: BucketServerSideEncryptionConfiguration, tier: baseline, expected: {tier: baseline, sseAlgorithm: AES256}, audit: false}
+  - {name: s3-empty-rule, kind: BucketServerSideEncryptionConfiguration, tier: restricted, provider: {rule: []}, expected: {tier: restricted, sseAlgorithm: AES256}, audit: false}
+  - {name: s3-invalid-algorithm, kind: BucketServerSideEncryptionConfiguration, tier: quarantine, provider: {rule: [{applyServerSideEncryptionByDefault: {sseAlgorithm: garbage}}]}, expected: {tier: quarantine, sseAlgorithm: AES256}, audit: false}
+  - {name: s3-preserve-kms, kind: BucketServerSideEncryptionConfiguration, tier: baseline, provider: {rule: [{bucketKeyEnabled: true, applyServerSideEncryptionByDefault: {sseAlgorithm: 'aws:kms', kmsMasterKeyId: alias/ledger}}]}, expected: {tier: baseline, sseAlgorithm: 'aws:kms', kmsMasterKeyId: alias/ledger, bucketKeyEnabled: true}, audit: true}
+  - {name: s3-preserve-aes, kind: BucketServerSideEncryptionConfiguration, tier: isolated, provider: {rule: [{applyServerSideEncryptionByDefault: {sseAlgorithm: AES256}}]}, expected: {tier: isolated, sseAlgorithm: AES256}, audit: true}
+  - {name: s3-all-rules-not-one, kind: BucketServerSideEncryptionConfiguration, tier: baseline, provider: {rule: [{applyServerSideEncryptionByDefault: {sseAlgorithm: AES256}}, {applyServerSideEncryptionByDefault: {sseAlgorithm: garbage}}]}, expected: {tier: baseline, sseAlgorithm: AES256}, audit: false}
+  - {name: s3-forged-workload-tier, kind: BucketServerSideEncryptionConfiguration, tier: isolated, workload_tier: baseline, expected: {tier: isolated, sseAlgorithm: AES256}, audit: false}
+  - {name: s3-missing-claim, kind: BucketServerSideEncryptionConfiguration, tier: baseline, claim: null, expected: {tier: isolated, sseAlgorithm: AES256}, audit: skip}
+  - {name: s3-orphan-claim, kind: BucketServerSideEncryptionConfiguration, tier: baseline, claim: 99.0.0, expected: {tier: isolated, sseAlgorithm: AES256}, audit: skip}
+  - {name: s3-ungoverned-forged-tier, kind: BucketServerSideEncryptionConfiguration, tier: baseline, governed: false, expected: {tier: isolated, sseAlgorithm: AES256}, audit: false}

@@ -22,8 +22,20 @@
 # shift-left/flip_window.py picks this file only while the served array
 # declares fewer than two major lines, and prints NOTHING-TO-FLIP when it does.
 # verify-shift-left.sh and wargamer/propose-policy-pr.sh both ask it.
+#
+# `tested_engines` (eco-system ticket 148). ci-check.py runs a line only on an
+# engine its element lists, so a planted window must list one or the beat
+# measures nothing. The 5.0.0 value is the served array's own. The 4.0.0 value
+# is PLANTED, like the window: 4.0.0 retired on 2026-09-24, before ticket 146
+# widened the scope. Its last element in the served array carried
+# `{ scope: published-cage-fixtures-v1, kyverno: ["1.18.2"] }`, which supports
+# no engine now. No grader reads this file, and no cluster or composition does.
+# What the beat rests on is its own run: on 1.18.2 every 4.0.0 body ci-check.py
+# applies compiles, and require-nonroot-4-0-0 fails the workload.
+# verify-shift-left.sh also runs this window with that last served value on
+# 4.0.0, and the neighbour is then an unsupported pairing, named and not run.
 spec:
   inputs:
     - versions:
-        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major" }
-        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major" }
+        - { version: "4.0.0", tag: "policy/v4.0.0", commit: "64635dfdff3a835e7b0c2e51eae0650951ef2607", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }
+        - { version: "5.0.0", tag: "policy/v5.0.0", commit: "597f214bcdf10a77c957debc7e8a7842e1156fb8", bump: "major", tested_engines: { scope: every-served-body-v1, kyverno: ["1.18.2"] } }

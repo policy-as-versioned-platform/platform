@@ -57,6 +57,18 @@ adopter already pins `platform` and calls through that pin.
   `party.yaml` `appetite.tolerance` band. The rendered member keeps the INHERITED action — the composed artefact
   carries no tier and no tier floor; only the proposer (ADR-0015) ever turns one, later.
 
+Ticket 155 retains that exact `select()` decision in each `cages[]` entry, including its
+party, reason and TCoR. A weaker restatement may explicitly bind it to a declared Pod with
+`subject: namespace/name` in the signed `overlay.restate` entry. The binding must name an
+existing Pod and exactly one `Check_Id` → control mapping published by the implementation's
+owner. Composition then emits `binding` and `oscal_risk` beside the existing cage price,
+using `graded/cage.py`'s risk/observation UUID contract; it adds no second monetary line.
+An absent binding emits no workload risk. A malformed subject, missing or ambiguous mapping,
+duplicate binding, or binding on a stricter restatement refuses. The OSCAL lane re-derives
+the risk with its pinned Cage engine and checks the live Pod's identity, policy version and
+tier. A failed observation without a valid bound decision stays red. Institutional and
+twin-agent prices never supply a Pod's decision.
+
 ## What ticket 14 adds
 
 - **Baseline resolution** — the party artefact's `baseline` name resolves against the `controls`
@@ -337,6 +349,105 @@ itself needs.
 - The machinery allow-lists are ranged from the parent's served array. The adopter must install
   exactly the versions it composed, or a claim on a composed but uninstalled version reaches no
   cage. Each adopter's `scripts/render_composed.py reach` grades that offline.
+
+## What eco-system ticket 148 changes: an unsupported engine pairing is priced
+
+Hub ADR-0033 points 2 and 3. A composed line supports exactly the engines its own element of the
+implementations parent's `distribution/versions.yaml` lists in `tested_engines`. The machinery
+supports the engines in the same tree's `distribution/machinery.yaml`. The adopter declares the
+engine it runs in its own `gitops/engine/kyverno.yaml` (ticket 147).
+
+- **Composition reads three facts.** The declared engine, through `engine/declaration.py`, the
+  reader `shift-left/ci-check.py` uses too. Each composed line's `tested_engines` and the
+  machinery's, from the implementations parent tree, which is the platform tag the adopter's
+  `gitops/platform/platform-pin.yaml` names. Each value is read by the engine grader's own rule,
+  `computed-semver/engine_compatibility.py`'s `declared_engines`. A value that rule does not read
+  as support (absent, a retired scope such as `published-cage-fixtures-v1`, an unknown scope, a
+  malformed list) supports no engine, and the reason is kept.
+- **An unsupported pairing makes every claimed control a hole.** A claim belongs to a line when
+  the policy it names is one of the line's bodies, and to the machinery when it names a machinery
+  member. On an engine the line or the machinery does not support, those claims do not count.
+  Each control they name is then a hole, with the regulator's weight times the triple, a
+  bespoke scenario's residual, or a named absence, exactly as ADR-0026 prices any hole. The
+  regime entry's open share grows by the same lines. A control a second, supported line also
+  claims is still a hole: a workload chooses which composed line it claims, so a control whose
+  body does not load for one line's workloads is not implemented for them.
+- **The delta.** Each such line, and the machinery, prints an `unsupported-engine` delta naming
+  the subject, the engine and the tested engines. Its `amount` is the sum of the hole prices of
+  the controls it names, read off the `holes[]` entries they became. A claimed control outside the
+  selected set is listed with `selected: false` and moves no pound. No control priced is `amount:
+  null`, a named absence. The delta prints on every composition while the pairing stands.
+- **No declaration** is priced the same way, under `undeclared-engine`. A declaration that is
+  present and does not read is a missing instrument, and the composition refuses with
+  `missing-instrument`, subject `gitops/engine/kyverno.yaml`.
+- **The header** records `declared-engine` (`engine`, `version`, `file`, or `null`). The
+  evidence document's `engine` section lists every pairing: subject, tree, file read, tested
+  engines, status (`supported`, `unsupported`, `undeclared`), reason, bodies and claimed controls.
+  A hole a pairing opened carries `uncounted_claims`, and its `new-hole` delta names the subject.
+
+Measured 2026-09-26 on the real estate. The regulator's weights (ico penalty-schema v3) name
+pl-2, ra-3, ca-2 and ir-8. The two controls the estate claims, ac-6 (5.0.0's `require-nonroot`)
+and cm-6 (the machinery's `governed-namespace-requires-claim`), carry no weight. So an unsupported
+pairing today opens those two holes with `amount: null`, and moves no pound. Recomposing the three
+adopters against this tree, each declaring 1.18.2, adds the header field and the evidence section
+and nothing else. Composed against a platform tree from before ticket 146 (v4.0.0), the same
+adopters get both deltas: 5.0.0 there carries the retired scope and the tree has no
+`machinery.yaml`. So an adopter moves its tools pin and its implementations pin together.
+
+Adopter-owned members (`overlay.add`) belong to no line and carry no support claim, so their
+claims are not paired.
+
+## What eco-system ticket 145 changes: the platform prices the twin agent's cage
+
+- **A new `prices[]` kind, `agent-cage`** (a `PRICE_KINDS` major the £ seam grades; ADR-0031).
+  One line per composition, `source: platform`, for a subject that is not a pod, named on the line
+  (`subject: twin-agent`). Its `proposed_tier` is the twin agent's rung on the one ladder, picked
+  by the adopter's own selection-policy package over residuals platform's twin-agent dial table
+  (`graded/cage.py` `TWIN_AGENT_TIERS`, its own `TWIN_AGENT_TABLE_VERSION`) derives. The tier fold
+  (`wargamer/wargamer.py` `select_party_tier`, `shift-left/tier_binding.py` `bind`) keys on the
+  subject, so the line never folds into a Namespace tier, and only the kind that declares a
+  subject may carry one (`wargamer.folds_into_namespace`: a `feed` line hand-carrying
+  `subject: twin-agent`, or an agent-cage line carrying the Namespace's, is refused as a missing
+  instrument rather than folded out); `wargamer.wargame_agent_cage` is its
+  own drift row and `tier_pr.py` lands no file for it: the composed line is the declaration the
+  adopter's twin-sweep writer job reads (ticket 143 item 4), and the pull request that recomposes
+  it is the proposal a human merges. Carried beside the exposure and never summed into it
+  (`EXPOSURE_KINDS` is unchanged): its magnitude is a slice of a residual the twin line already
+  carries.
+- **The scenario is the adopter's numbers, the platform's table and feeds' frequency** (ticket 30
+  decisions 12 and 15). Loss magnitude: the gap between the adopter's residual at the loosest pod
+  rung and at its selected pod rung, read off the same composition's `source: twin` line, times
+  the hub gate's detection window (`graded/cage.py` `DETECTION_WINDOW`: one day, the truth run's
+  own schedule, with its source and what it assumes on the line). Frequency: the threat register's
+  `scheduled-agent-misuses-write-credential` row, payload major 4, read off the payload at the
+  major the adopter pins. The amount is `fair.expected_ale`, the closed-form expectation of the
+  same compound process `fair.simulate` samples, because the simulation rounds each year's event
+  count to an integer and resolves no event at a frequency this small; the line says so
+  (`scenario.annualised_by`) and carries the simulated ALE and `p_gt_0` beside it.
+- **The reductions are derived, never typed.** `graded/cage.py` `TWIN_AGENT_PATHS` names the four
+  misuse paths and the loosest rung that closes each; `_twin_agent_reach` derives what each path
+  can still land off the served tree and the composed prices, naming what it read on
+  `reach_basis`: the two token paths off `.github/workflows/twin-sweep.yml` (scheduled, and a
+  job running with `contents: write`: the whole gap; a sweep not served, not scheduled or
+  declaring no `contents: write` is a named could-not-look, because the token's scope then falls
+  to a repository default this composition cannot read), the proposal path off the pull-request
+  workflows' own `run` steps, comment lines stripped (one step must run `tier_binding.py` AND one
+  must recompose the party artefact, test for drift against `composed/` and exit non-zero after
+  the test; either absent is a could-not-look, and a drift test that survives only as a comment,
+  or whose exit is zero, is no gate), the model path off the composed prices (no price rests on a
+  grade above 3). `cage.twin_agent_residuals` takes the residual at a
+  rung as what the loosest open path can land, and a rung with an open could-not-look path has
+  no residual and is not a candidate, so the pick falls closed (the selfcheck measures each: a
+  sweep without `contents: write` picks `isolated`; a gate without the recompose step, with its
+  drift test commented out, or with the exit after it turned to zero, picks `quarantine`). Measured consequence on the served trees: `restricted` and `quarantine` carry
+  `baseline`'s residual, `isolated` collapses it. Cost is 0 at every rung and never enters the
+  selection.
+- **An adopter that cannot price the line gets it as a named could-not-look** (`amount: null`,
+  the reason on `could_not_look`): no `source: twin` line yet (tuppence and ludlow until ticket
+  144), or a pinned register without the row (every adopter until its feeds pin moves to major 4).
+  With no rung on the line, the sweep's writer job reads none and falls closed to `isolated`
+  (ADR-0022). `verify/pound-seam/` in the hub grades the line (leg 3b) and re-derives the rung
+  through the adopter's own package.
 
 ## Run
 

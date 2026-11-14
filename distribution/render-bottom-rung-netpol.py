@@ -93,7 +93,7 @@ def bottom_rung_netpol(allowed: list[str], spec: dict | None = None) -> dict:
                        f"v == object.metadata.labels['{LABEL}']))"),
     }]
     return {
-        "apiVersion": "policies.kyverno.io/v1alpha1",
+        "apiVersion": "policies.kyverno.io/v1",
         "kind": "GeneratingPolicy",
         "metadata": {"name": NAME, "labels": {cb.IDENTITY_LABEL: cb.IDENTITY}},
         "spec": src,

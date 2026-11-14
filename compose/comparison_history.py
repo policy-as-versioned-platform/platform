@@ -59,7 +59,7 @@ WORKFLOWS = ('.github', 'workflows')
 # here because the composer runs in the adopter's CI with no hub checkout. The
 # hub's verify/schedules/lane.py compares the two on platform main on every run
 # and fails when they differ, so neither copy can drift alone.
-OBSERVATION_PATHS = ('talk/truth.log', 'drift/samples.jsonl', 'talk/captures', 'observations')
+OBSERVATION_PATHS = ('talk/truth.log', 'drift/samples.jsonl', 'drift/workload-samples.jsonl', 'drift/oscal-samples.jsonl', 'talk/captures', 'observations')
 # The composer walks every `*.yaml` file in the adopter's tree for Namespaces
 # and workloads (composition._namespace_facts, which globs `*.yaml` only). A
 # YAML file inside a lane is read as a declaration, so it stays in the identity

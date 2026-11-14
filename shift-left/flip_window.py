@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import subprocess
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -39,7 +40,25 @@ def choose(served: Path = SERVED, planted: Path = PLANTED) -> tuple[Path, str | 
     declared = _versions()(served)
     majors = {v.split(".")[0] for v in declared}
     if len(majors) >= 2:
-        return served, None
+        # A neighbour can tighten the cage without changing the ValidatingPolicy
+        # verdict this historical flip fixture exercises (tickets 158/159).
+        # Ask the public shift-left CLI whether this fixture observes a flip.
+        # A plain target failure or unavailable instrument stays on the served
+        # path and remains red; only an observed all-pass gets the planted proof.
+        observed = subprocess.run([
+            sys.executable, str(HERE / "ci-check.py"),
+            "--resource", str(HERE / "fixtures/workload-flip.yaml"),
+            "--versions-file", str(served),
+            "--engine-declaration", str(HERE / "fixtures/engine/kyverno.yaml"),
+        ], capture_output=True, text=True)
+        if observed.returncode != 0:
+            return served, None
+        return planted, (
+            f"NOTHING-TO-FLIP: the historical flip fixture was observed compliant across "
+            f"{served.relative_to(HERE.parent)} ({' '.join(declared)}). The cage changes "
+            f"need not narrow that fixture's validation verdict. The flip proof runs "
+            f"against {planted.relative_to(HERE.parent)}, which is not served."
+        )
     return planted, (
         f"NOTHING-TO-FLIP: {served.relative_to(HERE.parent)} declares "
         f"{len(majors)} major line(s) ({' '.join(declared) or 'none'}), so no served "

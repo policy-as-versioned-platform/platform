@@ -1,0 +1,61 @@
+apiVersion: policies.kyverno.io/v1
+kind: MutatingPolicy
+metadata:
+  name: cloud-cage-s3
+  labels: {policy-as-versioned.dev/policy: cloud}
+spec:
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [s3.aws.m.upbound.io]
+        apiVersions: [v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [bucketserversideencryptionconfigurations]
+  matchConditions:
+    - name: only-this-copy-or-bottom-rung
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__' ||
+        !(object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') in __SERVED_CLAIMS__)
+    - name: cloud-population
+      expression: >-
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != '' ||
+        (namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true')
+    - name: spec-change
+      expression: >-
+        oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec ||
+        object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != oldObject.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') ||
+        object.metadata.?labels['posture.acme.io/tier'].orValue('') != oldObject.metadata.?labels['posture.acme.io/tier'].orValue('')
+  variables:
+    - name: claim
+      expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('')
+    - name: nsTier
+      expression: >-
+        namespaceObject != null && namespaceObject.metadata.?labels['policy-as-versioned.dev/governed'].orValue('') == 'true'
+          ? namespaceObject.metadata.?labels['posture.acme.io/tier'].orValue('') : ''
+    - name: tier
+      expression: >-
+        variables.claim == '__POLICY_VERSION__' && variables.nsTier in ['baseline', 'restricted', 'quarantine', 'isolated']
+          ? variables.nsTier : 'isolated'
+    - name: dial
+      expression: __DIAL_TABLE__
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          (!has(object.metadata.labels)
+            ? [JSONPatch{op: 'add', path: '/metadata/labels', value: {}}] : []) +
+          [JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1caged', value: 'true'},
+           JSONPatch{op: 'add', path: '/metadata/labels/posture.acme.io~1tier', value: string(variables.tier)}]
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >-
+          !has(object.spec.forProvider) ?
+            [JSONPatch{op: 'add', path: '/spec/forProvider', value: {'rule': [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}}] :
+          !has(object.spec.forProvider.rule) || size(object.spec.forProvider.rule) == 0 ?
+            [JSONPatch{op: 'add', path: '/spec/forProvider/rule', value: [{'applyServerSideEncryptionByDefault': {'sseAlgorithm': variables.dial.sseAlgorithm}}]}] :
+          object.spec.forProvider.rule.filter(r,
+            !(r.?applyServerSideEncryptionByDefault.?sseAlgorithm.orValue('') in ['AES256', 'aws:kms']))
+            .map(r, JSONPatch{
+              op: 'add',
+              path: '/spec/forProvider/rule/' + string(object.spec.forProvider.rule.indexOf(r)) + '/applyServerSideEncryptionByDefault',
+              value: {'sseAlgorithm': variables.dial.sseAlgorithm}
+            })

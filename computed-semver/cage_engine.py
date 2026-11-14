@@ -521,7 +521,8 @@ def declared_security(pod: dict) -> dict[str, bool]:
         if field in POD_LEVEL_FIELDS:
             out[field] = bool(spec.get(field, UNSET_DEFAULT[field]))
             continue
-        values = [bool((c.get("securityContext") or {}).get(field, UNSET_DEFAULT[field]))
+        default = (spec.get("securityContext") or {}).get(field, UNSET_DEFAULT[field]) if field == "runAsNonRoot" else UNSET_DEFAULT[field]
+        values = [bool((c.get("securityContext") or {}).get(field, default))
                   for c in containers]
         out[field] = safe if all(v == safe for v in values) else (not safe)
     return out
@@ -1341,8 +1342,9 @@ def selfcheck() -> None:
         #      narrowing). After the fix it must classify "none".
         old_dir, new_dir = td / "lit-old", td / "lit-new"
         old_dir.mkdir(); new_dir.mkdir()
-        old_text = corpus_generator._version_tree.render_tree("9.1.0")["posture-trust-boundary.yaml"]
-        new_text = corpus_generator._version_tree.render_tree("9.2.0")["posture-trust-boundary.yaml"]
+        historic = (Path(__file__).resolve().parent.parent / "distribution/policies/v5.0.0/posture-trust-boundary.yaml").read_text()
+        old_text = historic.replace("5-0-0", "9-1-0").replace("5.0.0", "9.1.0")
+        new_text = historic.replace("5-0-0", "9-2-0").replace("5.0.0", "9.2.0")
         (old_dir / "posture-trust-boundary.yaml").write_text(old_text)
         (new_dir / "posture-trust-boundary.yaml").write_text(new_text)
 

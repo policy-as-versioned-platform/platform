@@ -1,0 +1,26 @@
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-rds-multi-az
+  labels: {policy-as-versioned.dev/policy: cloud}
+  annotations:
+    policies.kyverno.io/title: RDS Multi-AZ observation
+    policies.kyverno.io/description: >-
+      Harvested collie intent (cp-10). Audit observes the field; the cloud
+      cage tightens it at restricted and below. Nothing is denied.
+spec:
+  validationActions: [Audit]
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rds.aws.m.upbound.io]
+        apiVersions: [v1beta1]
+        operations: [CREATE, UPDATE]
+        resources: [instances]
+  matchConditions:
+    - name: only-this-policy-version
+      expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '__POLICY_VERSION__'
+    - name: spec-change
+      expression: oldObject == null || !has(oldObject.spec) || object.spec != oldObject.spec
+  validations:
+    - expression: object.spec.?forProvider.?multiAz.orValue(false) == true
+      message: spec.forProvider.multiAz should be true (cp-10).

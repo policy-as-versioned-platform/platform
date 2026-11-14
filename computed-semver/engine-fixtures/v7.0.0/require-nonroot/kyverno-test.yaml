@@ -1,0 +1,29 @@
+# require-nonroot @7.0.0 compatibility candidate (ticket149).
+# Candidate fixture adapted from prior policy cases; the grader reads the exact committed
+# candidate body. This is a fixture definition, not evidence of a published tag.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-nonroot-7-0-0-engine
+policies:
+  - ../../../../distribution/policies/v7.0.0/require-nonroot.yaml
+resources:
+  - resources.yaml
+results:
+  # non-root with a read-only root filesystem; and root, attested, with every container
+  # hardened (condition C).
+  - policy: require-nonroot-7-0-0
+    kind: Pod
+    resources: [pod-compliant, pod-root-attested]
+    result: pass
+  # non-root with no read-only root filesystem; and the attested pod's exact hardening with no
+  # attestation, which is the row that makes the attestation mean something.
+  - policy: require-nonroot-7-0-0
+    kind: Pod
+    resources: [pod-violating, pod-root-unattested]
+    result: fail
+  # another version's claim, and no claim at all: out of this body's scope.
+  - policy: require-nonroot-7-0-0
+    kind: Pod
+    resources: [pod-other-version, pod-unversioned]
+    result: skip

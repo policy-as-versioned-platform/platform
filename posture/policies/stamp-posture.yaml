@@ -15,7 +15,7 @@
 # A forger who supplies `posture.acme.io/version=9.9.9` gets it clobbered back to
 # their real validated version — you cannot smuggle a posture the pipeline didn't
 # grant. Operations include UPDATE, so a post-admission relabel is re-clobbered too.
-apiVersion: policies.kyverno.io/v1alpha1
+apiVersion: policies.kyverno.io/v1
 kind: MutatingPolicy
 metadata:
   name: stamp-posture

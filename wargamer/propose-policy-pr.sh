@@ -52,8 +52,18 @@ if command -v kyverno >/dev/null 2>&1; then
   # flip_window.py picks the window: the served array while it declares two
   # majors, else the planted two-line window, with NOTHING-TO-FLIP on stderr.
   flip_versions="$(python3 "$platform/shift-left/flip_window.py")"
-  if python3 "$workflow_gate" --resource "$platform/shift-left/fixtures/workload-flip.yaml" --versions-file "$flip_versions" >/dev/null 2>&1; then
+  # The fixture belongs to no adopter, so the gate is handed the fixture declaration of the
+  # engine it runs on (eco-system ticket 148). Only exit 1 is a caught flip: exit 3 is a
+  # could-not-look (another CLI, or an engine no line in the window supports).
+  set +e
+  python3 "$workflow_gate" --resource "$platform/shift-left/fixtures/workload-flip.yaml" --versions-file "$flip_versions" \
+    --engine-declaration "$platform/shift-left/fixtures/engine/kyverno.yaml" >/dev/null 2>&1
+  gate_rc=$?
+  set -e
+  if [ "$gate_rc" -eq 0 ]; then
     echo "unexpected: the gate passed a workload that should trip the flip" >&2; exit 1
+  elif [ "$gate_rc" -ne 1 ]; then
+    echo "unexpected: the gate could not look (exit $gate_rc), so no flip was caught" >&2; exit 1
   fi
   echo "ok  gate runs (kyverno): a workload compliant-under-Audit is caught pre-merge by the +/-1 cross-check"
 else

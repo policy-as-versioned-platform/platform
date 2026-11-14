@@ -1,0 +1,14 @@
+resources: resources.yaml
+triggers:
+- resource: caged-baseline
+  generates: null
+- resource: caged-restricted
+  generates: generated-all.yaml
+- resource: caged-quarantine
+  generates: generated-all.yaml
+- resource: caged-isolated
+  generates: generated-all.yaml
+- resource: healthy
+  generates: null
+- resource: uncaged-restricted
+  generates: null
