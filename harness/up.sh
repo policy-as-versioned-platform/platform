@@ -17,8 +17,11 @@ poll() {  # poll <seconds> <command...>: true as soon as the command succeeds
   return 1
 }
 policy_ready() { [ "$(k get -f "$1" -o jsonpath='{.status.conditionStatus.ready}')" = true ]; }
+apply() {  # kubectl apply, tried for two minutes: Kyverno's webhook can refuse for some seconds after its rollout
+  poll 120 k apply "$@" || k apply "$@"
+}
 policy() {  # apply one cage file and wait until Kyverno serves it
-  k apply -f "$1"
+  apply -f "$1"
   poll 180 policy_ready "$1" || { echo "up.sh: $1 is not ready after 180 seconds" >&2; return 1; }
 }
 diagnose() {  # what a red run needs in its log
@@ -57,12 +60,12 @@ if [ "$netpol" = yes ]; then
 fi
 
 # 5. The reference, outside the cage.
-k apply -f "$here/reference.yaml" -f "$apps/namespace.yaml"
+apply -f "$here/reference.yaml" -f "$apps/namespace.yaml"
 k -n loop-reference wait --for=condition=Ready pod/sink pod/client --timeout=300s
 
 # 6. The apps. Kyverno writes the network rule after the pod is admitted, so a probe that ran
 # first would read a false "open". The probe's settle step waits for the pods themselves.
-k apply -k "$apps"
+apply -k "$apps"
 ns=$(k get namespace -l policy-as-versioned.dev/governed=true -o jsonpath='{.items[*].metadata.name}')
 rung=$(k get namespace -l policy-as-versioned.dev/governed=true -o jsonpath='{.items[*].metadata.labels.posture\.acme\.io/tier}')
 if [ "$netpol" = yes ] && [ "$rung" != baseline ]; then
