@@ -4,14 +4,8 @@
 # The cage is in place before any workload, so no pod is admitted uncaged.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-usage="usage: up.sh <cage-dir> <apps-dir> [--no-netpol]"
-cage=${1:?"$usage"}
-apps=${2:?"$usage"}
-case "${3:-}" in
-  "") netpol=yes ;;
-  --no-netpol) netpol=no ;;
-  *) echo "$usage" >&2; exit 1 ;;
-esac
+cage=$1 apps=$2 netpol=yes
+[ "${3:-}" = --no-netpol ] && netpol=no
 
 k() { kubectl --context kind-loop "$@"; }
 poll() {  # poll <seconds> <command...>: true as soon as the command succeeds
@@ -63,7 +57,7 @@ if [ "$netpol" = yes ]; then
 fi
 
 # 5. The reference, outside the cage.
-k apply -f "$here/reference.yaml"
+k apply -f "$here/reference.yaml" -f "$apps/namespace.yaml"
 k -n loop-reference wait --for=condition=Ready pod/sink pod/client --timeout=300s
 
 # 6. The apps. Kyverno writes the network rule after the pod is admitted, so a probe that ran

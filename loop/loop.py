@@ -19,8 +19,7 @@ PIN_LINE = re.compile(r'^    "(platform|ico|feeds)": \{"repo": "(policy-as-versi
 SEPARATOR = re.compile(r"^---(\s.*)?$")
 KIND_NAMESPACE = re.compile(r"""^kind:\s*["']?Namespace["']?\s*$""")
 GOVERNED = re.compile(r"""^\s+policy-as-versioned\.dev/governed:\s*["']?true["']?\s*(#.*)?$""")
-INDEX_LINE = re.compile(r"^index [0-9a-f]+\.\.[0-9a-f]+ [0-7]{6}$")
-TAG = re.compile(r"^(.*)v(\d+)\.(\d+)\.(\d+)$")
+TAG = re.compile(r"^(.*)v([0-9]+)\.([0-9]+)\.([0-9]+)$")
 TS = "%Y-%m-%dT%H:%M:%SZ"
 PARTY_KEYS = ("note", "party", "currency", "turnover", "turnover_as_of", "tolerance", "margin",
               "dwell_days", "mode", "pins")
@@ -44,7 +43,7 @@ class CageIneffective(Exception):
 
 
 def is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value) < float("inf")
 
 
 def pounds(amounts):
@@ -91,11 +90,11 @@ def read_party(text):
         raise Refused("party: a string or a number is of the wrong type")
     if party["turnover"] <= 0 or not 0 <= party["margin"] < 1 or party["dwell_days"] < 0:
         raise Refused("turnover, margin or dwell_days is out of range")
-    if tol[forms[0]] < 0 or (forms[0] == "share_of_turnover" and not 0 < tol[forms[0]] < 1):
+    if forms[0] == "share_of_turnover" and not 0 < tol[forms[0]] < 1:
         raise Refused("tolerance is out of range")
     if party["mode"] not in ("measure", "act"):
         raise Refused("mode is not measure or act")
-    lines = [pin.groups() for pin in map(PIN_LINE.match, text.splitlines()) if pin]
+    lines = [pin.groups() for pin in map(PIN_LINE.match, text.split("\n")) if pin]
     pins = {name: {"repo": repo, "ref": ref, "commit": commit} for name, repo, ref, commit in lines}
     if party["pins"] != pins or set(pins) != {"platform", "ico", "feeds"}:
         raise Refused("pins: platform, ico and feeds must each be one line in the pin form")
@@ -107,8 +106,6 @@ def read_rungs(text):
     document = _load(text)
     _keys(document, ("ladder",), "rungs")
     ladder = document["ladder"]
-    if not isinstance(ladder, list) or not ladder:
-        raise Refused("rungs: the ladder is empty")
     for rung in ladder:
         _keys(rung, ("rung", "closes", "cost", "cost_basis"), "rung")
         if not is_number(rung["cost"]) or rung["cost"] < 0 or not isinstance(rung["closes"], list) \
@@ -134,9 +131,11 @@ def mean_penalty(tier, turnover):
         return None
     amounts = [fine["amount"] for fine in pricing]
     rate, cap = tier["rate"], tier["cap"]
+    if not all(map(is_number, [rate, cap, *amounts])):
+        raise Refused("a tier's rate, cap or pricing fine amount is not a number")
     median = statistics.median(amounts)
     scale = rate * turnover / cap
-    lo, mode, hi = min(amounts) * scale, median * scale, max(cap, 1.2 * max(amounts), median) * scale
+    lo, mode, hi = min(amounts) * scale, median * scale, max(cap, 1.2 * max(amounts)) * scale
     hi = min(hi, max(cap, rate * turnover))
     mode = min(mode, hi)
     lo = min(lo, mode)
@@ -181,6 +180,8 @@ def price(rows, penalties, party):
         amount = None
         if row["events_a_year"] is not None and row["loss_an_event"] is not None and penalty is not None:
             amount = round(mean(*row["events_a_year"]) * (mean(*row["loss_an_event"]) + penalty), 2)
+            if not 0 <= amount < float("inf"):
+                raise Refused(f"row {row['id']}: {amount} is not a sum of money")
         needs = [need["capability"] for need in row["needs"] if need.get("source")]
         priced.append({"id": row["id"], "amount": amount, "bound": bound, "needs": needs,
                        "sourced": sourced and amount is not None})
@@ -203,7 +204,7 @@ def closed_capabilities(probe, rungs, rung):
     """The capabilities measured closed and declared closed, in the order of section 1, step 6."""
     if probe is None:
         raise CouldNotLook("no probe result")
-    if not probe.get("looked"):
+    if probe.get("looked") is not True:
         raise CouldNotLook(probe.get("why") or "the probe did not look")
     if probe.get("rung") != rung:
         raise CouldNotLook(f"the cluster is at {probe.get('rung')} and git is at {rung}")
@@ -213,6 +214,8 @@ def closed_capabilities(probe, rungs, rung):
         if measured.get(capability) == "open":
             raise CageIneffective(f"{rung} declares {capability} closed and it is measured open")
     closed = {capability for capability, state in measured.items() if state == "closed"}
+    if declared - closed:
+        raise CouldNotLook(f"{', '.join(sorted(declared - closed))} was not measured")
     if closed - declared:
         raise CouldNotLook(f"{', '.join(sorted(closed - declared))} is measured closed and {rung} "
                            "does not declare it closed, so something other than the cage closed it")
@@ -325,9 +328,9 @@ def set_rung(text, rung):
 def check_diff(diff, kind, frm=None, to=None, ladder=None):
     """Is this "git diff --unified=0" one notch of the rung line, or pin lines only?"""
     path = {"rung": "gitops/apps/namespace.yaml", "pins": "party.json"}[kind]
-    lines = diff.splitlines()
+    lines = diff.split("\n")
     head = [f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}"]
-    if len(lines) < 5 or [lines[0], lines[2], lines[3]] != head or not INDEX_LINE.match(lines[1]):
+    if lines.pop() or len(lines) < 5 or [lines[0], lines[2], lines[3]] != head:
         return False, f"the diff is not a change to the content of {path} alone"
     if not all(line.startswith(("@@ ", "-", "+")) for line in lines[4:]):
         return False, "the diff holds more than changed lines"
@@ -335,7 +338,7 @@ def check_diff(diff, kind, frm=None, to=None, ladder=None):
     added = [line[1:] for line in lines[4:] if line.startswith("+")]
     if kind == "rung":
         names = [rung["rung"] for rung in ladder or []]
-        if len(removed) != 1 or len(added) != 1:
+        if len(lines) != 7 or len(removed) != 1 or len(added) != 1:
             return False, "the diff is not one line removed and one added"
         old, new = RUNG_LINE.match(removed[0]), RUNG_LINE.match(added[0])
         if not old or not new:
@@ -380,6 +383,8 @@ def cycle(party, rung, penalties, threats, rungs, probe, ledger, now,
         raise Refused(f"the threat feed is in {threats['currency']}, not {party['currency']}")
     here = rungs[_index(rungs, rung)]
     priced = price(threats["rows"], penalties, party)
+    if not priced:
+        raise Refused(f"the threat feed has no row for {party['party']}")
     looked, why, verdict = True, "", None
     try:
         closed = closed_capabilities(probe, rungs, rung)
@@ -394,10 +399,9 @@ def cycle(party, rung, penalties, threats, rungs, probe, ledger, now,
         decision.update(verdict=verdict, rung_to=None)
     rows = [{"id": row["id"], "amount": row["amount"], "open": not closed & set(row["needs"]),
              "bound": row["bound"], "needs": row["needs"]} for row in priced]
-    entering = [row for row in priced if row["amount"] is not None and not closed & set(row["needs"])]
-    sourced = [row["amount"] for row in entering if row["sourced"]]
-    entering = [row for row in threats["rows"] if row["party"] == party["party"]
-                and row["id"] in [one["id"] for one in entering]]
+    open_ids = {row["id"] for row in rows if row["open"] and row["amount"] is not None}
+    sourced = [row["amount"] for row in priced if row["id"] in open_ids and row["sourced"]]
+    open_rows = [row for row in threats["rows"] if row["party"] == party["party"] and row["id"] in open_ids]
     if not here["cost_basis"].startswith("unsourced:"):
         sourced.append(here["cost"])
     figure = decision["figure"]
@@ -417,16 +421,16 @@ def cycle(party, rung, penalties, threats, rungs, probe, ledger, now,
         "goal": decision["goal"], "unreachable": decision["unreachable"],
         "release_ready": decision["release_ready"],
         "sourced_share": pounds(sourced) / figure if figure else 0.0,
-        "weakest_basis": weakest_basis(entering, penalties, here),
+        "weakest_basis": weakest_basis(open_rows, penalties, here),
         "verdict": decision["verdict"], "rung_to": decision["rung_to"]}
 
 
 def _read(path):
-    return Path(path).read_text(encoding="utf-8")
+    return Path(path).read_bytes().decode("utf-8")
 
 
 def _git(*args):
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(["git", *args], check=True, capture_output=True).stdout.decode("utf-8")
 
 
 def _cycle(args):
@@ -439,16 +443,17 @@ def _cycle(args):
     line = cycle(party, read_rung(namespace), _load(_read(args.penalties)), _load(_read(args.threats)),
                  read_rungs(_read(args.rungs)), probe, ledger, datetime.now(timezone.utc),
                  args.cause, args.cluster, args.run, args.commit, args.rung_set_by)
+    moved = args.write and party["mode"] == "act" and line["rung_to"] and set_rung(namespace, line["rung_to"])
     text = json.dumps(line)
     Path(args.out).write_text(text + "\n", encoding="utf-8")
     print(text)
-    if args.write and party["mode"] == "act" and line["rung_to"]:
-        Path(args.namespace_file).write_text(set_rung(namespace, line["rung_to"]), encoding="utf-8")
+    if moved:
+        Path(args.namespace_file).write_text(moved, encoding="utf-8")
     return EXIT[line["verdict"]]
 
 
 def _check_diff(args):
-    diff = _git("diff", "--unified=0", f"{args.base}...{args.head}")
+    diff = _git("diff", "--unified=0", "--merge-base", args.base, args.head)
     ladder = read_rungs(_read(args.rungs)) if args.rungs else None
     allowed, reason = check_diff(diff, args.kind, args.frm, args.to, ladder)
     print(reason)
@@ -467,7 +472,6 @@ def _bump_pins(args):
             lines[i] = line.replace(f'"ref": "{ref}", "commit": "{commit}"',
                                     f'"ref": "{new_ref}", "commit": "{new_commit}"')
             print(f"{name}: {ref} {commit} to {new_ref} {new_commit}")
-    read_party("\n".join(lines))
     if args.write:
         Path(args.party).write_text("\n".join(lines), encoding="utf-8")
     return 0

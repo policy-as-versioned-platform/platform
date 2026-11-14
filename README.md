@@ -6,14 +6,7 @@ This repository holds the loop that does that, the cage it moves, and the proof 
 
 ## What the loop is
 
-One cycle is one pass:
-
-1. **Sense.** `loop/probe.py` checks that every pod in the governed Namespace is Ready and stamped at the rung in git. It then tests each capability, `egress` and `inbound`, on a live connection.
-2. **Price.** `loop/loop.py cycle` prices each row that is still open and adds the running cost of the current rung. The sum is the figure.
-3. **Compare and decide.** It compares the figure with the tolerance. It holds, or moves one notch tighter, or moves one notch looser. A notch is one changed line: the rung line of the governed Namespace.
-4. **Record.** It writes one JSON line for the ledger, whatever the verdict.
-
-If the probe cannot measure, the verdict is `could-not-look` and nothing moves. If a capability the rung declares closed is measured open, the verdict is `cage-ineffective`.
+In one cycle `loop/probe.py` tests each capability on a live connection, and `loop/loop.py cycle` prices the rows that are still open, adds the running cost of the rung, compares that figure with the tolerance and holds or moves the rung one notch. It writes one ledger line whatever the verdict, and if the probe cannot measure, the verdict is `could-not-look` and nothing moves.
 
 `loop.py check-diff` says whether a diff is one notch of the rung line, or pin lines only. `loop.py bump-pins` follows the pinned repositories with `git ls-remote`.
 

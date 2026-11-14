@@ -23,8 +23,6 @@ spec:
       resources:
       - pods
   matchConditions:
-  - name: claims-a-policy-version
-    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') != ''
   - name: only-this-policy-version
     expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '8.0.0'
   variables:

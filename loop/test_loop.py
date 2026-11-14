@@ -45,12 +45,11 @@ NAMESPACE = "\n".join([
     "metadata:", "  name: other", ""])
 
 
-def row(name, events, needs=(), tier=None, party="driftwood", kind="editorial", loss=(1000, 4000, 9000),
-        penalty=True):
+def row(name, events, needs=(), party="driftwood", kind="editorial", loss=(1000, 4000, 9000), penalty=True):
     basis = {"kind": "editorial", "as_of": "2026-11-14", "text": "the publisher's band"}
     return {"id": name, "party": party, "events_a_year": events, "events_basis": dict(basis, kind=kind),
             "loss_an_event": list(loss), "loss_basis": basis,
-            "penalty": {"regime": "uk-gdpr", "tier": tier} if penalty else None,
+            "penalty": {"regime": "uk-gdpr", "tier": None} if penalty else None,
             "needs": [{"capability": need, "source": "MITRE ATT&CK"} for need in needs]}
 
 
@@ -134,6 +133,7 @@ class LoopTest(unittest.TestCase):
         priced = loop.price(ROWS + [other], PENALTIES, PARTY)
         self.assertEqual([one["amount"] for one in priced], [16280871.43, 431.49, 1628087.14])
         self.assertEqual([one["bound"] for one in priced], ["upper", "upper", "upper"])
+        self.assertRaises(loop.Refused, cycle, "baseline", look("baseline"), rows=[other])
         cited = loop.price([dict(R1, penalty={"regime": "uk-gdpr", "tier": "lower"})], PENALTIES, PARTY)
         self.assertEqual(cited[0]["amount"], 1377706.90)
 
@@ -157,12 +157,15 @@ class LoopTest(unittest.TestCase):
     def test_walk_on_todays_inputs(self):
         line = cycle("baseline", look("baseline"))
         self.assertEqual((line["verdict"], line["rung_to"]), ("tighten", "quarantine"))
+        self.assertEqual(command_line("baseline", look("baseline"))[0], 0)
         line = cycle("quarantine", look("quarantine", egress="closed"))
         self.assertEqual((line["figure"], line["verdict"], line["rung_to"]), (17915390.06, "tighten", "isolated"))
         code, line = command_line("isolated", look("isolated", "closed", "closed", ok=0))
         self.assertEqual((line["figure"], line["verdict"], line["rung_to"]), (1643518.63, "saturated", None))
         self.assertEqual((code, line["unreachable"], line["release_ready"]), (2, 1603518.63, False))
         self.assertEqual(line["serving"], {"ok": 0, "total": 3})
+        line = cycle("isolated", look("isolated", "closed", "closed", ok=0), ledger=[ready_since(7)])
+        self.assertEqual((line["verdict"], line["rung_to"]), ("saturated", None))
 
     def test_within(self):
         line = cycle("isolated", look("isolated", "closed", "closed"), rows=[R1, R2])
@@ -175,6 +178,8 @@ class LoopTest(unittest.TestCase):
         self.assertEqual((line["figure"], line["verdict"], line["rung_to"]), (17763.80, "release", "quarantine"))
         waiting = cycle("isolated", both, penalties=penalties, ledger=[ready_since(6)])
         self.assertEqual((waiting["verdict"], waiting["release_ready"]), ("within", True))
+        held = cycle("isolated", both, penalties=penalties, party=with_tolerance(35000), ledger=[ready_since(7)])
+        self.assertEqual((held["verdict"], held["release_ready"]), ("within", False))
         line = cycle("quarantine", look("quarantine", egress="closed"), penalties=penalties,
                      ledger=[ready_since(7), line])
         self.assertEqual((line["verdict"], line["rung_to"]), ("release", "baseline"))
@@ -206,6 +211,8 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(line["capabilities"], {"egress": "open", "inbound": "open"})
         line = cycle("quarantine", look("quarantine", inbound="closed"))
         self.assertEqual((line["verdict"], line["exposure"]), ("cage-ineffective", 17909390.06))
+        line = cycle("isolated", look("isolated", inbound="closed"))
+        self.assertEqual((line["verdict"], line["exposure"]), ("cage-ineffective", 17909390.06))
 
     def test_closed_but_undeclared_is_could_not_look(self):
         line = cycle("baseline", look("baseline", inbound="closed"))
@@ -222,6 +229,8 @@ class LoopTest(unittest.TestCase):
             self.assertTrue(line["why"])
         code, line = command_line("baseline")
         self.assertEqual((line["pods"], line["reference"]), ([], None))
+        line = cycle("isolated", dict(look("isolated", "closed", "closed"), looked=False, why="x"))
+        self.assertEqual((line["verdict"], line["figure"]), ("could-not-look", 17924390.06))
 
     def test_within_partial_never_releases(self):
         unknown = row("unknown", None)
@@ -289,7 +298,8 @@ class LoopTest(unittest.TestCase):
         governed, other = NAMESPACE.split("--- # not governed\n")
         # Were "--- # comment" no separator, this would read as one governed Namespace.
         split = other + "--- # comment\n" + governed.replace("kind: Namespace", "kind: ConfigMap")
-        for text in (NAMESPACE + "---\n" + governed, NAMESPACE.replace("baseline", "restricted"), other, split):
+        for text in (NAMESPACE + "---\n" + governed.replace(rung_line("baseline") + "\n", ""),
+                     NAMESPACE.replace("baseline", "restricted"), other, split):
             with self.assertRaises(loop.Refused):
                 loop.read_rung(text)
         self.assertEqual(loop.read_rung(split.replace("--- # comment\n", "")), "baseline")
@@ -325,7 +335,7 @@ class LoopTest(unittest.TestCase):
     def test_next_pin(self):
         listing = "\n".join(f"{sha * 40}\t{ref}" for sha, ref in (
             ("1", "HEAD"), ("1", "refs/heads/main"), ("2", "refs/heads/observations"),
-            ("3", "refs/tags/v6.3.0"), ("4", "refs/tags/cloud/v1.0.1"), ("5", "refs/tags/policy/v7.0.0"),
+            ("3", "refs/tags/v6.3.0"), ("4", "refs/tags/cloud/v11.0.1"), ("5", "refs/tags/policy/v7.0.0"),
             ("6", "refs/tags/policy/v8.0.0"), ("7", "refs/tags/policy/v8.0.0^{}"),
             ("8", "refs/tags/policy/v10.1.0"), ("9", "refs/tags/policy/v10.1.0^{}")))
         self.assertEqual(loop.next_pin("main", ZEROS, listing), ("main", "1" * 40))
@@ -338,7 +348,7 @@ class LoopTest(unittest.TestCase):
         self.assertTrue(loop.dwell_met([ready_since(7), ready_since(6)], NOW, 7))
         self.assertFalse(loop.dwell_met([ready_since(7), broken, ready_since(2)], NOW, 7))
         self.assertTrue(loop.dwell_met([ready_since(7), moved], NOW, 7))
-        self.assertTrue(loop.dwell_met([{"cause": "reset"}, ready_since(7), unseen], NOW, 7))
+        self.assertTrue(loop.dwell_met([ready_since(7), {"cause": "reset"}, ready_since(6), unseen], NOW, 7))
         self.assertFalse(loop.dwell_met([], NOW, 7))
         self.assertTrue(loop.dwell_met([], NOW, 0))
 
@@ -356,7 +366,7 @@ class LoopTest(unittest.TestCase):
             return count
 
         years = [sum(pert(1000, 4000, 9000) + penalty for _ in range(poisson(pert(2, 4, 9)))) for _ in range(20000)]
-        self.assertLess(abs(sum(years) / len(years) / 16280871.43 - 1), 0.02)
+        self.assertLess(abs(sum(years) / len(years) / loop.price([R1], PENALTIES, PARTY)[0]["amount"] - 1), 0.02)
 
     def test_no_deny_and_no_reduction(self):
         for path in (ROOT / "cage").iterdir():
@@ -376,11 +386,11 @@ class LoopTest(unittest.TestCase):
 SINK = "10.96.0.7"
 
 
-def kube_pod(name, rung=None, is_ready=True, address="10.244.0.5", labels=()):
+def kube_pod(name, rung=None, is_ready=True, labels=()):
     stamp = {probe.CAGED: "true", probe.TIER: rung} if rung else {}
     return {"metadata": {"name": name, "labels": dict(stamp, **dict(labels))},
             "spec": {"containers": [{"ports": [{"containerPort": 80}]}]},
-            "status": {"podIP": address, "conditions": [{"type": "Ready", "status": str(is_ready)}]}}
+            "status": {"podIP": "10.244.0.5", "conditions": [{"type": "Ready", "status": str(is_ready)}]}}
 
 
 class Cluster:
@@ -442,7 +452,7 @@ class ProbeTest(unittest.TestCase):
             cluster = Cluster(reference=codes)
             result = cluster.measure()
             self.assertEqual((result["looked"], result["capabilities"], cluster.slept), (False, None, 27))
-            self.assertEqual(result["reference"], {"before": before, "after": False})
+            self.assertEqual(result["reference"], {"before": before, "after": False if before else None})
 
     def test_probe_settle(self):
         unstamped, elsewhere = kube_pod("api"), kube_pod("api", "baseline")

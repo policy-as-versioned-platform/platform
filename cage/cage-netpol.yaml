@@ -35,8 +35,6 @@ spec:
   variables:
   - name: nsName
     expression: string(object.metadata.namespace)
-  - name: tier
-    expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline')
   - name: rungs
     expression: '[''quarantine'', ''isolated'']'
   - name: reach

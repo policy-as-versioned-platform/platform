@@ -9,21 +9,12 @@ tmp=$(mktemp -d)
 failed=0
 
 k() { kubectl --context kind-loop "$@"; }
-poll() {  # poll <seconds> <command...>: true as soon as the command succeeds
-  local tries=$(($1 / 3)); shift
-  for _ in $(seq "$tries"); do
-    "$@" >/dev/null 2>&1 && return 0
-    sleep 3
-  done
-  return 1
-}
-policy_ready() { [ "$(k get -f "$1" -o jsonpath='{.status.conditionStatus.ready}')" = true ]; }
 diagnose() {  # what a red run needs in its log
   k get pods,networkpolicy -A -o wide || true
   k get mutatingpolicies.policies.kyverno.io,generatingpolicies.policies.kyverno.io \
     -o jsonpath='{range .items[*]}{.kind}/{.metadata.name} {.status}{"\n"}{end}' || true
 }
-trap '[ $? -eq 0 ] || diagnose; rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"' EXIT
 
 holds() {  # holds <line-file> <field=value>...: every field of the ledger line equals its value, money to the penny
   python3 - "$@" <<'PY'
@@ -39,8 +30,6 @@ for pair in sys.argv[2:]:
     got = line
     for key in field.split("."):
         got = got.get(key) if isinstance(got, dict) else None
-    if isinstance(want, float) and isinstance(got, (int, float)):
-        want, got = f"{want:.2f}", f"{got:.2f}"
     if got != want:
         print(f"  {field}: want {want!r}, got {got!r}")
         wrong = 1
@@ -73,12 +62,8 @@ run 1 'pods=[{"name": "shop", "ready": true, "rung": "quarantine"}]' capabilitie
   exposure=51000.00 verdict=cage-ineffective
 
 echo "== run 2: the positive run. The network rule is written when the pod is admitted again."
-k apply -f "$root/cage/cage-netpol.yaml"
-poll 180 policy_ready "$root/cage/cage-netpol.yaml" || echo "proof.sh: cage-netpol.yaml is not ready after 180 seconds"
 k -n fixture delete pod shop --timeout=120s
-k apply -k "$fixture/apps"
-poll 120 k -n fixture get networkpolicy cage-reach-quarantine ||
-  echo "proof.sh: no NetworkPolicy cage-reach-quarantine after 120 seconds"
+bash "$here/up.sh" "$root/cage" "$fixture/apps" || echo "proof.sh: up.sh did not finish. The probe reports what it finds."
 run 2 capabilities.egress=closed capabilities.inbound=open 'serving={"ok": 1, "total": 1}' \
   exposure=1000.00 figure=7000.00 verdict=within
 

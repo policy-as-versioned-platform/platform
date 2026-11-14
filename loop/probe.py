@@ -144,7 +144,7 @@ def look(run, sleep, settle_seconds, result):
                 return True
         return False
 
-    result["reference"] = {"before": reference_works(), "after": False}
+    result["reference"] = {"before": reference_works(), "after": None}
     if not result["reference"]["before"]:
         raise Failed("the reference could not connect before the tests")
 
