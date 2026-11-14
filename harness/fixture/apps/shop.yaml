@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: shop
+  namespace: fixture
+  labels:
+    policy-as-versioned.dev/policy-version: "8.0.0"
+    loop.policy-as-versioned.dev/probe: "true"
+spec:
+  securityContext: { runAsNonRoot: true, runAsUser: 101 }
+  containers:
+    - name: c
+      image: nginx@sha256:abe47724e466aeab9a345d8e46a221c2fa8953c7848bb4a3bd9976a7199f8cf2
+      ports: [{ containerPort: 80 }]
+      securityContext: { readOnlyRootFilesystem: true }
+      volumeMounts:
+        - { name: cache, mountPath: /var/cache/nginx }
+        - { name: run, mountPath: /run }
+  volumes:
+    - { name: cache, emptyDir: {} }
+    - { name: run, emptyDir: {} }

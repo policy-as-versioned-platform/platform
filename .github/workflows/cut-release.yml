@@ -1,210 +1,28 @@
 name: cut-release
-
-# Ticket mo-10 (policy-as-versioned-flux). Creates one or more gitsign-signed,
-# semver git tags on the current commit and pushes them -- the ONLY way a
-# release starts (git push, never the git-data REST API: see the hub repo's
-# enact_guard.py governance rule).
-#
-# cs-13: this workflow carries a LIST of tags in one dispatch now, not just
-# one -- a named change, not a silent one. The repair release cuts three tags
-# (platform 1.0.0, policy 2.0.0, policy 3.0.0) off a single commit; see
-# spec.md, "The repair release", and cs-15's release commit for why those two
-# policy numbers (an honest MAJOR renumbering, not the ticket's original
-# 1.0.2/2.0.1). Two dispatch forms, exactly one per run:
-#   - single-tag (unchanged, still works for existing callers): `version` + `message`
-#   - multi-tag (new): `tags`, a JSON array of {"tag","message"} objects
-# The list handling, the existing-tag refusal, tag creation and the push
-# live in .github/scripts/cut-release-*.sh/py, shared with this repo's
-# offline twin (verify-cut-release-tags.sh) so the tested code path IS the
-# shipped one.
-#
-# Signs keyless via this run's own GitHub Actions identity, not a human
-# Google/Microsoft identity: gitsign auto-detects the Actions ambient
-# credential (present because of the id-token permission below) and needs no
-# browser/device-code interaction. This is a deliberate variant of the
-# identity ADR-0001 describes for the sibling policy/fleet repos (a human,
-# chris@cns.me.uk via Google) -- an unattended agent may not drive an
-# interactive Google OAuth consent on a person's behalf, so the workflow's
-# own machine identity is the signer instead. Same keyless -> Fulcio -> Rekor
-# provenance chain; a different, equally real identity. See release.yml for
-# the matching identity-pinned verification.
-#
-# cs-27: the publisher gate runs here, BEFORE `git tag` -- a gate after the
-# tag can only burn the number (spec.md, "Where the gate runs"). It reads the
-# declared bump straight from the tag(s) this dispatch names (see
-# .github/scripts/cut-release-gate.py's own module docstring for exactly how
-# a multi-tag dispatch splits between platform's own `v*` line, cs-07's
-# subject, and `policy/v*`, this gate's subject), signs the evidence
-# `cosign sign-blob` keyless on BOTH outcomes, and on a refusal stops this
-# job here -- no commit, no tag, ever, for any input. There is no override:
-# grep cut-release-gate.py for CUT_RELEASE_TEST_MODE and see its own
-# docstring for the one thing that flag touches (signing mechanics only,
-# never the verdict).
-#
-# On a pass this is now TWO commits, not one, before the tag:
-# cut-release-commit-evidence.sh's evidence commit, then
-# cut-release-update-array-commit.sh's own commit pointing
-# distribution/versions.yaml's array element(s) at that evidence commit's
-# real SHA. Two commits because one commit cannot carry its own SHA (the
-# same reason cs-15's release commit message gives for the same problem) --
-# the tag lands on the second commit, one ahead of the commit the array
-# names, on purpose.
-#
-# workflow_dispatch only, on purpose: this is a release-cutting ACT, not a
-# standing recurring automation.
-
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: "single-tag form: semver tag to cut, e.g. v1.0.0 (omit if using `tags`)"
-        required: false
-      message:
-        description: "single-tag form: annotated tag message -- what changed and why (omit if using `tags`)"
-        required: false
-      tags:
-        description: 'multi-tag form: JSON array of {"tag":"vX.Y.Z","message":"..."} objects, all cut on this commit (omit if using `version`/`message`)'
-        required: false
-      backfill_evidence_only:
-        description: >-
-          policy-composition ticket 18: when "true", run the gate and commit
-          signed evidence for the named policy/v* tag(s), but create no tag
-          and push commits (not tags) straight to this branch instead --
-          for a version cut before the publisher gate (cs-27) existed, so it
-          never got evidence. The gate computes against the REAL, already-
-          committed distribution/policies/v<version> tree
-          (build_current_subject reads real files, not the tag object
-          itself), so this is a genuine, reproducible computation -- not a
-          fabricated value -- generated today rather than at original
-          release. Tags stay immutable; only evidence files are added.
-        required: false
-        default: "false"
-
-permissions:
-  contents: write
-  id-token: write
-
-env:
-  GITSIGN_VERSION: 0.17.1
-  GITSIGN_SHA256: 69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae
-  COSIGN_VERSION: 2.4.1
-  COSIGN_SHA256: 8b24b946dd5809c6bd93de08033bcf6bc0ed7d336b7785787c080f574b89249b
-  KYVERNO_VERSION: 1.18.2
-  KYVERNO_SHA256: cb2feb8356149fd2fe774c894ccf0969f4a60a83867dd913af724f74ffbbc18b
-
+      version: {description: "The tag to cut, for example policy/v8.0.0", required: true}
+permissions: {contents: read}
 jobs:
   cut:
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    permissions: {contents: write, "id-token": write}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: install pinned gitsign + cosign + kyverno (binary + checksum, no marketplace action)
-        # kyverno is the publisher gate's own dependency: computed-semver's
-        # cage_engine.py shells out to the real `kyverno apply` CLI (per
-        # corpus fixture, per ValidatingPolicy -- rederive_bumps.cel_pass,
-        # unchanged since ticket cs-01) to compute movement, the same binary
-        # release.yml already installs for the shift-left proof.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {fetch-depth: 0}
+      - run: python3 -m unittest discover -s loop -p 'test_*.py' -v
+      - env:
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          curl -sSL -o gitsign "https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_amd64"
-          echo "${GITSIGN_SHA256}  gitsign" | sha256sum -c -
-          chmod +x gitsign && sudo mv gitsign /usr/local/bin/gitsign
-
-          curl -sSL -o cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
-          echo "${COSIGN_SHA256}  cosign" | sha256sum -c -
-          chmod +x cosign && sudo mv cosign /usr/local/bin/cosign
-
-          curl -sSL -o kyverno.tar.gz "https://github.com/kyverno/kyverno/releases/download/v${KYVERNO_VERSION}/kyverno-cli_v${KYVERNO_VERSION}_linux_x86_64.tar.gz"
-          echo "${KYVERNO_SHA256}  kyverno.tar.gz" | sha256sum -c -
-          tar xzf kyverno.tar.gz kyverno && chmod +x kyverno && sudo mv kyverno /usr/local/bin/kyverno
-
-          pip install --quiet pyyaml jsonschema
-
-      - name: normalize the single-tag or multi-tag dispatch into tags.json
-        # Inputs go through `env:`, not interpolated straight into the run
-        # script text, so a tag/message containing shell metacharacters
-        # can't do anything but sit in a JSON string.
-        env:
-          VERSION_INPUT: ${{ inputs.version }}
-          MESSAGE_INPUT: ${{ inputs.message }}
-          TAGS_INPUT: ${{ inputs.tags }}
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/cut-release-normalize.py > tags.json
-          cat tags.json
-
-      - name: refuse any tag that already exists -- checked for EVERY tag before ANY tag is created
-        if: inputs.backfill_evidence_only != 'true'
-        run: ./.github/scripts/cut-release-refuse-existing.sh tags.json
-
-      - name: publisher gate -- run_gate() on every policy tag, evidence signed cosign keyless (pass or refuse)
-        # No override at any scope: this step's own exit code is the only
-        # thing that decides whether the job continues. See
-        # cut-release-gate.py's module docstring for the multi-tag split and
-        # for exactly what CUT_RELEASE_TEST_MODE does and does not touch.
-        run: python3 .github/scripts/cut-release-gate.py tags.json
-
-      - name: engine cells -- every line and the machinery pass on every engine they list, before any tag is signed
-        # Eco-system ticket 146 item 5, hub ADR-0033 point 4. One binary per row of
-        # engine/kyverno/engine-table.yaml, each installed by the table's checksum, then one grader
-        # run over every cell. A line this dispatch cuts is still uncut here, so it is graded as a
-        # candidate on this commit, the commit that declares it; every other cell is graded with it.
-        # Any failed or could-not-look cell stops the job before the evidence commit, so no tag is
-        # signed until every cell passes. Limit: the array commit that follows adds the cut version
-        # to the machinery's orphan allow-list literal, so the tagged machinery differs from the
-        # graded one by that list; the hub gate grades platform main, which carries it, every day.
-        if: inputs.backfill_evidence_only != 'true'
-        run: |
-          set -euo pipefail
-          bash engine/install-kyverno-engines.sh linux_x86_64 "$RUNNER_TEMP/kyverno-engines"
-          if python3 computed-semver/engine_compatibility.py --engine-dir "$RUNNER_TEMP/kyverno-engines" \
-               >"$RUNNER_TEMP/engine-cells.txt"; then
-            tail -n 8 "$RUNNER_TEMP/engine-cells.txt"
-          else
-            tail -n 60 "$RUNNER_TEMP/engine-cells.txt"
-            echo "::error::an engine cell did not pass; no tag is signed"
-            exit 1
-          fi
-
-      - name: upload the signed gate evidence as a run artifact (always -- a refusal's own evidence matters most)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: publisher-gate-evidence
-          path: computed-semver/evidence/
-          if-no-files-found: ignore
-
-      - name: commit the signed evidence into the release commit, BEFORE the tag
-        # Reached only when the gate step above exited 0 -- a workflow `run:`
-        # step failing stops the job, so a refusal never reaches this step.
-        # A no-op when this dispatch cut no policy tags at all.
-        run: ./.github/scripts/cut-release-commit-evidence.sh tags.json
-
-      - name: backfill mode -- push the evidence commit straight to this branch (no tag, tags stay immutable)
-        if: inputs.backfill_evidence_only == 'true'
-        run: git push origin "HEAD:${{ github.ref_name }}"
-
-      - name: point versions.yaml's commit field(s) at the evidence commit, in a second commit
-        # cs-27: a commit cannot carry its own SHA (cs-15's own rule for this
-        # exact class of problem), so this is deliberately a SECOND commit,
-        # not folded into the one above -- it points distribution/versions.yaml's
-        # array element(s) for the version(s) this dispatch cuts at the real,
-        # now-known SHA of the evidence commit just made. The tag below lands
-        # on THIS commit, one ahead of the evidence commit the array names --
-        # see cut-release-update-array-commit.sh's own header for why that
-        # one-commit gap is correct, not a bug. A no-op when this dispatch cut
-        # no policy tags at all. Skipped in backfill mode: 2.0.0/2.0.1's
-        # array elements already carry their own, correct, original commit
-        # SHA -- backfilled evidence must not repoint them.
-        if: inputs.backfill_evidence_only != 'true'
-        run: ./.github/scripts/cut-release-update-array-commit.sh tags.json
-
-      - name: create the signed annotated tags (ambient Actions identity, no interactive login)
-        if: inputs.backfill_evidence_only != 'true'
-        run: ./.github/scripts/cut-release-create-tags.sh tags.json
-
-      - name: push every tag in one atomic push (git push only -- never the git-data REST API)
-        if: inputs.backfill_evidence_only != 'true'
-        run: ./.github/scripts/cut-release-push.sh tags.json origin
+          tag="$VERSION"
+          [[ "$tag" =~ ^policy/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "refused: version '$tag'"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then echo "refused: $tag exists"; exit 1; fi
+          curl -fsSL -o "$RUNNER_TEMP/gitsign" https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
+          echo "69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae  $RUNNER_TEMP/gitsign" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/gitsign"; export PATH="$RUNNER_TEMP:$PATH"
+          git -c gpg.format=x509 -c gpg.x509.program=gitsign -c gitsign.rekorMode=offline -c user.name="policy-as-versioned release bot" -c user.email="releases@${GITHUB_REPOSITORY_OWNER}.invalid" tag -s "$tag" -m "$tag"
+          GITSIGN_REKOR_MODE=offline gitsign verify-tag "$tag" --certificate-oidc-issuer=https://token.actions.githubusercontent.com --certificate-identity-regexp="^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/cut-release\.yml@refs/heads/main$"
+          git push origin "refs/tags/$tag"
