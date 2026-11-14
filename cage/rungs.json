@@ -1,0 +1,7 @@
+{"ladder": [
+  {"rung": "baseline", "closes": [], "cost": 500,
+   "cost_basis": "unsourced: typed in platform/graded/cage.py on 2026-07-31 for the v7 rung, which carried a priority class that cage 8 removes. No measurement."},
+  {"rung": "quarantine", "closes": ["egress"], "cost": 6000,
+   "cost_basis": "unsourced: typed in platform/graded/cage.py on 2026-07-31 for the v7 rung, which carried a WAF sidecar and a priority class that cage 8 removes. No measurement."},
+  {"rung": "isolated", "closes": ["inbound"], "cost": 15000,
+   "cost_basis": "unsourced: typed in platform/graded/cage.py on 2026-07-31 for the v7 rung, which carried a WAF sidecar and a priority class that cage 8 removes. No measurement."}]}

@@ -1,0 +1,16 @@
+{"currency": "GBP",
+ "rows": [
+  {"id": "fixture-exfiltration", "party": "fixture",
+   "events_a_year": [1, 1, 1],
+   "events_basis": {"kind": "editorial", "as_of": "2026-11-14", "text": "test fixture"},
+   "loss_an_event": [50000, 50000, 50000],
+   "loss_basis": {"kind": "editorial", "as_of": "2026-11-14", "text": "test fixture"},
+   "penalty": null,
+   "needs": [{"capability": "egress", "source": "MITRE ATT&CK T1041, Exfiltration Over C2 Channel (Exfiltration), version 2.4, read 2026-11-14 at attack.mitre.org/techniques/T1041."}]},
+  {"id": "fixture-outside", "party": "fixture",
+   "events_a_year": [1, 1, 1],
+   "events_basis": {"kind": "editorial", "as_of": "2026-11-14", "text": "test fixture"},
+   "loss_an_event": [1000, 1000, 1000],
+   "loss_basis": {"kind": "editorial", "as_of": "2026-11-14", "text": "test fixture"},
+   "penalty": null,
+   "needs": []}]}

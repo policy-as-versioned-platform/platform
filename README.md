@@ -1,85 +1,47 @@
-# policy-as-versioned-platform
+# platform
 
-**GitHub org:** [`policy-as-versioned-platform`](https://github.com/policy-as-versioned-platform) ·
-**Role:** publisher, risk-bearer · **Licence:** [Apache-2.0](LICENSE)
+The owner's sentence: "quantified risk and a reactive ratcheting process cage to mitigate the quantified risk until the risk is within financial tolerance of the organisation".
 
-*A demonstration party, not affiliated with, endorsed by or speaking for any real authority it names.*
+This repository holds the loop that does that, the cage it moves, and the proof that the cage works. Licence: [Apache-2.0](LICENSE).
 
-Part of the *Policy as Versioned Code* estate: a shared platform, two regulators, three regulated
-institutions, each its own independent GitHub organisation, exchanging signed, versioned
-dependencies. Full thesis, design decisions (ADRs) and the other five parties:
-[policy-as-versioned-flux](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux).
+## What the loop is
 
-**The shared discipline** — the governance machinery every institution inherits
-as a *pinned, signed dependency*: the versioned policy sets, the FAIR engine,
-the distribution templates and the feed contract, each published from here
-under a signed tag and pinned by `{tag, commit}` in the institution's own repo.
+One cycle is one pass:
 
-> **Corrected 2026-09-06 (eco-system ticket 80 item 10).** This paragraph used to
-> call the adopter apparatus "the `config-base` pattern, one level up", inherited
-> "rather than copy-pasted per institution". Measured on 2026-09-06 at each
-> adopter's own `origin/main` — `driftwood` `96f4d0d`, `tuppence` `f7c9f6a`,
-> `ludlow` `d40b3fb`: the three
-> adopter gates are `.github/scripts/adopter-gate.py` (1087 lines) on driftwood,
-> `.github/scripts/adopter-gate.py` (829) on tuppence and
-> `.github/scripts/adopter_gate.py` (1213) on ludlow — three separate files, not
-> even a shared filename, with 131 identical non-comment lines common to all
-> three. So the gate is **copy-pasted per institution**, and this repository
-> publishes no package it comes from.
->
-> **Which it is: three independent forks, on purpose, for this build.** Ticket 75
-> Q7 settled it — "the three adopters stay three independent forks for this
-> build, because three independent consumers is what NORTH-STAR §4 demonstrates
-> and a shared package is a packaging decision that waits on the first real
-> divergence" (delegated, ADR-0025, 2026-09-02). What the institutions really do
-> inherit as a pinned, signed dependency is the list above; the gate that reads
-> those pins is each institution's own, and the day two of them need to diverge
-> is the day a shared package earns its keep.
+1. **Sense.** `loop/probe.py` checks that every pod in the governed Namespace is Ready and stamped at the rung in git. It then tests each capability, `egress` and `inbound`, on a live connection.
+2. **Price.** `loop/loop.py cycle` prices each row that is still open and adds the running cost of the current rung. The sum is the figure.
+3. **Compare and decide.** It compares the figure with the tolerance. It holds, or moves one notch tighter, or moves one notch looser. A notch is one changed line: the rung line of the governed Namespace.
+4. **Record.** It writes one JSON line for the ledger, whatever the verdict.
 
-What lives here (built across later tickets — this is the skeleton):
+If the probe cannot measure, the verdict is `could-not-look` and nothing moves. If a capability the rung declares closed is measured open, the verdict is `cage-ineffective`.
 
-- **Flux distribution templates** — `ResourceSet` version fan-out, signed
-  `GitRepository`, prune-on-retire, drift-heal, `dependsOn`/health, the
-  notification event spine. *(ticket 03)*
-- **FAIR risk engine** — `(min,mode,max)` → beta-PERT → Monte-Carlo → ALE ·
-  VaR₉₅ · TVaR + risk load. *(ticket 01)*
-- **the cage → OSCAL `risk`/POA&M up-flow** — a one-off that fails a check is
-  caged, priced, never exempted (no ledger; banned outright, see `CONTEXT.md`).
-- **shift-left harness** — ±1 version-skew off the `ResourceSet` array.
-- **war-gamer + AI-Wardley** — collect → war-game → signed policy PR
-  (propose-never-dispose).
+`loop.py check-diff` says whether a diff is one notch of the rung line, or pin lines only. `loop.py bump-pins` follows the pinned repositories with `git ls-remote`.
 
-The platform governs **itself** under the same risk model (Kyverno/Flux/platform
-in scope) — it passes its own test. This is the **reflexive** part of the role
-composition: `platform` is a **publisher** to the five other parties, and also
-a **risk-bearer** in its own right, carrying a strict £10k appetite band
-(signed on its own `party.yaml` `appetite:`, next to `size` — the platform-held
-`risk/appetite.json` fixture is retired, ADR-0021) rather than
-standing outside the apparatus it ships.
+An adopter's workflow checks this repository out at a pinned commit and runs these scripts. The whole design is in `LOOP.md` in the [hub](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux).
 
-## Releases (ticket mo-10)
+## Where things are
 
-A release is one or more signed, semver git tags on one commit, cut by
-[`cut-release.yml`](.github/workflows/cut-release.yml) (`workflow_dispatch`).
-Two dispatch forms, exactly one per run: the single-tag legacy form
-(`version` + `message` inputs) still works unchanged; a `tags` input (a JSON
-array of `{"tag","message"}` objects) cuts several tags off the same commit
-in one dispatch — ticket cs-13, needed for a repair release that publishes
-platform `1.0.0`, policy `2.0.0` and policy `3.0.0` from a single commit (an
-honest MAJOR renumbering off each line's own nominal start — see cs-15's
-release commit). The
-existing-tag refusal runs for every tag before any tag is created, and every
-tag is pushed in one atomic `git push` — either all of them land or none do.
-Each tag is gitsign-signed keyless, using the workflow run's own GitHub
-Actions identity — no browser login, no long-lived key. The list handling,
-refusal, signing and push live in `.github/scripts/cut-release-*`, with an
-offline twin at [`verify-cut-release-tags.sh`](verify-cut-release-tags.sh).
-[`release.yml`](.github/workflows/release.yml) then verifies that signature
-identity-pinned (the expected signer, not just "a valid signature exists")
-against an offline Rekor bundle, runs
-[`shift-left/verify-shift-left.sh`](shift-left/verify-shift-left.sh) as the
-release gate, and publishes a GitHub Release.
+| Path | What it holds |
+|---|---|
+| `loop/` | `loop.py`, `probe.py` and their tests. Python 3.10 or later, standard library only |
+| `cage/cage-tier.yaml` | The policy that rewrites a pod. What a rung does to a pod is read there |
+| `cage/cage-netpol.yaml` | The policy that writes the network rules |
+| `cage/rungs.json` | The ladder: what each rung closes, and what it costs a year |
+| `harness/` | `up.sh` builds a kind cluster. `proof.sh` runs the proof on it. `fixture/` is the test party |
 
-Institutions pin `{tag, commit}` (`gitops/platform/platform-pin.yaml` in each
-of `driftwood`/`tuppence`/`ludlow`) and bump via a Renovate PR their own repo
-opens against itself — never a moving branch, never automerged.
+## Run the tests
+
+```sh
+python3 -m unittest discover -s loop -p 'test_*.py' -v
+```
+
+They need no network, no cluster and no installed package.
+
+## Run the proof
+
+```sh
+bash harness/up.sh cage harness/fixture/apps --no-netpol
+bash harness/proof.sh
+```
+
+This needs docker, `kubectl`, `curl`, `sha256sum` and kind 0.32.0. On Linux `up.sh` downloads kind itself. It builds a kind cluster named `loop` and downloads Kyverno 1.18.2. `proof.sh` then makes three runs of the probe and the loop: the cage with no network rule, the cage with its network rule, and the rule deleted. It is green only if the figure follows what is measured in all three.

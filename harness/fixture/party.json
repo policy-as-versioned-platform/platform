@@ -1,0 +1,16 @@
+{
+  "note": "A test fixture for harness/proof.sh. It is no real party.",
+  "party": "fixture",
+  "currency": "GBP",
+  "turnover": 1000000,
+  "turnover_as_of": "2026-11-14",
+  "tolerance": {"amount": 10000, "basis": "test fixture"},
+  "margin": 0.2,
+  "dwell_days": 0,
+  "mode": "measure",
+  "pins": {
+    "platform": {"repo": "policy-as-versioned-platform/platform", "ref": "main", "commit": "0000000000000000000000000000000000000000"},
+    "ico": {"repo": "policy-as-versioned-ico/ico", "ref": "main", "commit": "0000000000000000000000000000000000000000"},
+    "feeds": {"repo": "policy-as-versioned-feeds/feeds", "ref": "main", "commit": "0000000000000000000000000000000000000000"}
+  }
+}
