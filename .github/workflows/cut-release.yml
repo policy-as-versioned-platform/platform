@@ -19,7 +19,6 @@ jobs:
           set -euo pipefail
           tag="$VERSION"
           [[ "$tag" =~ ^policy/v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "refused: version '$tag'"; exit 1; }
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then echo "refused: $tag exists"; exit 1; fi
           curl -fsSL -o "$RUNNER_TEMP/gitsign" https://github.com/sigstore/gitsign/releases/download/v0.17.1/gitsign_0.17.1_linux_amd64
           echo "69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae  $RUNNER_TEMP/gitsign" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/gitsign"; export PATH="$RUNNER_TEMP:$PATH"

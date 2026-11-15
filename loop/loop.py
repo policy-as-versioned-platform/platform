@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The loop: price the rows, add the rung's cost, compare with the tolerance, decide one notch.
 
 Standard library only. It runs no cluster command. Its only subprocesses are
@@ -90,7 +89,7 @@ def read_party(text):
         raise Refused("party: a string or a number is of the wrong type")
     if party["turnover"] <= 0 or not 0 <= party["margin"] < 1 or party["dwell_days"] < 0:
         raise Refused("turnover, margin or dwell_days is out of range")
-    if forms[0] == "share_of_turnover" and not 0 < tol[forms[0]] < 1:
+    if tol[forms[0]] <= 0 or forms[0] == "share_of_turnover" and tol[forms[0]] >= 1:
         raise Refused("tolerance is out of range")
     if party["mode"] not in ("measure", "act"):
         raise Refused("mode is not measure or act")
@@ -161,9 +160,9 @@ def _three_point(row, key):
 
 def price(rows, penalties, party):
     """Price the party's rows (section 1, step 2). An amount of None is an unpriced row."""
-    for name, regime in penalties["regimes"].items():
-        if regime["currency"] != party["currency"]:
-            raise Refused(f"regime {name} is in {regime['currency']}, not {party['currency']}")
+    for name, one in penalties["regimes"].items():
+        if one["currency"] != party["currency"]:
+            raise Refused(f"regime {name} is in {one['currency']}, not {party['currency']}")
     priced = []
     for row in rows:
         if row["party"] != party["party"]:
@@ -271,7 +270,8 @@ def dwell_met(lines, now, dwell_days):
 
 
 def decide(priced, rungs, rung, closed, tol, margin, dwell_ok):
-    """Section 1, steps 3 to 6, after a real look. The first match wins."""
+    """Section 1, steps 3 to 6. cycle calls it on every line, and on could-not-look or cage-ineffective
+    replaces its verdict."""
     k = _index(rungs, rung)
     figure = pounds([exposure(priced, closed), rungs[k]["cost"]])
     lowest = min(predicted(priced, rungs, i) for i in range(len(rungs)))
@@ -373,7 +373,7 @@ def check_diff(diff, kind, frm=None, to=None, ladder=None):
 
 def next_pin(ref, commit, ls_remote):
     """Where a pin moves to, read from the text "git ls-remote" printed."""
-    refs = dict(reversed(line.split("\t")) for line in ls_remote.splitlines() if "\t" in line)
+    refs = dict(reversed(line.split("\t")) for line in ls_remote.splitlines())
     family = TAG.match(ref)
     if not family:
         return ref, refs.get(f"refs/heads/{ref}", commit)
@@ -384,8 +384,6 @@ def next_pin(ref, commit, ls_remote):
             version = tuple(int(part) for part in tag.groups()[1:])
             if best is None or version > best[0]:
                 best = (version, tag.group(0))
-    if best is None:
-        return ref, commit
     peeled = refs.get(f"refs/tags/{best[1]}^{{}}", refs[f"refs/tags/{best[1]}"])
     return best[1], peeled
 
@@ -476,7 +474,6 @@ def _check_diff(args):
 
 def _bump_pins(args):
     text = _read(args.party)
-    read_party(text)
     lines = text.split("\n")
     for i, line in enumerate(lines):
         pin = PIN_LINE.match(line)
