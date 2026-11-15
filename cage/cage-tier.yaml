@@ -1,7 +1,4 @@
-# Self-scopes via matchConditions on the policy-version label -- NOT
-# matchConstraints.objectSelector, which Kyverno flattens into one shared
-# ValidatingWebhookConfiguration (last-reconciled-wins) and silently breaks
-# multi-version coexistence.
+# Applies only to pods that carry this policy version's label: see the matchCondition only-this-policy-version.
 apiVersion: policies.kyverno.io/v1
 kind: MutatingPolicy
 metadata:
