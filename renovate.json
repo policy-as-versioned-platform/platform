@@ -1,0 +1,43 @@
+{
+  "extends": [
+    "helpers:pinGitHubActionDigests"
+  ],
+  "kubernetes": {
+    "managerFilePatterns": [
+      "/^harness/.+\\.yaml$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^harness/up\\.sh$/",
+        "/^\\.github/workflows/cut-release\\.yml$/"
+      ],
+      "matchStrings": [
+        "https://github\\.com/(?<depName>[^/\\s]+/[^/\\s]+)/releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/\\S+"
+      ],
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "dependencyDashboardApproval": true,
+      "prBodyNotes": [
+        "Renovate does not update the sha256 checked beside this download. Before this pull request merges, replace that sha256 by hand, and any other mention of the old version in the file."
+      ]
+    },
+    {
+      "matchJsonata": [
+        "$not($exists(currentValue))"
+      ],
+      "dependencyDashboardApproval": true,
+      "prBodyNotes": [
+        "This image is pinned by digest with no tag, so Renovate moves it to the digest that `latest` points to today, which may be a different version or base. Do not merge this as a normal update. To have the image followed, put its tag in front of the same digest."
+      ]
+    }
+  ]
+}
