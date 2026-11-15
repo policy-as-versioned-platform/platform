@@ -2,11 +2,11 @@
 apiVersion: policies.kyverno.io/v1
 kind: GeneratingPolicy
 metadata:
-  name: cage-netpol-8-0-0
+  name: cage-netpol-8-0-2
   labels:
     app.kubernetes.io/part-of: platform
     policy-as-versioned.dev/policy: graded-enforcement
-    policy-as-versioned.dev/policy-version: 8.0.0
+    policy-as-versioned.dev/policy-version: 8.0.2
 spec:
   evaluation:
     synchronize:
@@ -28,7 +28,7 @@ spec:
   - name: tier-restricts-reach
     expression: object.metadata.?labels['posture.acme.io/tier'].orValue('baseline') != 'baseline'
   - name: only-this-policy-version
-    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '8.0.0'
+    expression: object.metadata.?labels['policy-as-versioned.dev/policy-version'].orValue('') == '8.0.2'
   variables:
   - name: nsName
     expression: string(object.metadata.namespace)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proof.sh: the three cluster runs of the proof, on the cluster that
-# "up.sh cage harness/fixture/apps --no-netpol" built. It is green only if all three hold.
+# proof.sh: the four cluster runs of the proof, on the cluster that
+# "up.sh cage harness/fixture/apps --no-netpol" built. It is green only if all four hold.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
@@ -72,5 +72,56 @@ k -n fixture delete networkpolicy cage-reach-quarantine
 sleep 15
 run 3 capabilities.egress=open exposure=51000.00 verdict=cage-ineffective
 
+pod() { k -n fixture get pod shop -o jsonpath="$1"; }
+climb() {  # run 4's steps before the probe. It names the first step that does not hold, and fails there.
+  local start uid cpu
+  # 1. A pod created at baseline. Kyverno reads the Namespace from a cache, hence the waits.
+  k label namespace fixture posture.acme.io/tier=baseline --overwrite || return 1
+  sleep 5
+  k -n fixture delete pod shop --timeout=120s || return 1
+  k apply -f "$fixture/apps/shop.yaml" || return 1
+  k -n fixture wait --for=condition=Ready pod/shop --timeout=180s || return 1
+  [ "$(pod '{.metadata.labels.posture\.acme\.io/tier}')" = baseline ] ||
+    { echo "run 4: the pod was not created at baseline"; return 1; }
+  start=$(pod '{.status.startTime}')
+  uid=$(pod '{.metadata.uid}')
+  [ -n "$start" ] && [ -n "$uid" ] || { echo "run 4: the pod has no start time or no uid"; return 1; }
+  # 2. The Namespace back at quarantine, and one update to the running pod. It must be admitted.
+  k label namespace fixture posture.acme.io/tier=quarantine --overwrite || return 1
+  sleep 5
+  k -n fixture annotate pod shop --overwrite "loop.policy-as-versioned.dev/touched=$(date +%s)" ||
+    { echo "run 4: the update to the running pod was refused"; return 1; }
+  # 3. The label follows, and the network rule that run 3 deleted is written again.
+  for _ in $(seq 40); do
+    [ "$(pod '{.metadata.labels.posture\.acme\.io/tier}')" = quarantine ] &&
+      k -n fixture get networkpolicy cage-reach-quarantine >/dev/null 2>&1 && break
+    sleep 3
+  done
+  [ "$(pod '{.metadata.labels.posture\.acme\.io/tier}')" = quarantine ] ||
+    { echo "run 4: the pod's label is not quarantine after 120 seconds"; return 1; }
+  k -n fixture get networkpolicy cage-reach-quarantine >/dev/null ||
+    { echo "run 4: no NetworkPolicy cage-reach-quarantine after 120 seconds"; return 1; }
+  # 4. No restart, and baseline's limits stay until the pod is replaced.
+  [ "$(pod '{.status.startTime}')" = "$start" ] && [ "$(pod '{.metadata.uid}')" = "$uid" ] ||
+    { echo "run 4: the pod was replaced"; return 1; }
+  [ "$(pod '{.status.containerStatuses[0].restartCount}')" = 0 ] || { echo "run 4: the container restarted"; return 1; }
+  cpu=$(pod '{.spec.containers[0].resources.limits.cpu}')
+  [ "$cpu" = 500m ] || { echo "run 4: CPU limit $cpu, want 500m until the pod is replaced"; return 1; }
+}
+
+echo "== run 4: a climb in place. A running pod created at baseline is moved to quarantine by one update."
+# Before cage 8.0.2 that update was refused: the cage tried to lower a running pod's limits.
+climb || { echo "run 4: RED before the probe"; failed=1; diagnose; }
+run 4 'pods=[{"name": "shop", "ready": true, "rung": "quarantine"}]' capabilities.egress=closed \
+  capabilities.inbound=open 'serving={"ok": 1, "total": 1}' exposure=1000.00 figure=7000.00 verdict=within
+
+echo "== the cage acts on pods only. Kyverno's rewrite of it for pod controllers is switched off."
+if [ -z "$(k get -f "$root/cage/cage-tier.yaml" -o jsonpath='{.status.autogen.configs}')" ]; then
+  echo "no rewrite for pod controllers: green"
+else
+  echo "cage-tier is rewritten for pod controllers: RED"
+  failed=1
+fi
+
 [ "$failed" -eq 0 ] || { echo "proof.sh: red"; exit 1; }
-echo "proof.sh: green, all three runs hold"
+echo "proof.sh: green, all four runs hold"
