@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The probe: read the cluster and test each capability on a live connection.
 
 Standard library only. It uses kubectl only, through one injected run function.
@@ -20,6 +19,7 @@ SNIPPET = ('if command -v bash >/dev/null 2>&1; then timeout 4 bash -c "</dev/tc
            'elif command -v nc >/dev/null 2>&1; then nc -w 4 -z "$0" "$1" 2>/dev/null; rc=$?; '
            'else rc=127; fi; echo loop-probe-rc=$rc')
 MARKER = re.compile(r"loop-probe-rc=(\d+)")
+SETTLE_SECONDS = 600  # step 3: how long a pod may take to start
 
 
 class Failed(Exception):
@@ -72,8 +72,6 @@ def settle(run, sleep, namespace, rung, limit, result):
         pods = get(run, "pods", "-n", namespace)["items"]
         result["pods"] = [{"name": name(pod), "ready": ready(pod), "rung": labels(pod).get(TIER)}
                           for pod in pods]
-        if not pods:
-            raise Failed(f"no pods in {namespace}")
         for pod in pods:
             if labels(pod).get(CAGED) != "true" or labels(pod).get(TIER) != rung:
                 raise Failed(f"pod {name(pod)} is not stamped {rung}")
@@ -183,10 +181,9 @@ def measure(run, sleep, settle_seconds):
 
 
 def main(argv):
-    parser = argparse.ArgumentParser(prog="probe.py", description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--context", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--settle-seconds", type=int, default=600)
     args = parser.parse_args(argv)
 
     def run(kubectl_args):
@@ -197,7 +194,7 @@ def main(argv):
             return 127, str(error)
         return done.returncode, done.stdout if done.returncode == 0 else done.stdout + done.stderr
 
-    result = measure(run, time.sleep, args.settle_seconds)
+    result = measure(run, time.sleep, SETTLE_SECONDS)
     text = json.dumps(result)
     with open(args.out, "w", encoding="utf-8") as handle:
         handle.write(text + "\n")

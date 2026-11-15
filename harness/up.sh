@@ -24,11 +24,6 @@ policy() {  # apply one cage file and wait until Kyverno serves it
   apply -f "$1"
   poll 180 policy_ready "$1" || { echo "up.sh: $1 is not ready after 180 seconds" >&2; return 1; }
 }
-diagnose() {  # what a red run needs in its log
-  k get pods,networkpolicy -A -o wide || true
-  k get mutatingpolicies.policies.kyverno.io,generatingpolicies.policies.kyverno.io \
-    -o jsonpath='{range .items[*]}{.kind}/{.metadata.name} {.status}{"\n"}{end}' || true
-}
 
 # 1. The pinned binaries, checked, in a temporary directory and never in the checkout.
 tmp=${RUNNER_TEMP:-$(mktemp -d)}
@@ -46,7 +41,7 @@ echo "3dcd43eaf11f0719084217148cd0c82a8fa49faa9b1a783ea5bea2cf84041bda  $tmp/kyv
 if ! kind get clusters 2>/dev/null | grep -x loop >/dev/null; then
   kind create cluster --name loop --wait 120s
 fi
-trap '[ $? -eq 0 ] || diagnose' EXIT
+trap '[ $? -eq 0 ] || bash "$here/diagnose.sh"' EXIT
 
 # 3. Kyverno. Server-side, because two of its CRDs are too large for a client-side apply.
 k apply --server-side --force-conflicts -f "$tmp/kyverno.yaml"
