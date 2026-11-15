@@ -444,7 +444,7 @@ class Cluster:
             return 1, "" if code is None else f"loop-probe-rc={code}\n"
         namespace = args[args.index("-n") + 1] if "-n" in args else None
         governed = {"metadata": {"name": "fixture", "labels": {probe.TIER: "quarantine"}}}
-        policy = {"metadata": {"name": "cage-tier-8-0-0"}, "status": {"conditionStatus": {"ready": self.policy_ready}}}
+        policy = {"metadata": {"name": "cage-tier-8-0-2"}, "status": {"conditionStatus": {"ready": self.policy_ready}}}
         answer = {"namespaces": {"items": [governed]}, "mutatingpolicies.policies.kyverno.io": {"items": [policy]},
                   "pods": {"items": self.pods if namespace == "fixture" else self.reference},
                   "networkpolicies": {"items": self.netpols.get(namespace, [])},
