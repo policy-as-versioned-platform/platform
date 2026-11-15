@@ -123,7 +123,7 @@ def tolerance(party):
 
 
 def mean_penalty(tier, turnover):
-    """The mean penalty of one tier at a turnover (3.3). None when no fine prices."""
+    """The mean penalty of one tier at a turnover (3.3, as section 11 changed it). None when no fine prices."""
     pricing = [fine for fine in tier["fines"] if fine.get("status") in PRICING_STATUS]
     if any(not fine.get("source") for fine in pricing):
         raise Refused("a pricing fine has no source")
@@ -131,8 +131,8 @@ def mean_penalty(tier, turnover):
         return None
     amounts = [fine["amount"] for fine in pricing]
     rate, cap = tier["rate"], tier["cap"]
-    if not all(map(is_number, [rate, cap, *amounts])):
-        raise Refused("a tier's rate, cap or pricing fine amount is not a number")
+    if not all(is_number(value) and value > 0 for value in [rate, cap, *amounts]):
+        raise Refused("a tier's rate, cap or pricing fine amount is not a number above 0")
     median = statistics.median(amounts)
     scale = rate * turnover / cap
     lo, mode, hi = min(amounts) * scale, median * scale, max(cap, 1.2 * max(amounts)) * scale
@@ -150,6 +150,15 @@ def _basis_kind(row, key):
     return basis["kind"]
 
 
+def _three_point(row, key):
+    """A lowest, a most likely and a highest, or None for a number nobody has."""
+    value = row[key]
+    if value is not None and not (isinstance(value, list) and len(value) == 3 and all(map(is_number, value))
+                                  and 0 <= value[0] <= value[1] <= value[2]):
+        raise Refused(f"row {row['id']}: {key} must be three numbers, none below 0, in ascending order")
+    return value
+
+
 def price(rows, penalties, party):
     """Price the party's rows (section 1, step 2). An amount of None is an unpriced row."""
     for name, regime in penalties["regimes"].items():
@@ -160,14 +169,19 @@ def price(rows, penalties, party):
         if row["party"] != party["party"]:
             continue
         sourced = "editorial" not in (_basis_kind(row, "events_basis"), _basis_kind(row, "loss_basis"))
+        events, loss = _three_point(row, "events_a_year"), _three_point(row, "loss_an_event")
         bound, penalty = "estimate", 0
         if row["penalty"] is not None:
             regime = penalties["regimes"].get(row["penalty"]["regime"])
             if regime is None:
                 raise Refused(f"row {row['id']}: no regime {row['penalty']['regime']}")
             rate, tier = regime["penalty_rate"], row["penalty"]["tier"]
+            counted = regime["penalty_rate_basis"]["kind"] == "counted"
             if rate is not None and not (is_number(rate) and 0 < rate <= 1):
                 raise Refused(f"regime {row['penalty']['regime']}: the penalty rate is out of range")
+            if (rate is None) == counted:
+                raise Refused(f"regime {row['penalty']['regime']}: the penalty rate is a number "
+                              "exactly when its basis kind is counted")
             if tier is not None and tier not in regime["tiers"]:
                 raise Refused(f"row {row['id']}: no tier {tier}")
             tiers = regime["tiers"].values() if tier is None else [regime["tiers"][tier]]
@@ -176,10 +190,10 @@ def price(rows, penalties, party):
             penalty = None if None in means else (1 if rate is None else rate) * max(means)
             if rate is None or tier is None:
                 bound = "upper"
-            sourced = sourced and tier is not None and regime["penalty_rate_basis"]["kind"] == "counted"
+            sourced = sourced and tier is not None and counted
         amount = None
-        if row["events_a_year"] is not None and row["loss_an_event"] is not None and penalty is not None:
-            amount = round(mean(*row["events_a_year"]) * (mean(*row["loss_an_event"]) + penalty), 2)
+        if events is not None and loss is not None and penalty is not None:
+            amount = round(mean(*events) * (mean(*loss) + penalty), 2)
             if not 0 <= amount < float("inf"):
                 raise Refused(f"row {row['id']}: {amount} is not a sum of money")
         needs = [need["capability"] for need in row["needs"] if need.get("source")]
@@ -466,7 +480,7 @@ def _bump_pins(args):
     lines = text.split("\n")
     for i, line in enumerate(lines):
         pin = PIN_LINE.match(line)
-        if pin:
+        if pin and pin.group(1) != "platform":  # the pin of the loop's own code moves by a pull request only
             name, repo, ref, commit = pin.groups()
             new_ref, new_commit = next_pin(ref, commit, _git("ls-remote", f"https://github.com/{repo}"))
             lines[i] = line.replace(f'"ref": "{ref}", "commit": "{commit}"',

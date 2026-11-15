@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -288,6 +289,26 @@ class LoopTest(unittest.TestCase):
         with self.assertRaises(loop.Refused):
             loop.price([undated], PENALTIES, PARTY)
 
+    def test_malformed_values_are_refused(self):
+        def higher(**changes):
+            penalties = copy.deepcopy(PENALTIES)
+            penalties["regimes"]["uk-gdpr"]["tiers"]["higher"].update(changes)
+            return penalties
+
+        fine = PENALTIES["regimes"]["uk-gdpr"]["tiers"]["higher"]["fines"][0]
+        uncounted = copy.deepcopy(PENALTIES)
+        uncounted["regimes"]["uk-gdpr"]["penalty_rate"] = 0.5
+        cases = [([dict(R1, **{key: value})], PENALTIES, f"row {R1['id']}: {key}")
+                 for key in ("events_a_year", "loss_an_event")
+                 for value in ([9, 2, 4], [-1000, 4000, 9000], [2, 4], [2, 4, 9, 9], [2, "4", 9], 4)]
+        cases += [([R1], penalties, "above 0") for penalties in (
+            higher(rate=-0.01), higher(rate=0), higher(cap=0), higher(fines=[dict(fine, amount=-1)]))]
+        cases += [([R1], penalties, "basis kind") for penalties in (counted(None), uncounted)]
+        cases.append(([dict(R1, events_a_year=[9, 2, 4], loss_an_event=None)], PENALTIES, "events_a_year"))
+        for rows, penalties, why in cases:
+            with self.subTest(rows=rows, why=why), self.assertRaisesRegex(loop.Refused, why):
+                loop.price(rows, penalties, PARTY)
+
     def test_set_rung_changes_one_line(self):
         after = loop.set_rung(NAMESPACE, "quarantine")
         changed = [new for old, new in zip(NAMESPACE.split("\n"), after.split("\n")) if old != new]
@@ -340,6 +361,18 @@ class LoopTest(unittest.TestCase):
             ("8", "refs/tags/policy/v10.1.0"), ("9", "refs/tags/policy/v10.1.0^{}")))
         self.assertEqual(loop.next_pin("main", ZEROS, listing), ("main", "1" * 40))
         self.assertEqual(loop.next_pin("policy/v7.0.0", ZEROS, listing), ("policy/v10.1.0", "9" * 40))
+
+    def test_bump_pins_leaves_the_platform_pin(self):
+        old = [pin("platform", ref="policy/v8.0.0"), pin("ico", ref="v5.0.0")]
+        text = PARTY_TEXT.replace(pin("platform"), old[0]).replace(pin("ico"), old[1])
+        listing = f"{'1' * 40}\trefs/tags/policy/v8.0.1\n{'2' * 40}\trefs/tags/v5.0.1\n"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(loop, "_git", return_value=listing), \
+                contextlib.redirect_stdout(io.StringIO()):
+            party = pathlib.Path(tmp, "party.json")
+            party.write_text(text)
+            self.assertEqual(loop.main(["bump-pins", "--party", str(party), "--write"]), 0)
+            self.assertEqual(party.read_text(), text.replace(old[1], pin("ico", ref="v5.0.1", commit="2" * 40)))
+        self.assertEqual(loop.next_pin("policy/v8.0.0", ZEROS, listing), ("policy/v8.0.1", "1" * 40))
 
     def test_dwell(self):
         broken = dict(ready_since(3), release_ready=False)
