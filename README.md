@@ -8,9 +8,11 @@ This repository holds the loop that does that, the cage it moves, and the proof 
 
 In one cycle `loop/probe.py` tests each capability on a live connection, and `loop/loop.py cycle` prices the rows that are still open, adds the running cost of the rung, compares that figure with the tolerance and holds or moves the rung one notch. It writes one ledger line whatever the verdict, and if the probe cannot measure, the verdict is `could-not-look` and nothing moves.
 
-`loop.py check-diff` says whether a diff is one notch of the rung line, or pin lines only. `loop.py bump-pins` follows the pinned repositories with `git ls-remote`.
+`loop.py check-diff` says whether a diff is one notch of the rung line, or pin lines only. `loop.py bump-pins` follows ico and feeds with `git ls-remote`. It never moves the platform pin: the loop's own code changes only by a pull request in the adopter.
 
-An adopter's workflow checks this repository out at a pinned commit and runs these scripts. The whole design is in `LOOP.md` in the [hub](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux).
+An adopter's workflow checks this repository out at a pinned, signed tag and its commit and runs these scripts. A tag names a release of this repository; `policy-version` in `cage/` is the cage's own version and moves only when the cage's behaviour changes.
+
+The whole design is in `LOOP.md` in the [hub](https://github.com/policy-as-versioned-flux/policy-as-versioned-flux). Section numbers in code comments are those of `.scratch/distil/CONTRACT.md` in the hub.
 
 ## Where things are
 
